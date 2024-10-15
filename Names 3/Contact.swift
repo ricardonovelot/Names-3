@@ -10,14 +10,13 @@ import SwiftData
 
 @Model
 final class Contact {
-    var name: String
+    var name: String?
     var summary: String? = ""
     var notes = [Note]()
     var timestamp: Date
     var photo: Data
     
-    init(name: String, timestamp: Date, notes: [Note], photo: Data) {
-        self.name = name
+    init(timestamp: Date, notes: [Note], photo: Data) {
         self.notes = notes
         self.timestamp = timestamp
         self.photo = photo

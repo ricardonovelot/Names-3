@@ -20,7 +20,7 @@ struct ContentView: View {
                     NavigationLink {
                         ContactDetailsView(contact: contact)
                     } label: {
-                        Text(contact.name)
+                        Text(contact.name ?? "New Contact")
                     }
                 }
                 .onDelete(perform: deleteItems)
@@ -42,7 +42,7 @@ struct ContentView: View {
 
     private func addItem() {
         withAnimation {
-            let newItem = Contact(name: "", timestamp: Date(), notes: [], photo: Data())
+            let newItem = Contact(timestamp: Date(), notes: [], photo: Data())
             modelContext.insert(newItem)
         }
     }
@@ -63,7 +63,7 @@ struct ContactFormView: View {
     var body: some View {
         Form{
             Section{
-                TextField("Name", text: $contact.name)
+                TextField("Name", text: $contact.name ?? "")
             }
         }
     }
@@ -81,36 +81,49 @@ struct ContactDetailsView: View {
     
     @State private var noteText = ""
     
+    var image: UIImage { UIImage(data: contact.photo) ?? UIImage() }
+    
     var body: some View {
         VStack(alignment: .leading){
             ZStack(alignment: .bottom){
-//                if let image = UIImage(data: contact.photo) {
-//                    GeometryReader {
-//                        let size = $0.size
-//                        Image(uiImage: image)
-//                            .resizable()
-//                            .aspectRatio(contentMode: .fill)
-//                            .frame(width: size.width, height: size.height)
-//                    }
-//                    .frame(height: 200)
-//                    .contentShape(.rect)
-//                    .padding()
-//                }
-                Rectangle()
+                if image != UIImage() {
+                    GeometryReader {
+                        let size = $0.size
+                        Image(uiImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: size.width, height: size.height)
+                            .overlay {
+                                LinearGradient(gradient: Gradient(colors: [.black.opacity(0.0), .black.opacity(0.2), .black.opacity(0.8)]), startPoint: .init(x: 0.5, y: 0.05), endPoint: .bottom)
+                            }
+                            .cornerRadius(12)
+                    }
+                    .contentShape(.rect)
+                    .frame(height: 300)
+                    //
+                    .clipped()
+                }
                 
                 VStack{
                     HStack(alignment: .top){
-                        TextField("Name", text: $contact.name, axis: .vertical)
-                            .font(.system(size: 36, weight: .bold))
-                            .lineLimit(4)
-                            .padding(.leading)
+                        TextField(
+                            "Name",
+                            text: $contact.name ?? "",
+                            prompt: Text("Name")
+                                .foregroundColor(image != UIImage() ? Color(.white.opacity(0.7)) : Color(uiColor: .placeholderText) ),
+                            axis: .vertical
+                        )
+                        .font(.system(size: 36, weight: .bold))
+                        .lineLimit(4)
+                        .padding(.leading)
+                        .foregroundColor(image != UIImage() ? .white : .primary )
                         
                         VStack(alignment: .trailing){
                             HStack{
                                 Image(systemName: "camera")
                                     .font(.system(size: 18))
                                     .padding(12)
-                                    .foregroundColor(.blue)
+                                    .foregroundColor(image != UIImage() ? .white : .blue )
                                     .background(.blue.opacity(0.08))
                                     .clipShape(Circle())
                                     .onTapGesture {
@@ -122,7 +135,7 @@ struct ContactDetailsView: View {
                                 Image(systemName: "person.2")
                                     .font(.system(size: 18))
                                     .padding(12)
-                                    .foregroundColor(.purple)
+                                    .foregroundColor(image != UIImage() ? .white : .purple)
                                     .background(.purple.opacity(0.08))
                                     .clipShape(Circle())
                                     .onTapGesture {
@@ -137,13 +150,19 @@ struct ContactDetailsView: View {
                     TextField(
                         "",
                         text: $contact.summary ?? "",
-                        prompt: Text("Main Note").foregroundColor(Color(uiColor:.placeholderText)),
+                        prompt: Text("Main Note")
+                            .foregroundColor(image != UIImage() ? Color(uiColor: .lightText).opacity(0.8) : Color(uiColor:.placeholderText)),
                         axis: .vertical
                     )
                     .lineLimit(2...)
                     .padding(10)
-                    .background(Color(uiColor: .tertiarySystemBackground))
+                    
+                    .background( image != UIImage() ? .black.opacity(0.02) : .clear)
+                    .background( image != UIImage() ? AnyShapeStyle(.ultraThinMaterial.opacity(0.5)) : AnyShapeStyle(Color(uiColor: .tertiarySystemBackground))  )
                     .clipShape(RoundedRectangle(cornerRadius: 12))
+                    
+                    
+                    
                     .padding(.horizontal).padding(.top, 12)
                     .onTapGesture {
                         // TODO: viewModel.showImageSourceDialog = false
@@ -160,7 +179,7 @@ struct ContactDetailsView: View {
                         Spacer()
                         Text("Met Today")
                         // TODO: \(contentViewModel.customFormattedDate(viewModel.item.dateMet, fallbackDate: Date()))
-                            .foregroundColor(Color(UIColor.secondaryLabel))
+                            .foregroundColor(image != UIImage() ? .white : Color(UIColor.secondaryLabel))
                             .font(.system(size: 15))
                             .frame(alignment: .trailing)
                             .padding(.top, 4)
@@ -177,62 +196,67 @@ struct ContactDetailsView: View {
                 
             }
             
+            .padding(image != UIImage() ? 16 : 0)
+            
             Text("Notes")
                 .font(.body.smallCaps())
-                 .fontWeight(.light)
-                 .foregroundStyle(.secondary)
-                 .padding(.leading)
+                .fontWeight(.light)
+                .foregroundStyle(.secondary)
+                .padding(.leading)
+            
+            Button(action: {
+                let newNote = Note(content: "Test", creationDate: Date(), owner: contact)
                 
-                Button(action: {
-                    let newNote = Note(content: "Test", creationDate: Date(), owner: contact)
-                    
-                    contact.notes.append(newNote)
-                    
-                    try? modelContext.save()
-                    // TODO: viewModel.createNote()
-                    // viewModel.objectWillChange.send()
-                }) {
-                    HStack {
-                        Image(systemName: "plus.circle.fill")
-                        Text("Add Note")
-                    }
-                    .padding(.horizontal).padding(.vertical, 14)
-                    .background(Color(uiColor: .tertiarySystemBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .padding(.horizontal)
-                    .foregroundStyle(.blue)
+                contact.notes.append(newNote)
+                
+                try? modelContext.save()
+                // TODO: viewModel.createNote()
+                // viewModel.objectWillChange.send()
+            }) {
+                HStack {
+                    Image(systemName: "plus.circle.fill")
+                    Text("Add Note")
+                    Spacer()
                 }
-                .buttonStyle(PlainButtonStyle())
-                
+                .padding(.horizontal).padding(.vertical, 14)
+                .background(Color(uiColor: .tertiarySystemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .padding(.horizontal)
+                .foregroundStyle(.blue)
+            }
+            .buttonStyle(PlainButtonStyle())
+            
             
             ForEach(contact.notes) { note in
-                    VStack {
-                        //Text(Bindable(note.content)
-                        TextField("Note Content", text: $noteText, axis: .vertical)
+                VStack {
+                    TextField("Note Content", text: $noteText, axis: .vertical)
                         .lineLimit(2...)
-                        HStack {
-                            Spacer()
-                            Text(note.creationDate, style: .date)
-                                .font(.caption)
-                                .foregroundColor(.gray)
-                        }
+                    HStack {
+                        Spacer()
+                        Text(note.creationDate, style: .date)
+                            .font(.caption)
                     }
-                    .contentShape(Rectangle())
-                    .swipeActions(edge: .trailing) {
-                        Button(role: .destructive) {
-                            // TODO: viewModel.deleteNote(note)
-                        } label: {
-                            Label("Delete", systemImage: "trash")
-                        }
+                }
+                .padding(.horizontal).padding(.vertical, 14)
+                .background(Color(uiColor: .tertiarySystemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .padding(.horizontal)
+                
+                .swipeActions(edge: .trailing) {
+                    Button(role: .destructive) {
+                        // TODO: viewModel.deleteNote(note)
+                    } label: {
+                        Label("Delete", systemImage: "trash")
                     }
-                    .swipeActions(edge: .leading) {
-                        Button {
-                            // TODO: showDatePickerFor(note: note)
-                        } label: {
-                            Label("Edit Date", systemImage: "calendar")
-                        }
-                        .tint(.blue)
+                }
+                .swipeActions(edge: .leading) {
+                    Button {
+                        // TODO: showDatePickerFor(note: note)
+                    } label: {
+                        Label("Edit Date", systemImage: "calendar")
                     }
+                    .tint(.blue)
+                }
                 
             }
             
