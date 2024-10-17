@@ -12,12 +12,18 @@ import SwiftData
 final class Contact {
     var name: String?
     var summary: String? = ""
+    var isMetLongAgo: Bool = false
     var notes = [Note]()
+    var tags = [Tag]()
     var timestamp: Date
     var photo: Data
     
-    init(timestamp: Date, notes: [Note], photo: Data) {
+    init(name: String = "", summary: String = "", isMetLongAgo: Bool = false, timestamp: Date, notes: [Note], tags: [Tag] = [], photo: Data) {
+        self.name = name
+        self.summary = summary
+        self.isMetLongAgo = isMetLongAgo
         self.notes = notes
+        self.tags = tags
         self.timestamp = timestamp
         self.photo = photo
     }
@@ -25,13 +31,20 @@ final class Contact {
 
 @Model
 final class Note {
-    var owner: Contact
     var content: String
     var creationDate: Date
     
-    init( content: String, creationDate: Date, owner: Contact) {
+    init( content: String, creationDate: Date) {
         self.content = content
         self.creationDate = creationDate
-        self.owner = owner
+    }
+}
+
+@Model
+final class Tag {
+    var name: String
+    
+    init(name: String) {
+        self.name = name
     }
 }
