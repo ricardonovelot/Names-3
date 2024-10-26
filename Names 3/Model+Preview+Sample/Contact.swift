@@ -17,6 +17,7 @@ final class Contact {
     var tags = [Tag]()
     var timestamp: Date
     var photo: Data
+    var contactGroup: ContactGroup?
     
     init(name: String = "", summary: String = "", isMetLongAgo: Bool = false, timestamp: Date, notes: [Note], tags: [Tag] = [], photo: Data) {
         self.name = name
@@ -26,6 +27,18 @@ final class Contact {
         self.tags = tags
         self.timestamp = timestamp
         self.photo = photo
+    }
+}
+
+@Model
+final class ContactGroup {
+    var date: Date = Calendar.current.startOfDay(for: Date())
+    @Relationship(inverse: \Contact.contactGroup) var contacts = [Contact]()
+    
+
+    init(date: Date = Calendar.current.startOfDay(for: Date()), contacts: [Contact] = []) {
+        self.date = date
+        self.contacts = contacts
     }
 }
 

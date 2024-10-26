@@ -11,19 +11,26 @@ import PhotosUI
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
-    @Query private var contacts: [Contact]
+    //@Query private var contacts: [Contact]
+    @Query private var dates: [ContactGroup]
+    
 
     var body: some View {
-        NavigationSplitView {
+        NavigationStack {
             List {
-                ForEach(contacts) { contact in
-                    NavigationLink {
-                        ContactDetailsView(contact: contact)
-                    } label: {
-                        Text(contact.name ?? "New Contact")
+                ForEach(dates){ date in
+                    Section {
+                        Text(date.date.formatted(date: .long, time: .omitted))
+                        ForEach(date.contacts) { contact in
+                            NavigationLink {
+                                ContactDetailsView(contact: contact)
+                            } label: {
+                                Text(contact.name ?? "New Contact")
+                            }
+                        }
                     }
+                    //.onDelete(perform: deleteItems)
                 }
-                .onDelete(perform: deleteItems)
             }
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -35,25 +42,34 @@ struct ContentView: View {
                     }
                 }
             }
-        } detail: {
-            Text("Select an item")
         }
     }
 
     private func addItem() {
         withAnimation {
-            let newItem = Contact(timestamp: Date(), notes: [], photo: Data())
-            modelContext.insert(newItem)
-        }
-    }
-
-    private func deleteItems(offsets: IndexSet) {
-        withAnimation {
-            for index in offsets {
-                modelContext.delete(contacts[index])
+            let newContact = Contact(timestamp: Date(), notes: [], photo: Data())
+            
+            // Check if there is already an entry for today
+            if let lastEntry = dates.last,
+               Calendar.current.isDateInToday(lastEntry.date) {
+                // Append the new contact to today's entry
+                lastEntry.contacts.append(newContact)
+            } else {
+                // Create a new entry for today and insert it into the model
+                let newDateEntry = ContactGroup(date: Calendar.current.startOfDay(for: Date()))
+                newDateEntry.contacts.append(newContact)
+                modelContext.insert(newDateEntry)
             }
         }
     }
+
+//    private func deleteItems(offsets: IndexSet) {
+//        withAnimation {
+//            for index in offsets {
+//                modelContext.delete(contacts[index])
+//            }
+//        }
+//    }
     
 }
 
@@ -387,6 +403,7 @@ struct CustomPhotosPicker: View {
 struct CustomDatePicker: View {
     @Bindable var contact: Contact
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
     
     @State private var date = Date()
     @State private var bool: Bool = false
@@ -396,7 +413,7 @@ struct CustomDatePicker: View {
         VStack{
             GroupBox{
                 Toggle("Met long ago", isOn: $contact.isMetLongAgo)
-                    .onChange(of: contact.isMetLongAgo) { _, _ in
+                    .onChange(of: contact.isMetLongAgo) { old, new in
                         if true {
                             //                    viewModel.item.dateMet = Date.distantPast
                             //                    viewModel.objectWillChange.send()
@@ -412,6 +429,9 @@ struct CustomDatePicker: View {
                         .disabled(contact.isMetLongAgo)
                 
             }
+            .onChange(of: contact.timestamp, { oldValue, newValue in
+                validateGroup(for: contact)
+            })
             .backgroundStyle(Color(UIColor.systemBackground))
             .padding()
             Spacer()
@@ -419,44 +439,114 @@ struct CustomDatePicker: View {
         .containerRelativeFrame([.horizontal, .vertical])
         .background(Color(UIColor.systemGroupedBackground))
     }
+    
+    func validateGroup(for contact: Contact) {
+        let contactDate = Calendar.current.startOfDay(for: contact.timestamp)
+        let groupDate = contact.contactGroup?.date
+        
+        // Check if the contact's date matches the date of its current group
+        if contactDate == groupDate {
+            return // Do nothing if the dates are the same
+        } else {
+            contact.contactGroup =
+        }
+
+        // Fetch an existing group with the specified date
+        let fetchDescriptor = FetchDescriptor<ContactGroup>(predicate: #Predicate<ContactGroup> {
+            $0.date == contactDate
+        })
+
+        do {
+            // Fetch the DateEntry with the specified date
+            let results = try modelContext.fetch(fetchDescriptor)
+
+            if let existingGroup = results.first {
+                // Remove contact from its current group if it's part of one
+                if let currentGroup = contact.contactGroup {
+                    currentGroup.contacts.removeAll { $0.id == contact.id }
+                }
+                // Assign the contact to the found DateEntry group
+                contact.contactGroup = existingGroup
+            } else {
+                // Create a new DateEntry for the contact date if none exists
+                let newGroup = ContactGroup(date: contactDate, contacts: [contact])
+                contact.contactGroup = newGroup
+                modelContext.insert(newGroup) // Insert the new DateEntry to the context
+            }
+
+            // Save context to persist changes
+            try modelContext.save()
+        } catch {
+            print("Failed to fetch or save DateEntry: \(error)")
+        }
+    }
 }
 
 
+
+
+
 struct CustomTagPicker: View {
+    @Environment(\.modelContext) private var modelContext
     @Query private var tags: [Tag]
     @Bindable var contact: Contact
     @Environment(\.dismiss) private var dismiss
     @State private var searchText: String = ""
     
     var body: some View{
-        NavigationStack{
-            ScrollView{
-                ForEach(tags, id: \.self) { tag in
-                    Text(tag.name)
-                    //                TagRow(tag: tag, isSelected: viewModel.selectedTags.contains(tag)) {
-                    //                    viewModel.toggleTagSelection(tag)
-                    //                }
-                }
+        NavigationView{
+            List{
                 
                 if !searchText.isEmpty {
-                    Button{
-                        //itemDetailViewModel.addTag(named: searchText)
-                        //viewModel.fetchTags()
-                        
-                    } label: {
-                        Group{
-                            HStack{
-                                Text("Add \(searchText)")
-                                Image(systemName: "plus.circle.fill")
+                    Section{
+                        Button{
+                            let newTag = Tag(name: searchText)
+                            modelContext.insert(newTag)
+                            try? modelContext.save()
+                            //itemDetailViewModel.addTag(named: searchText)
+                            //viewModel.fetchTags()
+                            
+                        } label: {
+                            Group{
+                                HStack{
+                                    Text("Add \(searchText)")
+                                    Image(systemName: "plus.circle.fill")
+                                }
                             }
                         }
                     }
                 }
+                
+                Section{
+                    ForEach(tags, id: \.self) { tag in
+                        HStack{
+                            Text(tag.name)
+                            Spacer()
+                            if contact.tags.contains(tag){
+                                Image(systemName: "checkmark")
+                                    .foregroundColor(.accentColor)
+                            }
+                        }
+                        .onTapGesture {
+                            if contact.tags.contains(tag){
+                                contact.tags.append(tag)
+                            } else {
+                                //contact.tags.remove(at: tag.id)
+                            }
+                            try? modelContext.save()
+                        }
+                        //                TagRow(tag: tag, isSelected: viewModel.selectedTags.contains(tag)) {
+                        //                    viewModel.toggleTagSelection(tag)
+                        //                }
+                    }
+                }
+                
+                
             }
-            .containerRelativeFrame([.horizontal, .vertical])
-            .background(Color(UIColor.systemGroupedBackground))
-            .navigationTitle("Tags")
+            .navigationTitle("Groups & Places")
             .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $searchText, placement:.navigationBarDrawer(displayMode: .always))
+            .contentMargins(.top, 8)
         }
     }
 }
@@ -469,7 +559,7 @@ func ??<T>(lhs: Binding<Optional<T>>, rhs: T) -> Binding<T> {
 }
 
 #Preview {
-    ContentView().modelContainer(for: Contact.self, inMemory: true)
+    ContentView().modelContainer(for: ContactGroup.self, inMemory: true)
     
    //ModelContainerPreview(ModelContainer.sample) {ContactDetailsView(contact:.ross)}
 }

@@ -107,6 +107,8 @@
 			);
 			mainGroup = 8C5BEF212CBCF6D8007D0D5E;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 8C5BEF2B2CBCF6D8007D0D5E /* Products */;
 			projectDirPath = "";
@@ -151,6 +153,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Names 3/Info.plist";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Please Allow Photo Usage";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -182,6 +185,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Names 3/Info.plist";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Please Allow Photo Usage";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
