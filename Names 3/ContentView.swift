@@ -11,26 +11,45 @@ import PhotosUI
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
-    //@Query private var contacts: [Contact]
-    @Query private var dates: [ContactGroup]
+    @Query private var contacts: [Contact]
     
-
+    var groups: [contactsGroup] { // Group contacts by the day of their timestamp
+        let calendar = Calendar.current
+        let groupedContacts = Dictionary(grouping: contacts) { contact in
+            calendar.startOfDay(for: contact.timestamp) // Get just the date component (year, month, day) from the timestamp
+        }
+        return groupedContacts.map { (date, contactsForDate) in // Map grouped contacts into an array of contactsGroup
+            contactsGroup(date: date, contacts: contactsForDate)
+        }
+        .sorted { $0.date > $1.date } // Optional: Sort by date descending
+    }
+    
     var body: some View {
         NavigationStack {
             List {
-                ForEach(dates){ date in
-                    Section {
-                        Text(date.date.formatted(date: .long, time: .omitted))
-                        ForEach(date.contacts) { contact in
-                            NavigationLink {
-                                ContactDetailsView(contact: contact)
-                            } label: {
-                                Text(contact.name ?? "New Contact")
-                            }
+                ForEach(groups) { group in
+                    Text(group.date, style: .date) // Display the date as a section header
+                    ForEach(group.contacts) { contact in
+                        NavigationLink {
+                            ContactDetailsView(contact: contact)
+                        } label: {
+                            Text(contact.name ?? "New Contact")
                         }
                     }
-                    //.onDelete(perform: deleteItems)
                 }
+//                ForEach(dates){ date in
+//                    Section {
+//                        Text(date.date.formatted(date: .long, time: .omitted))
+//                        ForEach(date.contacts) { contact in
+//                            NavigationLink {
+//                                ContactDetailsView(contact: contact)
+//                            } label: {
+//                                Text(contact.name ?? "New Contact")
+//                            }
+//                        }
+//                    }
+//                    //.onDelete(perform: deleteItems)
+//                }
             }
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -48,18 +67,20 @@ struct ContentView: View {
     private func addItem() {
         withAnimation {
             let newContact = Contact(timestamp: Date(), notes: [], photo: Data())
+
+            modelContext.insert(newContact)
             
             // Check if there is already an entry for today
-            if let lastEntry = dates.last,
-               Calendar.current.isDateInToday(lastEntry.date) {
-                // Append the new contact to today's entry
-                lastEntry.contacts.append(newContact)
-            } else {
-                // Create a new entry for today and insert it into the model
-                let newDateEntry = ContactGroup(date: Calendar.current.startOfDay(for: Date()))
-                newDateEntry.contacts.append(newContact)
-                modelContext.insert(newDateEntry)
-            }
+//            if let lastEntry = dates.last,
+//               Calendar.current.isDateInToday(lastEntry.date) {
+//                // Append the new contact to today's entry
+//                lastEntry.contacts.append(newContact)
+//            } else {
+//                // Create a new entry for today and insert it into the model
+//                let newDateEntry = contactsGroup(date: Calendar.current.startOfDay(for: Date()))
+//                newDateEntry.contacts.append(newContact)
+//                modelContext.insert(newDateEntry)
+//            }
         }
     }
 
@@ -88,6 +109,8 @@ struct ContactFormView: View {
 
 struct ContactDetailsView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.dismiss) private var dismiss
+    
     @Bindable var contact: Contact
     
     @State var viewState = CGSize.zero
@@ -99,209 +122,249 @@ struct ContactDetailsView: View {
     
     @State private var noteText = ""
     @State private var stateNotes : [Note] = []
+    @State private var CustomBackButtonAnimationValue = 40.0
     
     var image: UIImage { UIImage(data: contact.photo) ?? UIImage() }
     
     var body: some View {
-        GeometryReader { g in
-            ScrollView{
-                ZStack(alignment: .bottom){
-                    if image != UIImage() {
-                        GeometryReader {
-                            let size = $0.size
-                            Image(uiImage: image)
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                                .frame(width: size.width, height: size.height)
-                                .overlay {
-                                    LinearGradient(gradient: Gradient(colors: [.black.opacity(0.0), .black.opacity(0.2), .black.opacity(0.8)]), startPoint: .init(x: 0.5, y: 0.05), endPoint: .bottom)
-                                }
-                                .cornerRadius(12)
+            GeometryReader { g in
+                ScrollView{
+                    ZStack(alignment: .bottom){
+                        if image != UIImage() {
+                            GeometryReader {
+                                let size = $0.size
+                                Image(uiImage: image)
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fill)
+                                    .frame(width: size.width, height: size.height)
+                                    .overlay {
+                                        LinearGradient(gradient: Gradient(colors: [.black.opacity(0.0), .black.opacity(0.2), .black.opacity(0.8)]), startPoint: .init(x: 0.5, y: 0.05), endPoint: .bottom)
+                                    }
+                                //.cornerRadius(12)
+                            }
+                            .contentShape(.rect)
+                            .frame(height: 400)
+                            .clipped()
                         }
-                        .contentShape(.rect)
-                        .frame(height: 300)
-                        .clipped()
-                    }
-                    
-                    VStack{
-                        HStack(alignment: .top){
+                        
+                        VStack{
+                            HStack{
+                                TextField(
+                                    "Name",
+                                    text: $contact.name ?? "",
+                                    prompt: Text("Name")
+                                        .foregroundColor(image != UIImage() ? Color(.white.opacity(0.7)) : Color(uiColor: .placeholderText) ),
+                                    axis: .vertical
+                                )
+                                .font(.system(size: 36, weight: .bold))
+                                .lineLimit(4)
+                                .foregroundColor(image != UIImage() ? .white : .primary )
+                                
+                                //HStack{
+                                Image(systemName: "camera")
+                                    .font(.system(size: 18))
+                                    .padding(12)
+                                    .foregroundColor(image != UIImage() ? .white : .blue )
+                                    .background( image != UIImage() ? AnyShapeStyle(.ultraThinMaterial.opacity(0.7)) : AnyShapeStyle(Color(.blue.opacity(0.08))))
+                                    .clipShape(Circle())
+                                    .onTapGesture { showPhotosPicker = true }
+                                    .padding(.leading, 4)
+                                
+                                Group{
+                                    if !contact.tags.isEmpty {
+                                        Text(contact.tags.compactMap { $0.name }.sorted().joined(separator: ", "))
+                                            .foregroundColor(image != UIImage() ? .white : Color(.secondaryLabel) )
+                                            .font(.system(size: 15, weight: .medium))
+                                            .padding(.vertical, 7)
+                                            .padding(.bottom, 1)
+                                            .padding(.horizontal, 13)
+                                            .background(image != UIImage() ? AnyShapeStyle(.ultraThinMaterial.opacity(0.6)) : AnyShapeStyle(Color(.quaternarySystemFill )))
+                                            .cornerRadius(8)
+                                        
+                                    } else {
+                                        Image(systemName: "person.2")
+                                            .font(.system(size: 18))
+                                            .padding(12)
+                                            .foregroundColor(image != UIImage() ? .white : .purple)
+                                            .background( image != UIImage() ? AnyShapeStyle(.ultraThinMaterial.opacity(0.7)) : AnyShapeStyle(Color(.purple.opacity(0.08))))
+                                            .clipShape(Circle())
+                                            .padding(.leading, 4)
+                                    }
+                                }
+                                .onTapGesture { showTagPicker = true }
+                                
+                                //}
+                            }
+                            .padding(.horizontal)
+                            
                             TextField(
-                                "Name",
-                                text: $contact.name ?? "",
-                                prompt: Text("Name")
-                                    .foregroundColor(image != UIImage() ? Color(.white.opacity(0.7)) : Color(uiColor: .placeholderText) ),
+                                "",
+                                text: $contact.summary ?? "",
+                                prompt: Text("Main Note")
+                                    .foregroundColor(image != UIImage() ? Color(uiColor: .lightText).opacity(0.8) : Color(uiColor:.placeholderText)),
                                 axis: .vertical
                             )
-                            .font(.system(size: 36, weight: .bold))
-                            .lineLimit(4)
-                            .padding(.leading)
-                            .foregroundColor(image != UIImage() ? .white : .primary )
+                            .lineLimit(2...)
+                            .padding(10)
+                            .foregroundStyle(image != UIImage() ? Color(uiColor: .lightText) : Color.primary)
+                            .background( image != UIImage() ? .black.opacity(0.02) : .clear)
+                            .background( image != UIImage() ? AnyShapeStyle(.ultraThinMaterial.opacity(0.65)) : AnyShapeStyle(Color(uiColor: .tertiarySystemBackground))  )
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
                             
-                            VStack(alignment: .trailing){
-                                HStack{
-                                    Image(systemName: "camera")
-                                        .font(.system(size: 18))
-                                        .padding(12)
-                                        .foregroundColor(image != UIImage() ? .white : .blue )
-                                        .background(.blue.opacity(0.08))
-                                        .clipShape(Circle())
-                                        .onTapGesture { showPhotosPicker = true }
-                                        .padding(.leading, 4)
-                                    
-                                    Image(systemName: "person.2")
-                                        .font(.system(size: 18))
-                                        .padding(12)
-                                        .foregroundColor(image != UIImage() ? .white : .purple)
-                                        .background(.purple.opacity(0.08))
-                                        .clipShape(Circle())
-                                        .onTapGesture { showTagPicker = true }
-                                        .padding(.leading, 4)
-                                }
+                            
+                            
+                            .padding(.horizontal).padding(.top, 12)
+                            .onTapGesture {
+                                // TODO: viewModel.showImageSourceDialog = false
                             }
-                            .padding(.trailing)
-                        }
-                        
-                        TextField(
-                            "",
-                            text: $contact.summary ?? "",
-                            prompt: Text("Main Note")
-                                .foregroundColor(image != UIImage() ? Color(uiColor: .lightText).opacity(0.8) : Color(uiColor:.placeholderText)),
-                            axis: .vertical
-                        )
-                        .lineLimit(2...)
-                        .padding(10)
-                        .foregroundStyle(image != UIImage() ? Color(uiColor: .lightText) : Color.primary)
-                        .background( image != UIImage() ? .black.opacity(0.02) : .clear)
-                        .background( image != UIImage() ? AnyShapeStyle(.ultraThinMaterial.opacity(0.5)) : AnyShapeStyle(Color(uiColor: .tertiarySystemBackground))  )
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        
-                        
-                        
-                        .padding(.horizontal).padding(.top, 12)
-                        .onTapGesture {
-                            // TODO: viewModel.showImageSourceDialog = false
-                        }
-                        .gesture(
-                            DragGesture()
-                                .onChanged { value in
-                                    // TODO: make the drag gesture move the main note to a regular note
-                                    viewState = value.translation
-                                }
-                        )
-                        
-                        HStack{
-                            Spacer()
-                            Text(contact.timestamp, style: .date)
-                            // TODO: \(contentViewModel.customFormattedDate(viewModel.item.dateMet, fallbackDate: Date()))
-                                .foregroundColor(image != UIImage() ? .white : Color(UIColor.secondaryLabel))
-                                .font(.system(size: 15))
-                                .frame(alignment: .trailing)
-                                .padding(.top, 4)
-                                .padding(.trailing)
-                                .padding(.trailing, 4)
-                                .onTapGesture {
-                                    showDatePicker = true
-                                }
-                                .padding(.bottom)
-                                .onAppear{
-                                    // TODO: dateTitle = viewModel.formattedDate(viewModel.item.dateMet, isDateMetLongAgo: viewModel.item.isDateMetLongAgo)
-                                }
-                        }
-                    }
-                }
-                
-                .padding(image != UIImage() ? 16 : 0)
-                
-                Text("Notes")
-                    .font(.body.smallCaps())
-                    .fontWeight(.light)
-                    .foregroundStyle(.secondary)
-                    .padding(.leading)
-                
-                Button(action: {
-                    let newNote = Note(content: "Test", creationDate: Date())
-                    
-                    contact.notes.append(newNote)
-                    
-                    //try? modelContext.save()
-                    // TODO: viewModel.createNote()
-                    // viewModel.objectWillChange.send()
-                }) {
-                    HStack {
-                        Image(systemName: "plus.circle.fill")
-                        Text("Add Note")
-                        Spacer()
-                    }
-                    .padding(.horizontal).padding(.vertical, 14)
-                    .background(Color(uiColor: .tertiarySystemBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .padding(.horizontal)
-                    .foregroundStyle(.blue)
-                }
-                .buttonStyle(PlainButtonStyle())
-                
-                List{
-                    ForEach(contact.notes.indices.reversed(), id:\.self) { index in
-                        VStack {
-                            TextField("Note Content", text: $contact.notes[index].content, axis: .vertical)
-                                .lineLimit(2...)
-                            HStack {
+                            .gesture(
+                                DragGesture()
+                                    .onChanged { value in
+                                        // TODO: make the drag gesture move the main note to a regular note
+                                        viewState = value.translation
+                                    }
+                            )
+                            
+                            HStack{
                                 Spacer()
-                                Text(contact.notes[index].creationDate, style: .date)
-                                    .font(.caption)
+                                Text(contact.timestamp, style: .date)
+                                // TODO: \(contentViewModel.customFormattedDate(viewModel.item.dateMet, fallbackDate: Date()))
+                                    .foregroundColor(image != UIImage() ? .white : Color(UIColor.secondaryLabel))
+                                    .font(.system(size: 15))
+                                    .frame(alignment: .trailing)
+                                    .padding(.top, 4)
+                                    .padding(.trailing)
+                                    .padding(.trailing, 4)
+                                    .onTapGesture {
+                                        showDatePicker = true
+                                    }
+                                    .padding(.bottom)
+                                    .onAppear{
+                                        // TODO: dateTitle = viewModel.formattedDate(viewModel.item.dateMet, isDateMetLongAgo: viewModel.item.isDateMetLongAgo)
+                                    }
                             }
                         }
-                        //.padding(.horizontal).padding(.vertical, 14)
-                        //.background(Color(uiColor: .tertiarySystemBackground))
-                        //.clipShape(RoundedRectangle(cornerRadius: 12))
-                        //.padding(.horizontal)
+                    }
+                    //.padding(image != UIImage() ? 16 : 0)
+                    
+                    Text("Notes")
+                        .font(.body.smallCaps())
+                        .fontWeight(.light)
+                        .foregroundStyle(.secondary)
+                        .padding(.leading)
+                    
+                    Button(action: {
+                        let newNote = Note(content: "Test", creationDate: Date())
                         
-                        .swipeActions(edge: .trailing) {
-                            Button(role: .destructive) {
-                                modelContext.delete(contact.notes[index])
-                                // TODO: viewModel.deleteNote(note)
+                        contact.notes.append(newNote)
+                        
+                        //try? modelContext.save()
+                        // TODO: viewModel.createNote()
+                        // viewModel.objectWillChange.send()
+                    }) {
+                        HStack {
+                            Image(systemName: "plus.circle.fill")
+                            Text("Add Note")
+                            Spacer()
+                        }
+                        .padding(.horizontal).padding(.vertical, 14)
+                        .background(Color(uiColor: .tertiarySystemBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .padding(.horizontal)
+                        .foregroundStyle(.blue)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    
+                    List{
+                        ForEach(contact.notes.indices.reversed(), id:\.self) { index in
+                            VStack {
+                                TextField("Note Content", text: $contact.notes[index].content, axis: .vertical)
+                                    .lineLimit(2...)
+                                HStack {
+                                    Spacer()
+                                    Text(contact.notes[index].creationDate, style: .date)
+                                        .font(.caption)
+                                }
+                            }
+                            //.padding(.horizontal).padding(.vertical, 14)
+                            //.background(Color(uiColor: .tertiarySystemBackground))
+                            //.clipShape(RoundedRectangle(cornerRadius: 12))
+                            //.padding(.horizontal)
+                            
+                            .swipeActions(edge: .trailing) {
+                                Button(role: .destructive) {
+                                    modelContext.delete(contact.notes[index])
+                                    // TODO: viewModel.deleteNote(note)
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
+                            .swipeActions(edge: .leading) {
+                                Button {
+                                    // TODO: showDatePickerFor(note: note)
+                                } label: {
+                                    Label("Edit Date", systemImage: "calendar")
+                                }
+                                .tint(.blue)
+                            }
+                            
+                        }
+                    }
+                    .frame(width: g.size.width, height: g.size.height) // laverage geometry to make the list not collapse inside a scrollview
+                }
+                .padding(.top, image != UIImage() ? 0 : 8 )
+                .ignoresSafeArea(image != UIImage() ? .all : [])
+                //.containerRelativeFrame([.horizontal, .vertical])
+                .background(Color(UIColor.systemGroupedBackground))
+                .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Menu {
+                                Button {
+                                    // TODO: contentViewModel.createItemWithSameDate(as: viewModel.item, context: viewContext)
+                                } label: {
+                                    Text("Duplicate")
+                                }
                             } label: {
-                                Label("Delete", systemImage: "trash")
+                                Image(systemName: "ellipsis.circle")
                             }
                         }
-                        .swipeActions(edge: .leading) {
+                        ToolbarItem(placement: .navigationBarLeading) {
                             Button {
-                                // TODO: showDatePickerFor(note: note)
+                                dismiss()
                             } label: {
-                                Label("Edit Date", systemImage: "calendar")
+                                HStack {
+                                    HStack{
+                                        Image(systemName: image != UIImage() ? "" : "chevron.backward")
+                                        Text("Back")
+                                            .fontWeight(image != UIImage() ? .medium : .regular)
+                                    }
+                                    .foregroundStyle(image != UIImage() ? Color(.lightText) : .accentColor)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 6)
+                                    .background(image != UIImage() ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(Color(.clear)))
+                                    .cornerRadius(100)
+                                }
+                                .padding(.leading, CustomBackButtonAnimationValue)
+                                .onAppear{
+                                    withAnimation {
+                                        CustomBackButtonAnimationValue = 0
+                                    }
+                                }
                             }
-                            .tint(.blue)
                         }
-                        
-                    }
+                    
                 }
-                .frame(width: g.size.width, height: g.size.height) // laverage geometry to make the list not collapse inside a scrollview
+                .navigationBarBackButtonHidden(true)
             }
-            .containerRelativeFrame([.horizontal, .vertical])
-            .background(Color(UIColor.systemGroupedBackground))
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button {
-                            // TODO: contentViewModel.createItemWithSameDate(as: viewModel.item, context: viewContext)
-                        } label: {
-                            Text("Duplicate")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                    }
-                }
+            .sheet(isPresented: $showPhotosPicker) {
+                CustomPhotosPicker(contact: contact)
             }
-        }
-        .sheet(isPresented: $showPhotosPicker) {
-            CustomPhotosPicker(contact: contact)
-        }
-        .sheet(isPresented: $showDatePicker) {
-            CustomDatePicker(contact: contact)
-        }
-        .sheet(isPresented: $showTagPicker) {
-            CustomTagPicker(contact: contact)
-        }
+            .sheet(isPresented: $showDatePicker) {
+                CustomDatePicker(contact: contact)
+            }
+            .sheet(isPresented: $showTagPicker) {
+                CustomTagPicker(contact: contact)
+            }
     }
 }
 
@@ -348,6 +411,14 @@ struct CustomPhotosPicker: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Cancel") {
                         dismiss()
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    if !contact.photo.isEmpty {
+                        Button("Remove") {
+                            contact.photo = Data()
+                            dismiss()
+                        }
                     }
                 }
             }
@@ -429,56 +500,12 @@ struct CustomDatePicker: View {
                         .disabled(contact.isMetLongAgo)
                 
             }
-            .onChange(of: contact.timestamp, { oldValue, newValue in
-                validateGroup(for: contact)
-            })
             .backgroundStyle(Color(UIColor.systemBackground))
             .padding()
             Spacer()
         }
         .containerRelativeFrame([.horizontal, .vertical])
         .background(Color(UIColor.systemGroupedBackground))
-    }
-    
-    func validateGroup(for contact: Contact) {
-        let contactDate = Calendar.current.startOfDay(for: contact.timestamp)
-        let groupDate = contact.contactGroup?.date
-        
-        // Check if the contact's date matches the date of its current group
-        if contactDate == groupDate {
-            return // Do nothing if the dates are the same
-        } else {
-            contact.contactGroup =
-        }
-
-        // Fetch an existing group with the specified date
-        let fetchDescriptor = FetchDescriptor<ContactGroup>(predicate: #Predicate<ContactGroup> {
-            $0.date == contactDate
-        })
-
-        do {
-            // Fetch the DateEntry with the specified date
-            let results = try modelContext.fetch(fetchDescriptor)
-
-            if let existingGroup = results.first {
-                // Remove contact from its current group if it's part of one
-                if let currentGroup = contact.contactGroup {
-                    currentGroup.contacts.removeAll { $0.id == contact.id }
-                }
-                // Assign the contact to the found DateEntry group
-                contact.contactGroup = existingGroup
-            } else {
-                // Create a new DateEntry for the contact date if none exists
-                let newGroup = ContactGroup(date: contactDate, contacts: [contact])
-                contact.contactGroup = newGroup
-                modelContext.insert(newGroup) // Insert the new DateEntry to the context
-            }
-
-            // Save context to persist changes
-            try modelContext.save()
-        } catch {
-            print("Failed to fetch or save DateEntry: \(error)")
-        }
     }
 }
 
@@ -502,7 +529,7 @@ struct CustomTagPicker: View {
                         Button{
                             let newTag = Tag(name: searchText)
                             modelContext.insert(newTag)
-                            try? modelContext.save()
+                            //try? modelContext.save()
                             //itemDetailViewModel.addTag(named: searchText)
                             //viewModel.fetchTags()
                             
@@ -527,21 +554,23 @@ struct CustomTagPicker: View {
                                     .foregroundColor(.accentColor)
                             }
                         }
+                        .contentShape(Rectangle())
                         .onTapGesture {
-                            if contact.tags.contains(tag){
+                            if !contact.tags.contains(tag){
+                                print("not tag already added")
                                 contact.tags.append(tag)
                             } else {
-                                //contact.tags.remove(at: tag.id)
+                                if let index = contact.tags.firstIndex(where: {$0.id == tag.id}) {
+                                    contact.tags.remove(at: index)
+                                }
                             }
-                            try? modelContext.save()
+    
                         }
                         //                TagRow(tag: tag, isSelected: viewModel.selectedTags.contains(tag)) {
                         //                    viewModel.toggleTagSelection(tag)
                         //                }
                     }
                 }
-                
-                
             }
             .navigationTitle("Groups & Places")
             .navigationBarTitleDisplayMode(.inline)
@@ -558,8 +587,15 @@ func ??<T>(lhs: Binding<Optional<T>>, rhs: T) -> Binding<T> {
     )
 }
 
-#Preview {
-    ContentView().modelContainer(for: ContactGroup.self, inMemory: true)
-    
-   //ModelContainerPreview(ModelContainer.sample) {ContactDetailsView(contact:.ross)}
+#Preview("List") {
+    ContentView().modelContainer(for: Contact.self, inMemory: true)
+}
+
+#Preview("Contact Detail") {
+    ModelContainerPreview(ModelContainer.sample) {
+        NavigationStack{
+            ContactDetailsView(contact:.ross)
+        }
+    }
+    // Preview line above wont allow to manipulate data in the current implmentation, theory is that data is being manipulated not in the correct codelcontainer/modelcontext
 }

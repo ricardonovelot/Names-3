@@ -9,7 +9,7 @@ import Foundation
 import SwiftData
 
 @Model
-final class Contact {
+class Contact {
     var name: String?
     var summary: String? = ""
     var isMetLongAgo: Bool = false
@@ -17,9 +17,9 @@ final class Contact {
     var tags = [Tag]()
     var timestamp: Date
     var photo: Data
-    var contactGroup: ContactGroup?
+    var group: String
     
-    init(name: String = "", summary: String = "", isMetLongAgo: Bool = false, timestamp: Date, notes: [Note], tags: [Tag] = [], photo: Data) {
+    init(name: String = "", summary: String = "", isMetLongAgo: Bool = false, timestamp: Date, notes: [Note], tags: [Tag] = [], photo: Data, group: String = "") {
         self.name = name
         self.summary = summary
         self.isMetLongAgo = isMetLongAgo
@@ -27,19 +27,14 @@ final class Contact {
         self.tags = tags
         self.timestamp = timestamp
         self.photo = photo
+        self.group = group
     }
 }
 
-@Model
-final class ContactGroup {
-    var date: Date = Calendar.current.startOfDay(for: Date())
-    @Relationship(inverse: \Contact.contactGroup) var contacts = [Contact]()
-    
-
-    init(date: Date = Calendar.current.startOfDay(for: Date()), contacts: [Contact] = []) {
-        self.date = date
-        self.contacts = contacts
-    }
+struct contactsGroup: Identifiable,Hashable {
+    let id = UUID()
+    let date: Date
+    let contacts: [Contact]
 }
 
 @Model
@@ -55,7 +50,8 @@ final class Note {
 
 @Model
 final class Tag {
-    @Attribute(.unique) var name: String
+    //@Attribute(.unique)
+    var name: String
     
     init(name: String) {
         self.name = name
