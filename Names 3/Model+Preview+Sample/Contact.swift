@@ -46,7 +46,7 @@ struct contactsGroup: Identifiable,Hashable {
         let tags = contacts.flatMap { $0.tags.map { $0.name } }
         let uniqueTags = Set(tags) // Get unique tags
         if uniqueTags.isEmpty{
-            return Date().description
+            return date.formatted(date: .abbreviated, time: .omitted)
         } else {
             return uniqueTags.joined(separator: ", ")
         }

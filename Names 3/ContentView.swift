@@ -14,7 +14,12 @@ struct ContentView: View {
     @Query private var contacts: [Contact]
     
     @State private var text = ""
+    @State private var date = Date()
+
     @State private var showPhotosPicker = false
+    
+    @State private var name = ""
+    @State private var hashtag = ""
     
     var gridSpacing = 10.0
     
@@ -41,8 +46,12 @@ struct ContentView: View {
             ScrollView{
                 ForEach(groups) { group in
                     Section{
-                        Text(group.title)
-                            .font(.headline)
+                        HStack{
+                            Text(group.title)
+                                .font(.headline)
+                            Spacer()
+                        }
+                        .padding(.horizontal)
                         LazyVGrid(columns: columns, spacing: gridSpacing) {
                             ForEach(group.contacts) { contact in
                                 NavigationLink {
@@ -93,65 +102,63 @@ struct ContentView: View {
                 //                }
             }
             .safeAreaInset(edge: .bottom) {
-                HStack{
-                    Image(systemName: "camera.fill")
-                        .font(.system(size: 18))
-                        .padding(13)
-                        .foregroundColor(.blue)
-                        .background(Color(uiColor: .systemFill))
-                        .clipShape(Circle())
-                        .onTapGesture { showPhotosPicker = true }
-                        .padding(.leading, 4)
+                VStack{
                     
-                    TextField("", text: $text, axis: .vertical)
-                        .padding(.horizontal,16)
-                        .padding(.vertical,8)
-                        .background(.thickMaterial)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                        .submitLabel(.send)
-                        .onChange(of: text, {
-                            if text.last == "\n" {
-                                text.removeLast()
-                                if text.isEmpty {
-                                    return
-                                }
-                                addItem()
-                                /// do submit action
-                                text = ""
-                            }
-                        })
-                        .onSubmit{
-                            let names = text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-                            
-                            for name in names {
-                               
-                            }
-                            
-                            for nameEntry in names {
-                                // Separate the words in each name entry
-                                let words = nameEntry.split(separator: " ").map { String($0) }
-                                
-                                // Initialize variables to hold name and hashtag
-                                var name = ""
-                                var hashtag = ""
-
-                                // Process each word in the name entry
-                                for word in words {
-                                    if word.starts(with: "#") {
-                                        // Remove "#" and add to the hashtag variable, handling multi-word hashtags
-                                        hashtag += word.dropFirst() + " "
-                                    } else {
-                                        // Append word to name (handles multi-word names too)
-                                        name += word + " "
+                    VStack{
+                       
+                    }
+                    .padding(.horizontal,16)
+                    .padding(.vertical,8)
+                    .background(Color(uiColor: .systemBackground))
+                    
+                    HStack{
+                        Image(systemName: "camera.fill")
+                            .font(.system(size: 18))
+                            .padding(13)
+                            .foregroundColor(.blue)
+                            .background(Color(uiColor: .white))
+                            .clipShape(Circle())
+                            .onTapGesture { showPhotosPicker = true }
+                            .padding(.leading, 4)
+                        
+                        TextField("", text: $text, axis: .vertical)
+                            .padding(.horizontal,16)
+                            .padding(.vertical,8)
+                            .background(Color(uiColor: .systemBackground))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .submitLabel(.send)
+                            .onChange(of: text){
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                                    name = ""
+                                    hashtag = ""
+                                    
+                                    let names = text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                                    
+                                    for nameEntry in names {
+                                        // Separate the words in each name entry
+                                        let words = nameEntry.split(separator: " ").map { String($0) }
+                                    
+                                        // Process each word in the name entry
+                                        for word in words {
+                                            if word.starts(with: "#") {
+                                                // Remove "#" and add to the hashtag variable, handling multi-word hashtags
+                                                hashtag += word.dropFirst() + " "
+                                            } else {
+                                                // Append word to name (handles multi-word names too)
+                                                name += word + " "
+                                            }
+                                        }
+                                        // Trim trailing whitespace from name and hashtag
+                                        name = name.trimmingCharacters(in: .whitespaces)
+                                        hashtag = hashtag.trimmingCharacters(in: .whitespaces)
+                                       
                                     }
                                 }
                                 
-                                // Trim trailing whitespace from name and hashtag
-                                name = name.trimmingCharacters(in: .whitespaces)
-                                hashtag = hashtag.trimmingCharacters(in: .whitespaces)
+                            }
+                            .onSubmit {
+                                let newContact = Contact(name: name,timestamp: date, notes: [], photo: Data())
                                 
-                                let newContact = Contact(name: name,timestamp: Date(), notes: [], photo: Data())
-                               
                                 
                                 if !hashtag.isEmpty {
                                     let newTag = Tag(name: hashtag)
@@ -159,13 +166,17 @@ struct ContentView: View {
                                 }
                                 
                                 modelContext.insert(newContact)
+                                text = ""
                             }
                             
+                        
+                        
                             
-                            
-                            text = ""
-                        }
-                        .padding()
+                    }
+                    .padding(.bottom, 8)
+                    
+                    DatePicker(selection: $date, in: ...Date(), displayedComponents: .date){}
+                        .padding(.horizontal)
                 }
                 .padding(.horizontal)
             }
@@ -179,7 +190,9 @@ struct ContentView: View {
                     }
                 }
             }
+            .background(Color(uiColor: .systemGroupedBackground))
         }
+        
     }
 
     private func addItem() {
@@ -771,7 +784,9 @@ func ??<T>(lhs: Binding<Optional<T>>, rhs: T) -> Binding<T> {
 }
 
 #Preview("List") {
-    ContentView().modelContainer(for: Contact.self, inMemory: true)
+    ModelContainerPreview(ModelContainer.sample) {
+        ContentView().modelContainer(for: Contact.self, inMemory: true)
+    }
 }
 
 #Preview("Contact Detail") {
