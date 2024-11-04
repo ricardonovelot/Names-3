@@ -66,7 +66,6 @@ final class Note {
 
 @Model
 final class Tag {
-    //@Attribute(.unique)
     var name: String
     
     init(name: String) {

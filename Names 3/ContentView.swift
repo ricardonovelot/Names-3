@@ -38,139 +38,109 @@ struct ContentView: View {
         return groupedContacts.map { (date, contactsForDate) in // Map grouped contacts into an array of contactsGroup
             contactsGroup(date: date, contacts: contactsForDate)
         }
-        .sorted { $0.date > $1.date } // Optional: Sort by date descending
+        .sorted { $0.date < $1.date } // Optional: Sort by date descending
     }
+    
+    @State private var parsedContacts: [Contact] = []  // Directly store as [Contact]
     
     var body: some View {
         NavigationStack {
-            ScrollView{
-                ForEach(groups) { group in
-                    Section{
-                        HStack{
-                            Text(group.title)
-                                .font(.headline)
-                            Spacer()
-                        }
-                        .padding(.horizontal)
-                        LazyVGrid(columns: columns, spacing: gridSpacing) {
-                            ForEach(group.contacts) { contact in
-                                NavigationLink {
-                                    ContactDetailsView(contact: contact)
-                                } label: {
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .aspectRatio(contentMode: .fit)
-                                        .overlay {
-                                            ZStack {
-                                                Image(uiImage: UIImage(data: contact.photo) ?? UIImage())
-                                                    .resizable()
-                                                    .scaledToFill()
-                                                LinearGradient(gradient: Gradient(colors: [.black.opacity(0.0), .black.opacity(0.0), .black.opacity(0.6)]), startPoint: .top, endPoint: .bottom)
+            ScrollViewReader { proxy in
+                ScrollView{
+                    ForEach(groups) { group in
+                        Section{
+                            HStack{
+                                Text(group.title)
+                                    .font(.headline)
+                                Spacer()
+                            }
+                            .padding(.horizontal)
+                            LazyVGrid(columns: columns, spacing: gridSpacing) {
+                                ForEach(group.contacts) { contact in
+                                    NavigationLink {
+                                        ContactDetailsView(contact: contact)
+                                    } label: {
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .aspectRatio(contentMode: .fit)
+                                            .background(Color(uiColor: .systemFill))
+                                            .overlay {
+                                                ZStack {
+                                                    Image(uiImage: UIImage(data: contact.photo) ?? UIImage())
+                                                        .resizable()
+                                                        .scaledToFill()
+                                                    LinearGradient(gradient: Gradient(colors: [.black.opacity(0.0), .black.opacity(0.0), .black.opacity(0.6)]), startPoint: .top, endPoint: .bottom)
+                                                }
                                             }
-                                        }
-                                        .overlay {
-                                            VStack {
-                                                Spacer()
-                                                Text(contact.name ?? "")
-                                                    .font(.footnote)
-                                                    .bold()
-                                                    .foregroundColor(.white)
-                                                    .padding(.bottom, 6)
-                                                    .padding(.horizontal, 6)
-                                                    .multilineTextAlignment(.center)
-                                                    .lineSpacing(-2)
+                                            .overlay {
+                                                VStack {
+                                                    Spacer()
+                                                    Text(contact.name ?? "")
+                                                        .font(.footnote)
+                                                        .bold()
+                                                        .foregroundColor(.white)
+                                                        .padding(.bottom, 6)
+                                                        .padding(.horizontal, 6)
+                                                        .multilineTextAlignment(.center)
+                                                        .lineSpacing(-2)
+                                                }
                                             }
-                                        }
-                                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                    }
                                 }
                             }
+                            .padding(.horizontal)
                         }
-                        .padding(.horizontal)
                     }
+                    //                ForEach(dates){ date in
+                    //                    Section {
+                    //                        Text(date.date.formatted(date: .long, time: .omitted))
+                    //                        ForEach(date.contacts) { contact in
+                    //                            NavigationLink {
+                    //                                ContactDetailsView(contact: contact)
+                    //                            } label: {
+                    //                                Text(contact.name ?? "New Contact")
+                    //                            }
+                    //                        }
+                    //                    }
+                    //                    //.onDelete(perform: deleteItems)
+                    //                }
                 }
-                //                ForEach(dates){ date in
-                //                    Section {
-                //                        Text(date.date.formatted(date: .long, time: .omitted))
-                //                        ForEach(date.contacts) { contact in
-                //                            NavigationLink {
-                //                                ContactDetailsView(contact: contact)
-                //                            } label: {
-                //                                Text(contact.name ?? "New Contact")
-                //                            }
-                //                        }
-                //                    }
-                //                    //.onDelete(perform: deleteItems)
-                //                }
+                .onChange(of: contacts) { newValue in
+                    proxy.scrollTo(contacts.last?.id) //When the count changes scroll to latest message
+                }
             }
             .safeAreaInset(edge: .bottom) {
                 VStack{
-                    
-                    VStack{
-                       
+                    ForEach(parsedContacts){ contact in
+                        Text(contact.name ?? "no name")
                     }
-                    .padding(.horizontal,16)
-                    .padding(.vertical,8)
-                    .background(Color(uiColor: .systemBackground))
                     
                     HStack{
                         Image(systemName: "camera.fill")
                             .font(.system(size: 18))
                             .padding(13)
                             .foregroundColor(.blue)
-                            .background(Color(uiColor: .white))
+                            .background(Color(uiColor: .tertiarySystemGroupedBackground))
                             .clipShape(Circle())
                             .onTapGesture { showPhotosPicker = true }
-                            .padding(.leading, 4)
-                        
+                    
                         TextField("", text: $text, axis: .vertical)
                             .padding(.horizontal,16)
                             .padding(.vertical,8)
-                            .background(Color(uiColor: .systemBackground))
+                            .background(Color(uiColor: .secondarySystemGroupedBackground))
                             .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .onChange(of: text){ oldValue, newValue in
+                                if let last = newValue.last, last == "\n" {
+                                              text.removeLast()
+                                              // do your submit logic here?
+                                    saveContacts(modelContext: modelContext)
+                                } else {
+                                    parseContacts()
+                                }
+                               
+                                
+                            }
                             .submitLabel(.send)
-                            .onChange(of: text){
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                                    name = ""
-                                    hashtag = ""
-                                    
-                                    let names = text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-                                    
-                                    for nameEntry in names {
-                                        // Separate the words in each name entry
-                                        let words = nameEntry.split(separator: " ").map { String($0) }
-                                    
-                                        // Process each word in the name entry
-                                        for word in words {
-                                            if word.starts(with: "#") {
-                                                // Remove "#" and add to the hashtag variable, handling multi-word hashtags
-                                                hashtag += word.dropFirst() + " "
-                                            } else {
-                                                // Append word to name (handles multi-word names too)
-                                                name += word + " "
-                                            }
-                                        }
-                                        // Trim trailing whitespace from name and hashtag
-                                        name = name.trimmingCharacters(in: .whitespaces)
-                                        hashtag = hashtag.trimmingCharacters(in: .whitespaces)
-                                       
-                                    }
-                                }
-                                
-                            }
-                            .onSubmit {
-                                let newContact = Contact(name: name,timestamp: date, notes: [], photo: Data())
-                                
-                                
-                                if !hashtag.isEmpty {
-                                    let newTag = Tag(name: hashtag)
-                                    newContact.tags.append(newTag)
-                                }
-                                
-                                modelContext.insert(newContact)
-                                text = ""
-                            }
-                            
-                        
-                        
                             
                     }
                     .padding(.bottom, 8)
@@ -179,6 +149,7 @@ struct ContentView: View {
                         .padding(.horizontal)
                 }
                 .padding(.horizontal)
+                .padding(.bottom, 8)
             }
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -193,6 +164,60 @@ struct ContentView: View {
             .background(Color(uiColor: .systemGroupedBackground))
         }
         
+    }
+    
+    private func parseContacts() {
+        
+        let input = text
+        // Split the input by commas for each contact entry
+        let nameEntries = input.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        
+        var contacts: [Contact] = []
+        var globalTags: [Tag] = []
+        
+        // First, find all unique hashtags across the entire input
+        let allWords = input.split(separator: " ").map { String($0) }
+        for word in allWords {
+            if word.starts(with: "#") {
+                let tagName = word.dropFirst().trimmingCharacters(in: .punctuationCharacters)
+                if !tagName.isEmpty && !globalTags.contains(where: { $0.name == tagName }) {
+                    globalTags.append(Tag(name: String(tagName)))
+                }
+            }
+        }
+        
+        // Now parse each contact entry, attaching the global tags to each
+        for entry in nameEntries {
+            var nameComponents: [String] = []
+            
+            // Split each entry by spaces to find words (ignore hashtags here as they’re in globalTags)
+            let words = entry.split(separator: " ").map { String($0) }
+            
+            for word in words {
+                if !word.starts(with: "#") {
+                    nameComponents.append(word)
+                }
+            }
+            
+            let name = nameComponents.joined(separator: " ")
+            if !name.isEmpty {
+                let contact = Contact(name: name, timestamp: Date(), notes: [], tags: globalTags, photo: Data())
+                contacts.append(contact)
+            }
+        }
+        
+        parsedContacts = contacts
+    }
+    
+    // Function to save parsed contacts
+    func saveContacts(modelContext: ModelContext) {
+        for contact in parsedContacts {
+            modelContext.insert(contact)
+        }
+        
+        // Clear text and parsed contacts after saving
+        text = ""
+        parsedContacts = []
     }
 
     private func addItem() {
