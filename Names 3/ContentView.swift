@@ -55,23 +55,22 @@ struct ContentView: View {
                                 Spacer()
                             }
                             .padding(.horizontal)
-                            LazyVGrid(columns: columns, spacing: gridSpacing) {
+                            LazyVGrid(columns: Array(repeating: GridItem(spacing: 10), count: 4), spacing: 10) {
                                 ForEach(group.contacts) { contact in
                                     NavigationLink {
                                         ContactDetailsView(contact: contact)
                                     } label: {
-                                        RoundedRectangle(cornerRadius: 6)
-                                            .aspectRatio(contentMode: .fit)
-                                            .background(Color(uiColor: .systemFill))
-                                            .overlay {
-                                                ZStack {
-                                                    Image(uiImage: UIImage(data: contact.photo) ?? UIImage())
-                                                        .resizable()
-                                                        .scaledToFill()
-                                                    LinearGradient(gradient: Gradient(colors: [.black.opacity(0.0), .black.opacity(0.0), .black.opacity(0.6)]), startPoint: .top, endPoint: .bottom)
-                                                }
-                                            }
-                                            .overlay {
+                                        
+                                        GeometryReader {
+                                            let size = $0.size
+                                            ZStack{
+                                                Image(uiImage: UIImage(data: contact.photo) ?? UIImage())
+                                                    .resizable()
+                                                    .aspectRatio(contentMode: .fill)
+                                                    .frame(width: size.width, height: size.height)
+                                                    .clipped()
+                                                    .background(Color(uiColor: .secondarySystemGroupedBackground))
+                                                
                                                 VStack {
                                                     Spacer()
                                                     Text(contact.name ?? "")
@@ -84,8 +83,38 @@ struct ContentView: View {
                                                         .lineSpacing(-2)
                                                 }
                                             }
-                                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                        }
+                                        .frame(height: 88)
+                                        .contentShape(.rect)
+                                        .clipShape(RoundedRectangle(cornerRadius: 10))
                                     }
+                                        
+//                                        RoundedRectangle(cornerRadius: 6)
+//                                            .aspectRatio(contentMode: .fit)
+//                                            .background(Color(uiColor: .red))
+//                                            .overlay {
+//                                                ZStack {
+//                                                    Image(uiImage: UIImage(data: contact.photo) ?? UIImage())
+//                                                        .resizable()
+//                                                        .scaledToFill()
+//                                                    LinearGradient(gradient: Gradient(colors: [.black.opacity(0.0), .black.opacity(0.0), .black.opacity(0.6)]), startPoint: .top, endPoint: .bottom)
+//                                                }
+//                                            }
+//                                            .overlay {
+//                                                VStack {
+//                                                    Spacer()
+//                                                    Text(contact.name ?? "")
+//                                                        .font(.footnote)
+//                                                        .bold()
+//                                                        .foregroundColor(.white)
+//                                                        .padding(.bottom, 6)
+//                                                        .padding(.horizontal, 6)
+//                                                        .multilineTextAlignment(.center)
+//                                                        .lineSpacing(-2)
+//                                                }
+//                                            }
+//                                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+//                                    }
                                 }
                             }
                             .padding(.horizontal)
@@ -113,9 +142,27 @@ struct ContentView: View {
             }
             .safeAreaInset(edge: .bottom) {
                 VStack{
-                    ForEach(parsedContacts){ contact in
-                        Text(contact.name ?? "no name")
+                    
+                    VStack {
+                        ForEach(parsedContacts){ contact in
+                            HStack{
+                                Text(contact.name ?? "no name")
+                                Spacer()
+                            }
+                            if contact == parsedContacts.last
+                            {
+                            } else {
+                                Divider()
+                                    .padding(.bottom, 8)
+                            }
+                           
+                        }
+                       
                     }
+                    .padding(parsedContacts.isEmpty ? 0 : 16)
+                    .background(Color(uiColor: .secondarySystemGroupedBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .padding(.bottom, 12)
                     
                     HStack{
                         Image(systemName: "camera.fill")
