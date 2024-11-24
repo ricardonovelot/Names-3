@@ -91,6 +91,7 @@ struct ContentView: View {
                             .padding(.horizontal)
                         }
                     }
+                    .rotationEffect(.degrees(180))
                     //                ForEach(dates){ date in
                     //                    Section {
                     //                        Text(date.date.formatted(date: .long, time: .omitted))
@@ -105,6 +106,7 @@ struct ContentView: View {
                     //                    //.onDelete(perform: deleteItems)
                     //                }
                 }
+                .rotationEffect(.degrees(180))
                 .onChange(of: contacts) { newValue in
                     proxy.scrollTo(contacts.last?.id) //When the count changes scroll to latest message
                 }
