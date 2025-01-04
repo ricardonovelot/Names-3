@@ -12,7 +12,40 @@ import PhotosUI
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.colorScheme) private var colorScheme
+    
     @Query private var contacts: [Contact]
+    @State private var parsedContacts: [Contact] = []
+    
+    // Group contacts by the day of their timestamp, AI
+    var groups: [contactsGroup] {
+        let calendar = Calendar.current
+
+        // Group `contacts` by the start of the day
+        let groupedContacts = Dictionary(grouping: contacts) { contact in
+            calendar.startOfDay(for: contact.timestamp)
+        }
+
+        // Group `parsedContacts` by the start of the day
+        let groupedParsedContacts = Dictionary(grouping: parsedContacts) { parsedContact in
+            calendar.startOfDay(for: parsedContact.timestamp)
+        }
+
+        // Combine both grouped dictionaries
+        let allDates = Set(groupedContacts.keys).union(groupedParsedContacts.keys)
+
+        // Map combined dates to `contactsGroup`, ensuring items are sorted by creation time
+        return allDates.map { date in
+            let sortedContacts = (groupedContacts[date] ?? []).sorted { $0.timestamp < $1.timestamp }
+            let sortedParsedContacts = (groupedParsedContacts[date] ?? []).sorted { $0.timestamp < $1.timestamp }
+
+            return contactsGroup(
+                date: date,
+                contacts: sortedContacts,
+                parsedContacts: sortedParsedContacts
+            )
+        }
+        .sorted { $0.date < $1.date } // Sort groups by date
+    }
     
     @State private var isAtBottom = false
     private let dragThreshold: CGFloat = 100
@@ -26,6 +59,14 @@ struct ContentView: View {
     @State private var name = ""
     @State private var hashtag = ""
     
+    var dynamicBackground: Color {
+        if fieldIsFocused {
+            return colorScheme == .light ? .clear : .clear // Background for keyboard
+        } else {
+            return colorScheme == .light ? .clear : .clear // Default background
+        }
+    }
+    
     var gridSpacing = 10.0
     
     var columns = [
@@ -35,32 +76,10 @@ struct ContentView: View {
         GridItem(.flexible(), spacing: 10.0)
     ]
     
-    var groups: [contactsGroup] { // Group contacts by the day of their timestamp
-        let calendar = Calendar.current
-        let groupedContacts = Dictionary(grouping: contacts) { contact in
-            calendar.startOfDay(for: contact.timestamp) // Get just the date component (year, month, day) from the timestamp
-        }
-        return groupedContacts.map { (date, contactsForDate) in // Map grouped contacts into an array of contactsGroup
-            contactsGroup(date: date, contacts: contactsForDate)
-        }
-        .sorted { $0.date < $1.date } // Optional: Sort by date descending
-    }
-    
-    var dynamicBackground: Color {
-        if fieldIsFocused {
-            return colorScheme == .light ? .yellow : .orange // Background for keyboard
-        } else {
-            return colorScheme == .light ? .blue : .black // Default background
-        }
-    }
-    
-    @State private var parsedContacts: [Contact] = []  // Directly store as [Contact]
-    
     var body: some View {
         NavigationStack {
             ScrollViewReader { proxy in
                 ScrollView(showsIndicators: false){
-                    VStack{
                         ForEach(groups) { group in
                             Section{
                                 HStack{
@@ -74,7 +93,6 @@ struct ContentView: View {
                                         NavigationLink {
                                             ContactDetailsView(contact: contact)
                                         } label: {
-                                            
                                             GeometryReader {
                                                 let size = $0.size
                                                 ZStack{
@@ -102,167 +120,56 @@ struct ContentView: View {
                                             .contentShape(.rect)
                                             .clipShape(RoundedRectangle(cornerRadius: 10))
                                         }
-                                        
-                                        //                                        RoundedRectangle(cornerRadius: 6)
-                                        //                                            .aspectRatio(contentMode: .fit)
-                                        //                                            .background(Color(uiColor: .red))
-                                        //                                            .overlay {
-                                        //                                                ZStack {
-                                        //                                                    Image(uiImage: UIImage(data: contact.photo) ?? UIImage())
-                                        //                                                        .resizable()
-                                        //                                                        .scaledToFill()
-                                        //                                                    LinearGradient(gradient: Gradient(colors: [.black.opacity(0.0), .black.opacity(0.0), .black.opacity(0.6)]), startPoint: .top, endPoint: .bottom)
-                                        //                                                }
-                                        //                                            }
-                                        //                                            .overlay {
-                                        //                                                VStack {
-                                        //                                                    Spacer()
-                                        //                                                    Text(contact.name ?? "")
-                                        //                                                        .font(.footnote)
-                                        //                                                        .bold()
-                                        //                                                        .foregroundColor(.white)
-                                        //                                                        .padding(.bottom, 6)
-                                        //                                                        .padding(.horizontal, 6)
-                                        //                                                        .multilineTextAlignment(.center)
-                                        //                                                        .lineSpacing(-2)
-                                        //                                                }
-                                        //                                            }
-                                        //                                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                                        //                                    }
+                                    }
+                                    ForEach(group.parsedContacts) { contact in
+                                        Text(contact.name ?? "")
                                     }
                                 }
                                 .padding(.horizontal)
                             }
                         }
-                    }
-                    //drag gesture data
-                    .background(
-                                        GeometryReader { geo in
-                                            Color.clear
-                                                .onAppear {
-                                                    // Detect if content is at the bottom
-                                                    isAtBottom = geo.frame(in: .global).maxY <= UIScreen.main.bounds.height
-                                                }
-                                                .onChange(of: geo.frame(in: .global)) { newFrame in
-                                                    isAtBottom = newFrame.maxY <= UIScreen.main.bounds.height
-                                                    print(isAtBottom)
-                                                }
-                                        }
-                                    )
-                    .rotationEffect(.degrees(180))
-                    
-                    //                ForEach(dates){ date in
-                    //                    Section {
-                    //                        Text(date.date.formatted(date: .long, time: .omitted))
-                    //                        ForEach(date.contacts) { contact in
-                    //                            NavigationLink {
-                    //                                ContactDetailsView(contact: contact)
-                    //                            } label: {
-                    //                                Text(contact.name ?? "New Contact")
-                    //                            }
-                    //                        }
-                    //                    }
-                    //                    //.onDelete(perform: deleteItems)
-                    //                }
                 }
-                .rotationEffect(.degrees(180))
-                .onChange(of: contacts) { newValue in
+                // ScrollView modifiers
+                .defaultScrollAnchor(.bottom)
+                .scrollDismissesKeyboard(.interactively)
+                .onChange(of: contacts) { oldValue, newValue in
                     proxy.scrollTo(contacts.last?.id) //When the count changes scroll to latest message
                 }
             }
-            // Drag Gesture
-            .gesture(
-                        DragGesture()
-                            .onChanged { value in
-                                print(value.translation.height)
-                                if value.translation.height < -dragThreshold {
-                                    fieldIsFocused = true
-                                }
-                            }
-                            .onEnded { _ in
-                                if fieldIsFocused {
-                                    // Reset or handle drag logic here
-                                    fieldIsFocused = false
-                                }
-                            }
-                    )
             .safeAreaInset(edge: .bottom) {
-                VStack{
+                HStack(spacing: 0){
+                    Image(systemName: "camera.fill")
+                        .font(.system(size: 18))
+                        .padding(13)
+                        .foregroundColor(.blue)
+                        .background(Color(uiColor: .tertiarySystemGroupedBackground))
+                        .clipShape(Circle())
+                        .onTapGesture { showPhotosPicker = true }
                     
-                    VStack {
-                        ForEach(parsedContacts){ contact in
-                            HStack{
-                                Text(contact.name ?? "no name")
-                                Spacer()
-                            }
-                            if contact == parsedContacts.last
-                            {
+                    DatePicker(selection: $date, in: ...Date(), displayedComponents: .date){}
+                        .labelsHidden()
+                        .padding(.trailing)
+                    
+                    TextField("", text: $text, axis: .vertical)
+                        .padding(.horizontal,16)
+                        .padding(.vertical,8)
+                        .background(Color(uiColor: .secondarySystemGroupedBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .onChange(of: text){ oldValue, newValue in
+                            if let last = newValue.last, last == "\n" {
+                                text.removeLast()
+                                saveContacts(modelContext: modelContext)
                             } else {
-                                Divider()
-                                    .padding(.bottom, 8)
+                                parseContacts()
                             }
-                           
                         }
-                       
-                    }
-                    .padding(parsedContacts.isEmpty ? 0 : 16)
-                    .background(Color(uiColor: .secondarySystemGroupedBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .padding(.bottom, 12)
-                    .padding(.horizontal)
+                        .focused($fieldIsFocused)
+                        .submitLabel(.send)
                     
-                    
-                    VStack{
-                        HStack{
-                            Image(systemName: "camera.fill")
-                                .font(.system(size: 18))
-                                .padding(13)
-                                .foregroundColor(.blue)
-                                .background(Color(uiColor: .tertiarySystemGroupedBackground))
-                                .clipShape(Circle())
-                                .onTapGesture { showPhotosPicker = true }
-                            
-                            TextField("", text: $text, axis: .vertical)
-                                .padding(.horizontal,16)
-                                .padding(.vertical,8)
-                                .background(Color(uiColor: .secondarySystemGroupedBackground))
-                                .clipShape(RoundedRectangle(cornerRadius: 10))
-                                .onChange(of: text){ oldValue, newValue in
-                                    if let last = newValue.last, last == "\n" {
-                                        text.removeLast()
-                                        // do your submit logic here?
-                                        saveContacts(modelContext: modelContext)
-                                    } else {
-                                        parseContacts()
-                                    }
-                                    
-                                    
-                                }
-                                .focused($fieldIsFocused)
-                                .submitLabel(.send)
-                            
-                        }
-                        .padding(.top, 8)
-                        .padding(.bottom, 8)
-                        .padding(.horizontal)
-                        
-//                        DatePicker(selection: $date, in: ...Date(), displayedComponents: .date){}
-//                            .padding(.horizontal)
-                        
-                        HStack{
-                            Spacer()
-                            Button("Done") {
-                                fieldIsFocused = false
-                            }
-                            .padding()
-                        }
-                    }
-                    .background(dynamicBackground)
                 }
-                
-                
-                
-                
+                .padding(.bottom, 8)
+                .padding(.horizontal)
+                .background(dynamicBackground)
             }
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -280,7 +187,6 @@ struct ContentView: View {
     }
     
     private func parseContacts() {
-        
         let input = text
         // Split the input by commas for each contact entry
         let nameEntries = input.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
@@ -314,7 +220,7 @@ struct ContentView: View {
             
             let name = nameComponents.joined(separator: " ")
             if !name.isEmpty {
-                let contact = Contact(name: name, timestamp: Date(), notes: [], tags: globalTags, photo: Data())
+                let contact = Contact(name: name, timestamp: date, notes: [], tags: globalTags, photo: Data())
                 contacts.append(contact)
             }
         }

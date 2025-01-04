@@ -41,6 +41,7 @@ struct contactsGroup: Identifiable,Hashable {
     let id = UUID()
     let date: Date
     let contacts: [Contact]
+    let parsedContacts: [Contact]
     
     var title: String {
         let tags = contacts.flatMap { $0.tags.map { $0.name } }
