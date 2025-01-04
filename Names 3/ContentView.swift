@@ -11,7 +11,12 @@ import PhotosUI
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.colorScheme) private var colorScheme
     @Query private var contacts: [Contact]
+    
+    @State private var isAtBottom = false
+    private let dragThreshold: CGFloat = 100
+    @FocusState private var fieldIsFocused: Bool
     
     @State private var text = ""
     @State private var date = Date()
@@ -41,86 +46,111 @@ struct ContentView: View {
         .sorted { $0.date < $1.date } // Optional: Sort by date descending
     }
     
+    var dynamicBackground: Color {
+        if fieldIsFocused {
+            return colorScheme == .light ? .yellow : .orange // Background for keyboard
+        } else {
+            return colorScheme == .light ? .blue : .black // Default background
+        }
+    }
+    
     @State private var parsedContacts: [Contact] = []  // Directly store as [Contact]
     
     var body: some View {
         NavigationStack {
             ScrollViewReader { proxy in
-                ScrollView{
-                    ForEach(groups) { group in
-                        Section{
-                            HStack{
-                                Text(group.title)
-                                    .font(.headline)
-                                Spacer()
-                            }
-                            .padding(.horizontal)
-                            LazyVGrid(columns: Array(repeating: GridItem(spacing: 10), count: 4), spacing: 10) {
-                                ForEach(group.contacts) { contact in
-                                    NavigationLink {
-                                        ContactDetailsView(contact: contact)
-                                    } label: {
-                                        
-                                        GeometryReader {
-                                            let size = $0.size
-                                            ZStack{
-                                                Image(uiImage: UIImage(data: contact.photo) ?? UIImage())
-                                                    .resizable()
-                                                    .aspectRatio(contentMode: .fill)
-                                                    .frame(width: size.width, height: size.height)
-                                                    .clipped()
-                                                    .background(Color(uiColor: .secondarySystemGroupedBackground))
-                                                
-                                                VStack {
-                                                    Spacer()
-                                                    Text(contact.name ?? "")
-                                                        .font(.footnote)
-                                                        .bold()
-                                                        .foregroundColor(.white)
-                                                        .padding(.bottom, 6)
-                                                        .padding(.horizontal, 6)
-                                                        .multilineTextAlignment(.center)
-                                                        .lineSpacing(-2)
+                ScrollView(showsIndicators: false){
+                    VStack{
+                        ForEach(groups) { group in
+                            Section{
+                                HStack{
+                                    Text(group.title)
+                                        .font(.headline)
+                                    Spacer()
+                                }
+                                .padding(.horizontal)
+                                LazyVGrid(columns: Array(repeating: GridItem(spacing: 10), count: 4), spacing: 10) {
+                                    ForEach(group.contacts) { contact in
+                                        NavigationLink {
+                                            ContactDetailsView(contact: contact)
+                                        } label: {
+                                            
+                                            GeometryReader {
+                                                let size = $0.size
+                                                ZStack{
+                                                    Image(uiImage: UIImage(data: contact.photo) ?? UIImage())
+                                                        .resizable()
+                                                        .aspectRatio(contentMode: .fill)
+                                                        .frame(width: size.width, height: size.height)
+                                                        .clipped()
+                                                        .background(Color(uiColor: .secondarySystemGroupedBackground))
+                                                    
+                                                    VStack {
+                                                        Spacer()
+                                                        Text(contact.name ?? "")
+                                                            .font(.footnote)
+                                                            .bold()
+                                                            .foregroundColor(Color(uiColor: .label))
+                                                            .padding(.bottom, 6)
+                                                            .padding(.horizontal, 6)
+                                                            .multilineTextAlignment(.center)
+                                                            .lineSpacing(-2)
+                                                    }
                                                 }
                                             }
+                                            .frame(height: 88)
+                                            .contentShape(.rect)
+                                            .clipShape(RoundedRectangle(cornerRadius: 10))
                                         }
-                                        .frame(height: 88)
-                                        .contentShape(.rect)
-                                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                                    }
                                         
-//                                        RoundedRectangle(cornerRadius: 6)
-//                                            .aspectRatio(contentMode: .fit)
-//                                            .background(Color(uiColor: .red))
-//                                            .overlay {
-//                                                ZStack {
-//                                                    Image(uiImage: UIImage(data: contact.photo) ?? UIImage())
-//                                                        .resizable()
-//                                                        .scaledToFill()
-//                                                    LinearGradient(gradient: Gradient(colors: [.black.opacity(0.0), .black.opacity(0.0), .black.opacity(0.6)]), startPoint: .top, endPoint: .bottom)
-//                                                }
-//                                            }
-//                                            .overlay {
-//                                                VStack {
-//                                                    Spacer()
-//                                                    Text(contact.name ?? "")
-//                                                        .font(.footnote)
-//                                                        .bold()
-//                                                        .foregroundColor(.white)
-//                                                        .padding(.bottom, 6)
-//                                                        .padding(.horizontal, 6)
-//                                                        .multilineTextAlignment(.center)
-//                                                        .lineSpacing(-2)
-//                                                }
-//                                            }
-//                                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-//                                    }
+                                        //                                        RoundedRectangle(cornerRadius: 6)
+                                        //                                            .aspectRatio(contentMode: .fit)
+                                        //                                            .background(Color(uiColor: .red))
+                                        //                                            .overlay {
+                                        //                                                ZStack {
+                                        //                                                    Image(uiImage: UIImage(data: contact.photo) ?? UIImage())
+                                        //                                                        .resizable()
+                                        //                                                        .scaledToFill()
+                                        //                                                    LinearGradient(gradient: Gradient(colors: [.black.opacity(0.0), .black.opacity(0.0), .black.opacity(0.6)]), startPoint: .top, endPoint: .bottom)
+                                        //                                                }
+                                        //                                            }
+                                        //                                            .overlay {
+                                        //                                                VStack {
+                                        //                                                    Spacer()
+                                        //                                                    Text(contact.name ?? "")
+                                        //                                                        .font(.footnote)
+                                        //                                                        .bold()
+                                        //                                                        .foregroundColor(.white)
+                                        //                                                        .padding(.bottom, 6)
+                                        //                                                        .padding(.horizontal, 6)
+                                        //                                                        .multilineTextAlignment(.center)
+                                        //                                                        .lineSpacing(-2)
+                                        //                                                }
+                                        //                                            }
+                                        //                                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                        //                                    }
+                                    }
                                 }
+                                .padding(.horizontal)
                             }
-                            .padding(.horizontal)
                         }
                     }
+                    //drag gesture data
+                    .background(
+                                        GeometryReader { geo in
+                                            Color.clear
+                                                .onAppear {
+                                                    // Detect if content is at the bottom
+                                                    isAtBottom = geo.frame(in: .global).maxY <= UIScreen.main.bounds.height
+                                                }
+                                                .onChange(of: geo.frame(in: .global)) { newFrame in
+                                                    isAtBottom = newFrame.maxY <= UIScreen.main.bounds.height
+                                                    print(isAtBottom)
+                                                }
+                                        }
+                                    )
                     .rotationEffect(.degrees(180))
+                    
                     //                ForEach(dates){ date in
                     //                    Section {
                     //                        Text(date.date.formatted(date: .long, time: .omitted))
@@ -140,6 +170,22 @@ struct ContentView: View {
                     proxy.scrollTo(contacts.last?.id) //When the count changes scroll to latest message
                 }
             }
+            // Drag Gesture
+            .gesture(
+                        DragGesture()
+                            .onChanged { value in
+                                print(value.translation.height)
+                                if value.translation.height < -dragThreshold {
+                                    fieldIsFocused = true
+                                }
+                            }
+                            .onEnded { _ in
+                                if fieldIsFocused {
+                                    // Reset or handle drag logic here
+                                    fieldIsFocused = false
+                                }
+                            }
+                    )
             .safeAreaInset(edge: .bottom) {
                 VStack{
                     
@@ -163,42 +209,60 @@ struct ContentView: View {
                     .background(Color(uiColor: .secondarySystemGroupedBackground))
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                     .padding(.bottom, 12)
+                    .padding(.horizontal)
                     
-                    HStack{
-                        Image(systemName: "camera.fill")
-                            .font(.system(size: 18))
-                            .padding(13)
-                            .foregroundColor(.blue)
-                            .background(Color(uiColor: .tertiarySystemGroupedBackground))
-                            .clipShape(Circle())
-                            .onTapGesture { showPhotosPicker = true }
                     
-                        TextField("", text: $text, axis: .vertical)
-                            .padding(.horizontal,16)
-                            .padding(.vertical,8)
-                            .background(Color(uiColor: .secondarySystemGroupedBackground))
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
-                            .onChange(of: text){ oldValue, newValue in
-                                if let last = newValue.last, last == "\n" {
-                                              text.removeLast()
-                                              // do your submit logic here?
-                                    saveContacts(modelContext: modelContext)
-                                } else {
-                                    parseContacts()
-                                }
-                               
-                                
-                            }
-                            .submitLabel(.send)
+                    VStack{
+                        HStack{
+                            Image(systemName: "camera.fill")
+                                .font(.system(size: 18))
+                                .padding(13)
+                                .foregroundColor(.blue)
+                                .background(Color(uiColor: .tertiarySystemGroupedBackground))
+                                .clipShape(Circle())
+                                .onTapGesture { showPhotosPicker = true }
                             
-                    }
-                    .padding(.bottom, 8)
-                    
-                    DatePicker(selection: $date, in: ...Date(), displayedComponents: .date){}
+                            TextField("", text: $text, axis: .vertical)
+                                .padding(.horizontal,16)
+                                .padding(.vertical,8)
+                                .background(Color(uiColor: .secondarySystemGroupedBackground))
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                                .onChange(of: text){ oldValue, newValue in
+                                    if let last = newValue.last, last == "\n" {
+                                        text.removeLast()
+                                        // do your submit logic here?
+                                        saveContacts(modelContext: modelContext)
+                                    } else {
+                                        parseContacts()
+                                    }
+                                    
+                                    
+                                }
+                                .focused($fieldIsFocused)
+                                .submitLabel(.send)
+                            
+                        }
+                        .padding(.top, 8)
+                        .padding(.bottom, 8)
                         .padding(.horizontal)
+                        
+//                        DatePicker(selection: $date, in: ...Date(), displayedComponents: .date){}
+//                            .padding(.horizontal)
+                        
+                        HStack{
+                            Spacer()
+                            Button("Done") {
+                                fieldIsFocused = false
+                            }
+                            .padding()
+                        }
+                    }
+                    .background(dynamicBackground)
                 }
-                .padding(.horizontal)
-                .padding(.bottom, 8)
+                
+                
+                
+                
             }
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -858,9 +922,7 @@ func ??<T>(lhs: Binding<Optional<T>>, rhs: T) -> Binding<T> {
 }
 
 #Preview("List") {
-    ModelContainerPreview(ModelContainer.sample) {
         ContentView().modelContainer(for: Contact.self, inMemory: true)
-    }
 }
 
 #Preview("Contact Detail") {
