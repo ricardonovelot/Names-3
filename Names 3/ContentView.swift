@@ -81,13 +81,25 @@ struct ContentView: View {
             ScrollViewReader { proxy in
                 ScrollView(showsIndicators: false){
                         ForEach(groups) { group in
+                            
+                            // Can this section be inside the LazyVGrid? does that improve optimization or are we still getting it from scrollview?
                             Section{
-                                HStack{
-                                    Text(group.title)
-                                        .font(.headline)
-                                    Spacer()
+                                VStack(alignment: .leading){
+                                    HStack{
+                                        Text(group.title)
+                                            .font(.title)
+                                            .bold()
+                                        Spacer()
+                                    }
+                                        .padding(.leading)
+                                        .padding(.trailing, 14)
+                                    Text(group.subtitle)
+                                        .font(.subheadline)
+                                        .foregroundColor(.secondary)
+                                        .padding(.horizontal)
                                 }
-                                .padding(.horizontal)
+                                .padding(.bottom, 4)
+                                
                                 LazyVGrid(columns: Array(repeating: GridItem(spacing: 10), count: 4), spacing: 10) {
                                     ForEach(group.contacts) { contact in
                                         NavigationLink {
@@ -136,6 +148,32 @@ struct ContentView: View {
                     proxy.scrollTo(contacts.last?.id) //When the count changes scroll to latest message
                 }
             }
+            .safeAreaInset(edge: .top){
+                ZStack(alignment: .top) {
+                    LinearGradient(
+                        gradient: Gradient(stops: [
+                            .init(color: Color(UIColor.systemBackground).opacity(0.0), location: 0.0),
+                            .init(color: Color(UIColor.systemBackground).opacity(0.3), location: 0.85)
+                        ]),
+                        startPoint: .top,
+                        endPoint: UnitPoint(x: 0.5, y: 0.85) // Customizable endpoint
+                    )
+//  Extension needed
+//                    SmoothLinearGradient(
+//                        from: Color(UIColor.systemBackground).opacity(0.0),
+//                        to: Color(UIColor.systemBackground).opacity(0.3),
+//                        startPoint: .top,
+//                        endPoint: UnitPoint(x: 0.5, y: 0.85),
+//                        curve: .easeInOut
+//                    )
+                    .ignoresSafeArea(.all)
+                    .frame(height: 100)
+                    //TransparentBlurUIView(removeAllFilters: true)
+                    .ignoresSafeArea(.all)
+                    .frame(height: 60)
+                }
+                .frame(height: 60)
+            }
             .safeAreaInset(edge: .bottom) {
                 HStack(spacing: 0){
                     Image(systemName: "camera.fill")
@@ -170,16 +208,6 @@ struct ContentView: View {
                 .padding(.bottom, 8)
                 .padding(.horizontal)
                 .background(dynamicBackground)
-            }
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    EditButton()
-                }
-                ToolbarItem {
-                    Button(action: addItem) {
-                        Label("Add Item", systemImage: "plus")
-                    }
-                }
             }
             .background(Color(uiColor: .systemGroupedBackground))
         }
