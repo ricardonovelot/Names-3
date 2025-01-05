@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		98812BB32D2B36CD00D125BE /* SmoothGradient in Frameworks */ = {isa = PBXBuildFile; productRef = 98812BB22D2B36CD00D125BE /* SmoothGradient */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		8C5BEF2A2CBCF6D8007D0D5E /* Names 3.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Names 3.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -36,6 +40,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				98812BB32D2B36CD00D125BE /* SmoothGradient in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -78,6 +83,7 @@
 			);
 			name = "Names 3";
 			packageProductDependencies = (
+				98812BB22D2B36CD00D125BE /* SmoothGradient */,
 			);
 			productName = "Names 3";
 			productReference = 8C5BEF2A2CBCF6D8007D0D5E /* Names 3.app */;
@@ -108,6 +114,7 @@
 			mainGroup = 8C5BEF212CBCF6D8007D0D5E;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				98812BB12D2B36CD00D125BE /* XCRemoteSwiftPackageReference "SmoothGradient" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 8C5BEF2B2CBCF6D8007D0D5E /* Products */;
@@ -347,6 +354,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		98812BB12D2B36CD00D125BE /* XCRemoteSwiftPackageReference "SmoothGradient" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/raymondjavaxx/SmoothGradient.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		98812BB22D2B36CD00D125BE /* SmoothGradient */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 98812BB12D2B36CD00D125BE /* XCRemoteSwiftPackageReference "SmoothGradient" */;
+			productName = SmoothGradient;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 8C5BEF222CBCF6D8007D0D5E /* Project object */;
 }

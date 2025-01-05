@@ -8,6 +8,7 @@
 import SwiftUI
 import SwiftData
 import PhotosUI
+import SmoothGradient
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
@@ -15,6 +16,20 @@ struct ContentView: View {
     
     @Query private var contacts: [Contact]
     @State private var parsedContacts: [Contact] = []
+    
+    @State private var selectedItem: PhotosPickerItem?
+    
+    @State private var isAtBottom = false
+    private let dragThreshold: CGFloat = 100
+    @FocusState private var fieldIsFocused: Bool
+    
+    @State private var text = ""
+    @State private var date = Date()
+
+    @State private var showPhotosPicker = false
+    
+    @State private var name = ""
+    @State private var hashtag = ""
     
     // Group contacts by the day of their timestamp, AI
     var groups: [contactsGroup] {
@@ -47,17 +62,7 @@ struct ContentView: View {
         .sorted { $0.date < $1.date } // Sort groups by date
     }
     
-    @State private var isAtBottom = false
-    private let dragThreshold: CGFloat = 100
-    @FocusState private var fieldIsFocused: Bool
     
-    @State private var text = ""
-    @State private var date = Date()
-
-    @State private var showPhotosPicker = false
-    
-    @State private var name = ""
-    @State private var hashtag = ""
     
     var dynamicBackground: Color {
         if fieldIsFocused {
@@ -115,12 +120,17 @@ struct ContentView: View {
                                                         .clipped()
                                                         .background(Color(uiColor: .secondarySystemGroupedBackground))
                                                     
+                                                    if !contact.photo.isEmpty {
+                                                        LinearGradient(gradient: Gradient(colors: [.black.opacity(0.0), .black.opacity(0.0), .black.opacity(0.6)]), startPoint: .top, endPoint: .bottom)
+                                                    }
+                                                    
                                                     VStack {
                                                         Spacer()
                                                         Text(contact.name ?? "")
                                                             .font(.footnote)
                                                             .bold()
-                                                            .foregroundColor(Color(uiColor: .label))
+                                                            .foregroundColor( contact.photo.isEmpty ? Color(uiColor: .label).opacity(0.8) : Color(uiColor: .white).opacity(0.8)
+                                                            )
                                                             .padding(.bottom, 6)
                                                             .padding(.horizontal, 6)
                                                             .multilineTextAlignment(.center)
@@ -134,7 +144,33 @@ struct ContentView: View {
                                         }
                                     }
                                     ForEach(group.parsedContacts) { contact in
-                                        Text(contact.name ?? "")
+                                        GeometryReader {
+                                            let size = $0.size
+                                            ZStack{
+                                                Image(uiImage: UIImage(data: contact.photo) ?? UIImage())
+                                                    .resizable()
+                                                    .aspectRatio(contentMode: .fill)
+                                                    .frame(width: size.width, height: size.height)
+                                                    .clipped()
+                                                    .background(Color(uiColor: .black).opacity(0.05))
+                                                
+                                                VStack {
+                                                    Spacer()
+                                                    Text(contact.name ?? "")
+                                                        .font(.footnote)
+                                                        .bold()
+                                                        .foregroundColor(UIImage(data: contact.photo) != UIImage() ? Color(uiColor: .label).opacity(0.8) : Color(uiColor: .white).opacity(0.8)
+                                                        )
+                                                        .padding(.bottom, 6)
+                                                        .padding(.horizontal, 6)
+                                                        .multilineTextAlignment(.center)
+                                                        .lineSpacing(-2)
+                                                }
+                                            }
+                                        }
+                                        .frame(height: 88)
+                                        .contentShape(.rect)
+                                        .clipShape(RoundedRectangle(cornerRadius: 10))
                                     }
                                 }
                                 .padding(.horizontal)
@@ -150,43 +186,48 @@ struct ContentView: View {
             }
             .safeAreaInset(edge: .top){
                 ZStack(alignment: .top) {
-                    LinearGradient(
-                        gradient: Gradient(stops: [
-                            .init(color: Color(UIColor.systemBackground).opacity(0.0), location: 0.0),
-                            .init(color: Color(UIColor.systemBackground).opacity(0.3), location: 0.85)
-                        ]),
-                        startPoint: .top,
-                        endPoint: UnitPoint(x: 0.5, y: 0.85) // Customizable endpoint
+                    SmoothLinearGradient(
+                        from: Color(red: 0.0, green: 0.0, blue: 0.04).opacity(0.62),
+                        to: Color(red: 0.0, green: 0.0, blue: 0.04).opacity(0.0),
+                        startPoint: UnitPoint(x: 0.5, y: 0.18),
+                        endPoint: .bottom,
+                        curve: .easeInOut
                     )
-//  Extension needed
-//                    SmoothLinearGradient(
-//                        from: Color(UIColor.systemBackground).opacity(0.0),
-//                        to: Color(UIColor.systemBackground).opacity(0.3),
-//                        startPoint: .top,
-//                        endPoint: UnitPoint(x: 0.5, y: 0.85),
-//                        curve: .easeInOut
-//                    )
                     .ignoresSafeArea(.all)
                     .frame(height: 100)
-                    //TransparentBlurUIView(removeAllFilters: true)
-                    .ignoresSafeArea(.all)
-                    .frame(height: 60)
+//                    TransparentBlurUIView(removeAllFilters: true)
+//                    .ignoresSafeArea(.all)
+//                    .frame(height: 165)
                 }
-                .frame(height: 60)
+                .frame(height: 70)
             }
+            
             .safeAreaInset(edge: .bottom) {
-                HStack(spacing: 0){
-                    Image(systemName: "camera.fill")
-                        .font(.system(size: 18))
-                        .padding(13)
-                        .foregroundColor(.blue)
-                        .background(Color(uiColor: .tertiarySystemGroupedBackground))
-                        .clipShape(Circle())
-                        .onTapGesture { showPhotosPicker = true }
+                HStack(spacing: 4){
                     
                     DatePicker(selection: $date, in: ...Date(), displayedComponents: .date){}
                         .labelsHidden()
-                        .padding(.trailing)
+                    
+                    Button{
+                        showPhotosPicker = true
+                    } label:{
+                        Image(systemName: "camera")
+                            .foregroundStyle(.white)
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .padding(10)
+                            .background(
+                                LinearGradient(
+                                    gradient: Gradient(
+                                        colors:
+                                            [.black.opacity(0.1),
+                                             .black.opacity(0.2)
+                                            ]),
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing))
+                            .background(.thickMaterial)
+                            .clipShape(Circle())
+                    }
                     
                     TextField("", text: $text, axis: .vertical)
                         .padding(.horizontal,16)
@@ -210,6 +251,39 @@ struct ContentView: View {
                 .background(dynamicBackground)
             }
             .background(Color(uiColor: .systemGroupedBackground))
+            
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Text("Names")
+                        .font(.system(size: 32, weight: .heavy))
+                        .foregroundColor(.white)
+                        .padding(.leading)
+                }
+                ToolbarItemGroup(placement: .navigationBarTrailing) {
+                    Menu {
+//                        NavigationLink(destination: DeletedItemsView()) {
+//                            Label("Recently Deleted", systemImage: "trash")
+//                        }
+                        Button(action: {
+                            //contentViewModel.saveAndExportCSV(context: viewContext)
+                        }) {
+                            Label("Export CSV", systemImage: "square.and.arrow.up")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .foregroundColor(.white)
+                            .font(.subheadline)
+                            .padding(6)
+                            .background(Color.black.opacity(0.05))
+                            .background(.ultraThinMaterial)
+                            .clipShape(Circle())
+                            .padding(.trailing, 12)
+                    }
+                }
+            }
+            .toolbarBackground(.hidden)
+            
+            .photosPicker(isPresented: $showPhotosPicker, selection: $selectedItem, matching: .images)
         }
         
     }
@@ -368,7 +442,6 @@ struct ContactDetailsView: View {
                                 .lineLimit(4)
                                 .foregroundColor(image != UIImage() ? .white : .primary )
                                 
-                                //HStack{
                                 Image(systemName: "camera")
                                     .font(.system(size: 18))
                                     .padding(12)
