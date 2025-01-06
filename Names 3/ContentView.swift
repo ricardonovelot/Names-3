@@ -8,6 +8,7 @@
 import SwiftUI
 import SwiftData
 import PhotosUI
+import Vision
 import SmoothGradient
 
 struct ContentView: View {
@@ -310,19 +311,41 @@ struct ContentView: View {
         // Now parse each contact entry, attaching the global tags to each
         for entry in nameEntries {
             var nameComponents: [String] = []
+            var notes: [Note] = []
+            var summary: String? = nil
             
-            // Split each entry by spaces to find words (ignore hashtags here as they’re in globalTags)
-            let words = entry.split(separator: " ").map { String($0) }
-            
-            for word in words {
-                if !word.starts(with: "#") {
-                    nameComponents.append(word)
+            // Check for a summary (indicated by '::')
+            if entry.contains("::") {
+                let parts = entry.split(separator: "::", maxSplits: 1)
+                if parts.count == 2 {
+                    nameComponents = parts[0].split(separator: ",").map { String($0.trimmingCharacters(in: .whitespaces)) }
+                    summary = String(parts[1].trimmingCharacters(in: .whitespaces))
+                } else {
+                    nameComponents = parts[0].split(separator: ",").map { String($0.trimmingCharacters(in: .whitespaces)) }
                 }
+            } else {
+                nameComponents = entry.split(separator: ",").map { String($0.trimmingCharacters(in: .whitespaces)) }
             }
             
-            let name = nameComponents.joined(separator: " ")
+            var name = nameComponents.joined(separator: " ")
+            
             if !name.isEmpty {
-                let contact = Contact(name: name, timestamp: date, notes: [], tags: globalTags, photo: Data())
+                // Check for notes (indicated by ':')
+                if let notePart = nameComponents.last, notePart.contains(":") {
+                    // Split at the first colon to separate the name from the note
+                    let nameAndNote = notePart.split(separator: ":", maxSplits: 1)
+                    if nameAndNote.count == 2 {
+                        name = nameAndNote[0].trimmingCharacters(in: .whitespaces)
+                        let noteContent = nameAndNote[1].trimmingCharacters(in: .whitespaces)
+                        if !noteContent.isEmpty {
+                            let note = Note(content: noteContent, creationDate: date)
+                            notes.append(note)
+                        }
+                    }
+                }
+                
+                let contact = Contact(name: name, timestamp: date, notes: notes, tags: globalTags, photo: Data())
+                contact.summary = summary
                 contacts.append(contact)
             }
         }
