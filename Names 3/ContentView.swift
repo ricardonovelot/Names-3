@@ -205,10 +205,6 @@ struct ContentView: View {
             
             .safeAreaInset(edge: .bottom) {
                 HStack(spacing: 4){
-                    
-                    DatePicker(selection: $date, in: ...Date(), displayedComponents: .date){}
-                        .labelsHidden()
-                    
                     Button{
                         showPhotosPicker = true
                     } label:{
@@ -259,6 +255,11 @@ struct ContentView: View {
                         .font(.system(size: 32, weight: .heavy))
                         .foregroundColor(.white)
                         .padding(.leading)
+                    
+                    
+                    DatePicker(selection: $date, in: ...Date(), displayedComponents: .date){}
+                        .labelsHidden()
+                    
                 }
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
                     Menu {
@@ -288,17 +289,40 @@ struct ContentView: View {
         }
         
     }
-    
+
     private func parseContacts() {
         let input = text
+        // Create an NSDataDetector for dates
+        let dateDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.date.rawValue)
+        var detectedDate: Date? = nil
+        var cleanedInput = input
+
+        // Detect the first date in the text
+        if let matches = dateDetector?.matches(in: input, options: [], range: NSRange(location: 0, length: input.utf16.count)) {
+            for match in matches {
+                if match.resultType == .date, let date = match.date {
+                    detectedDate = adjustToPast(date)
+                    // Remove the date text from the input
+                    if let range = Range(match.range, in: input) {
+                        cleanedInput.removeSubrange(range)
+                    }
+                    break
+                }
+            }
+        }
+
+        // Use a default date if no date is found
+        let fallbackDate = Date() // Current date as fallback
+        let finalDate = detectedDate ?? fallbackDate
+
         // Split the input by commas for each contact entry
-        let nameEntries = input.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        let nameEntries = cleanedInput.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
         
         var contacts: [Contact] = []
         var globalTags: [Tag] = []
         
         // First, find all unique hashtags across the entire input
-        let allWords = input.split(separator: " ").map { String($0) }
+        let allWords = cleanedInput.split(separator: " ").map { String($0) }
         for word in allWords {
             if word.starts(with: "#") {
                 let tagName = word.dropFirst().trimmingCharacters(in: .punctuationCharacters)
@@ -308,12 +332,17 @@ struct ContentView: View {
             }
         }
         
-        // Now parse each contact entry, attaching the global tags to each
+        // Parse each contact entry
         for entry in nameEntries {
+            // Skip any entry that starts with `#` (already detected as a tag)
+            if entry.starts(with: "#") {
+                continue
+            }
+
             var nameComponents: [String] = []
             var notes: [Note] = []
             var summary: String? = nil
-            
+
             // Check for a summary (indicated by '::')
             if entry.contains("::") {
                 let parts = entry.split(separator: "::", maxSplits: 1)
@@ -332,25 +361,45 @@ struct ContentView: View {
             if !name.isEmpty {
                 // Check for notes (indicated by ':')
                 if let notePart = nameComponents.last, notePart.contains(":") {
-                    // Split at the first colon to separate the name from the note
                     let nameAndNote = notePart.split(separator: ":", maxSplits: 1)
                     if nameAndNote.count == 2 {
                         name = nameAndNote[0].trimmingCharacters(in: .whitespaces)
                         let noteContent = nameAndNote[1].trimmingCharacters(in: .whitespaces)
                         if !noteContent.isEmpty {
-                            let note = Note(content: noteContent, creationDate: date)
+                            let note = Note(content: noteContent, creationDate: finalDate)
                             notes.append(note)
                         }
+                    } else {
+                        name = nameAndNote[0].trimmingCharacters(in: .whitespaces)
                     }
                 }
                 
-                let contact = Contact(name: name, timestamp: date, notes: notes, tags: globalTags, photo: Data())
+                // Remove any trailing colons from the name
+                if name.hasSuffix(":") {
+                    name = String(name.dropLast())
+                }
+                
+                let contact = Contact(name: name, timestamp: finalDate, notes: notes, tags: globalTags, photo: Data())
                 contact.summary = summary
                 contacts.append(contact)
             }
         }
         
         parsedContacts = contacts
+    }
+
+    // Adjust dates to ensure they are in the past
+    private func adjustToPast(_ date: Date) -> Date {
+        let today = Date()
+        let calendar = Calendar.current
+
+        if date > today {
+            // If the date is in the future, subtract one year
+            let adjustedDate = calendar.date(byAdding: .year, value: -1, to: date)
+            return adjustedDate ?? date
+        }
+
+        return date
     }
     
     // Function to save parsed contacts
