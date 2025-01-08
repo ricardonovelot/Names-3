@@ -32,6 +32,9 @@ struct ContentView: View {
     @State private var name = ""
     @State private var hashtag = ""
     
+    @State private var filterString = ""
+    @State private var suggestedContacts: [Contact] = []
+    
     // Group contacts by the day of their timestamp, AI
     var groups: [contactsGroup] {
         let calendar = Calendar.current
@@ -142,9 +145,14 @@ struct ContentView: View {
                                             .frame(height: 88)
                                             .contentShape(.rect)
                                             .clipShape(RoundedRectangle(cornerRadius: 10))
+                                            .scrollTransition { content, phase in
+                                                content
+                                                    .opacity(phase.isIdentity ? 1 : 0.3)
+                                                    .scaleEffect(phase.isIdentity ? 1 : 0.9)
+                                            }
                                         }
                                     }
-                                    ForEach(group.parsedContacts) { contact in
+                                    ForEach(group.parsedContacts, id: \.self) { contact in
                                         GeometryReader {
                                             let size = $0.size
                                             ZStack{
@@ -169,14 +177,20 @@ struct ContentView: View {
                                                 }
                                             }
                                         }
+                                        
                                         .frame(height: 88)
                                         .contentShape(.rect)
                                         .clipShape(RoundedRectangle(cornerRadius: 10))
+                                        
                                     }
+                                    
+                                    
                                 }
                                 .padding(.horizontal)
                             }
+                            
                         }
+                        
                 }
                 // ScrollView modifiers
                 .defaultScrollAnchor(.bottom)
@@ -204,44 +218,55 @@ struct ContentView: View {
             }
             
             .safeAreaInset(edge: .bottom) {
-                HStack(spacing: 4){
-                    Button{
-                        showPhotosPicker = true
-                    } label:{
-                        Image(systemName: "camera")
-                            .foregroundStyle(.white)
-                            .font(.subheadline)
-                            .fontWeight(.medium)
-                            .padding(10)
-                            .background(
-                                LinearGradient(
-                                    gradient: Gradient(
-                                        colors:
-                                            [.black.opacity(0.1),
-                                             .black.opacity(0.2)
-                                            ]),
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing))
-                            .background(.thickMaterial)
-                            .clipShape(Circle())
+                VStack{
+                    HStack(spacing: 4){
+                        Button{
+                            showPhotosPicker = true
+                        } label:{
+                            Image(systemName: "camera")
+                                .foregroundStyle(.white)
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                                .padding(10)
+                                .background(
+                                    LinearGradient(
+                                        gradient: Gradient(
+                                            colors:
+                                                [.black.opacity(0.1),
+                                                 .black.opacity(0.2)
+                                                ]),
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing))
+                                .background(.thickMaterial)
+                                .clipShape(Circle())
+                        }
+                        
+                        TextField("", text: $text, axis: .vertical)
+                            .padding(.horizontal,16)
+                            .padding(.vertical,8)
+                            .background(Color(uiColor: .secondarySystemGroupedBackground))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .onChange(of: text){ oldValue, newValue in
+                                if let last = newValue.last, last == "\n" {
+                                    text.removeLast()
+                                    saveContacts(modelContext: modelContext)
+                                } else {
+                                    parseContacts()
+                                }
+                            }
+                            .focused($fieldIsFocused)
+                            .submitLabel(.send)
+                        
                     }
                     
-                    TextField("", text: $text, axis: .vertical)
-                        .padding(.horizontal,16)
-                        .padding(.vertical,8)
-                        .background(Color(uiColor: .secondarySystemGroupedBackground))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                        .onChange(of: text){ oldValue, newValue in
-                            if let last = newValue.last, last == "\n" {
-                                text.removeLast()
-                                saveContacts(modelContext: modelContext)
-                            } else {
-                                parseContacts()
+                    ScrollView(.horizontal){
+                        HStack{
+                            ForEach(suggestedContacts){ contact in
+                                Text(contact.name!)
                             }
                         }
-                        .focused($fieldIsFocused)
-                        .submitLabel(.send)
-                    
+                    }
+                    .frame(height: 20)
                 }
                 .padding(.bottom, 8)
                 .padding(.horizontal)
@@ -290,6 +315,7 @@ struct ContentView: View {
         
     }
 
+
     private func parseContacts() {
         let input = text
         // Create an NSDataDetector for dates
@@ -320,7 +346,7 @@ struct ContentView: View {
         
         var contacts: [Contact] = []
         var globalTags: [Tag] = []
-        
+
         // First, find all unique hashtags across the entire input
         let allWords = cleanedInput.split(separator: " ").map { String($0) }
         for word in allWords {
@@ -334,9 +360,8 @@ struct ContentView: View {
         
         // Parse each contact entry
         for entry in nameEntries {
-            // Skip any entry that starts with `#` (already detected as a tag)
             if entry.starts(with: "#") {
-                continue
+                continue // Skip hashtags as names
             }
 
             var nameComponents: [String] = []
@@ -359,6 +384,10 @@ struct ContentView: View {
             var name = nameComponents.joined(separator: " ")
             
             if !name.isEmpty {
+                
+                filterString = name
+                filterContacts()
+
                 // Check for notes (indicated by ':')
                 if let notePart = nameComponents.last, notePart.contains(":") {
                     let nameAndNote = notePart.split(separator: ":", maxSplits: 1)
@@ -384,9 +413,21 @@ struct ContentView: View {
                 contacts.append(contact)
             }
         }
-        
         parsedContacts = contacts
     }
+    
+    private func filterContacts() {
+            if filterString.isEmpty {
+                suggestedContacts = contacts
+            } else {
+                suggestedContacts = contacts.filter { contact in
+                    if let name = contact.name {
+                        return name.starts(with: filterString)
+                    }
+                    return false
+                }
+            }
+        }
 
     // Adjust dates to ensure they are in the past
     private func adjustToPast(_ date: Date) -> Date {
