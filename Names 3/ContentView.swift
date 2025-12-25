@@ -48,6 +48,7 @@ struct ContentView: View {
     @State private var pickedImageForBatch: UIImage?
     @State private var photosPickerDay = Date()
     @State private var groupForDateEdit: contactsGroup?
+    @State private var isLoading = false
 
     // Group contacts by the day of their timestamp, with a special "Met long ago" group at the top
     var groups: [contactsGroup] {
@@ -132,15 +133,16 @@ struct ContentView: View {
                                     .font(.subheadline)
                                     .foregroundColor(.secondary)
                                     .padding(.horizontal)
-                                    .contentShape(Rectangle())
-                                    .onTapGesture {
-                                        if !group.isLongAgo {
-                                            selectedGroup = group
-                                            tempGroupDate = group.date
-                                        }
-                                    }
                             }
                             .padding(.bottom, 4)
+                            .contentShape(Rectangle())
+                                                                  .onTapGesture {
+                                                                      if !group.isLongAgo {
+                                                                          selectedGroup = group
+                                                                          tempGroupDate = group.date
+                                                                      }
+                                                                  }
+
                             
                             LazyVGrid(columns: Array(repeating: GridItem(spacing: 10), count: 4), spacing: 10) {
                                 ForEach(group.contacts) { contact in
@@ -342,6 +344,11 @@ struct ContentView: View {
                 .background(dynamicBackground)
             }
             .background(Color(uiColor: .systemGroupedBackground))
+            .overlay {
+                if isLoading {
+                    LoadingOverlay(message: "Loading…")
+                }
+            }
             
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -403,7 +410,6 @@ struct ContentView: View {
                 GroupActionsSheet(
                     date: group.date,
                     onImport: {
-                        // Dismiss actions, then show the photos day picker with captured date
                         let day = group.date
                         selectedGroup = nil
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
@@ -412,7 +418,6 @@ struct ContentView: View {
                         }
                     },
                     onEditDate: {
-                        // Dismiss actions, then open the date picker for this group
                         groupForDateEdit = group
                         selectedGroup = nil
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
@@ -425,8 +430,9 @@ struct ContentView: View {
                 .presentationDragIndicator(.visible)
             }
             // Day-filtered photos picker
+            // Use a host that overlays a spinner until content is ready to render
             .sheet(isPresented: $showPhotosDayPicker) {
-                PhotosDayPickerView(day: photosPickerDay) { image in
+                PhotosDayPickerHost(day: photosPickerDay) { image in
                     pickedImageForBatch = image
                     showPhotosDayPicker = false
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
@@ -586,6 +592,9 @@ struct ContentView: View {
     }
     
     func saveContacts(modelContext: ModelContext) {
+        isLoading = true
+        defer { isLoading = false }
+
         for contact in parsedContacts {
             modelContext.insert(contact)
         }
@@ -670,6 +679,7 @@ struct ContactDetailsView: View {
     @State private var showDatePicker = false
     @State private var showTagPicker = false
     @State private var showCropView = false
+    @State private var isLoading = false
     
     @Query private var notes: [Note]
     
@@ -921,7 +931,13 @@ struct ContactDetailsView: View {
                     }
                 }
             }
+            .overlay {
+                if isLoading {
+                    LoadingOverlay(message: "Processing photo…")
+                }
+            }
             .onChange(of: selectedItem) {
+                isLoading = true
                 Task {
                     if let loaded = try? await selectedItem?.loadTransferable(type: Data.self) {
                         contact.photo = loaded
@@ -934,6 +950,7 @@ struct ContactDetailsView: View {
                     } else {
                         print("Failed")
                     }
+                    isLoading = false
                 }
             }
     }
@@ -1125,51 +1142,71 @@ private struct GroupActionsSheet: View {
     let date: Date
     let onImport: () -> Void
     let onEditDate: () -> Void
+    @State private var isBusy = false
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 16) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(date, style: .date)
-                        .font(.title3.weight(.semibold))
-                    Text(relativeString(for: date))
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                Button {
-                    onImport()
-                } label: {
-                    HStack {
-                        Image(systemName: "photo.on.rectangle.angled")
-                        Text("Import photos for this day")
-                            .fontWeight(.semibold)
-                        Spacer()
+            ZStack {
+                VStack(spacing: 16) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(date, style: .date)
+                            .font(.title3.weight(.semibold))
+                        Text(relativeString(for: date))
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
                     }
-                    .padding()
-                    .background(Color(UIColor.secondarySystemGroupedBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                }
-                .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                Button {
-                    onEditDate()
-                } label: {
-                    HStack {
-                        Image(systemName: "calendar.badge.clock")
-                        Text("Edit date")
-                        Spacer()
+                    Button {
+                        isBusy = true
+                        onImport()
+                    } label: {
+                        HStack {
+                            Image(systemName: "photo.on.rectangle.angled")
+                            Text("Import photos for this day")
+                                .fontWeight(.semibold)
+                            Spacer()
+                        }
+                        .padding()
+                        .background(Color(UIColor.secondarySystemGroupedBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
-                    .padding()
-                    .background(Color(UIColor.secondarySystemGroupedBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                }
-                .buttonStyle(.plain)
+                    .buttonStyle(.plain)
 
-                Spacer(minLength: 8)
+                    Button {
+                        isBusy = true
+                        onEditDate()
+                    } label: {
+                        HStack {
+                            Image(systemName: "calendar.badge.clock")
+                            Text("Edit date")
+                            Spacer()
+                        }
+                        .padding()
+                        .background(Color(UIColor.secondarySystemGroupedBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                    .buttonStyle(.plain)
+
+                    Spacer(minLength: 8)
+                }
+                .padding()
+
+                if isBusy {
+                    // Non-blocking spinner overlay while the next sheet is prepared/presented
+                    VStack(spacing: 10) {
+                        ProgressView()
+                        Text("Loading…")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(14)
+                    .background(.ultraThinMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+                }
             }
-            .padding()
             .navigationTitle("Group")
             .navigationBarTitleDisplayMode(.inline)
         }
@@ -1182,12 +1219,44 @@ private struct GroupActionsSheet: View {
     }
 }
 
+// Lightweight host that overlays a spinner during the initial render of PhotosDayPickerView
+private struct PhotosDayPickerHost: View {
+    let day: Date
+    let onPick: (UIImage) -> Void
+    @State private var showSpinner = true
+
+    var body: some View {
+        ZStack {
+            PhotosDayPickerView(day: day) { image in
+                onPick(image)
+            }
+
+            if showSpinner {
+                VStack(spacing: 10) {
+                    ProgressView()
+                    Text("Loading photos…")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(14)
+                .background(.ultraThinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .allowsHitTesting(false)
+                .transition(.opacity)
+            }
+        }
+        // Give SwiftUI one frame to build the sheet’s view hierarchy before hiding the spinner
+        .task {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            withAnimation(.easeInOut(duration: 0.2)) {
+                showSpinner = false
+            }
+        }
+    }
+}
+
 private extension ContentView {
-    func showBulkAddFacesWithSeed(image: UIImage, date: Date) {
-        // Use a separate sheet presentation to feed initial image/date
-        // We repurpose showBulkAddFaces by passing seed via environment in a custom wrapper.
-        // The sheet above creates BulkAddFacesView with no seed; we instead present inline here:
-        // For simplicity, present inline:
+    func showBulkAddFacesWithSeed(image: UIImage, date: Date, completion: (() -> Void)? = nil) {
         let root = UIHostingController(
             rootView: BulkAddFacesView(contactsContext: modelContext, initialImage: image, initialDate: date)
                 .modelContainer(BatchModelContainer.shared)
@@ -1196,7 +1265,33 @@ private extension ContentView {
            let window = scene.windows.first,
            let rootVC = window.rootViewController {
             root.modalPresentationStyle = .formSheet
-            rootVC.present(root, animated: true)
+            rootVC.present(root, animated: true) {
+                completion?()
+            }
+        } else {
+            completion?()
         }
+    }
+}
+
+private struct LoadingOverlay: View {
+    var message: String? = nil
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.25).ignoresSafeArea()
+            VStack(spacing: 12) {
+                ProgressView()
+                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                if let message {
+                    Text(message)
+                        .foregroundColor(.white)
+                        .font(.footnote)
+                }
+            }
+            .padding(16)
+            .background(.ultraThinMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+        .transition(.opacity)
     }
 }
