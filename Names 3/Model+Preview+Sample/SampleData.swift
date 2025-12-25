@@ -19,20 +19,16 @@ extension Contact {
         modelContext.insert(ross)
         
         // Add notes to the model context.
-        // MARK: does a note need to be inserted in the model context ?
         modelContext.insert(Note.note_1)
         
         // Add tags to the model context.
         modelContext.insert(Tag.tag_1)
-        //modelContext.insert(Tag.tag_2)
         
-        ross.notes.append(Note.note_1)
-        ross.tags.append(Tag.tag_1)
+        if ross.notes == nil { ross.notes = [] }
+        ross.notes?.append(Note.note_1)
+        if ross.tags == nil { ross.tags = [] }
+        ross.tags?.append(Tag.tag_1)
         ross.photo = data ?? Data()
-        //ross.tags.append(Tag.tag_2)
-        
-        // Set the category for each animal.
-        // Animal.dog.category = mammal
     }
     
     static func reloadSampleData(modelContext: ModelContext) {

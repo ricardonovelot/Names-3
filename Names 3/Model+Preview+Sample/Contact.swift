@@ -10,19 +10,33 @@ import SwiftData
 
 @Model
 class Contact {
-    var name: String?
+    var name: String? = ""
     var summary: String? = ""
     var isMetLongAgo: Bool = false
-    var notes = [Note]()
-    var tags = [Tag]()
-    var timestamp: Date
-    var photo: Data
-    var group: String
-    var cropOffsetX: Float
-    var cropOffsetY: Float
-    var cropScale: Float
-    
-    init(name: String = String(), summary: String = "", isMetLongAgo: Bool = false, timestamp: Date, notes: [Note], tags: [Tag] = [], photo: Data, group: String = "", cropOffsetX: Float = 0.0, cropOffsetY: Float = 0.0, cropScale: Float = 1.0) {
+
+    var notes: [Note]?
+    var tags: [Tag]?
+
+    var timestamp: Date = Date()
+    var photo: Data = Data()
+    var group: String = ""
+    var cropOffsetX: Float = 0.0
+    var cropOffsetY: Float = 0.0
+    var cropScale: Float = 1.0
+
+    init(
+        name: String = "",
+        summary: String = "",
+        isMetLongAgo: Bool = false,
+        timestamp: Date = Date(),
+        notes: [Note]? = nil,
+        tags: [Tag]? = nil,
+        photo: Data = Data(),
+        group: String = "",
+        cropOffsetX: Float = 0.0,
+        cropOffsetY: Float = 0.0,
+        cropScale: Float = 1.0
+    ) {
         self.name = name
         self.summary = summary
         self.isMetLongAgo = isMetLongAgo
@@ -37,19 +51,20 @@ class Contact {
     }
 }
 
-struct contactsGroup: Identifiable,Hashable {
-    // could it be that this creates a lot of computations right after starting the app (calculating groups but more importantly the titles and subtitles)?
-    // one idea is to calculate title and subtitle when the group is displayed, how to do this ?
-    
+struct contactsGroup: Identifiable, Hashable {
     let id = UUID()
     let date: Date
     let contacts: [Contact]
     let parsedContacts: [Contact]
+    let isLongAgo: Bool
     
     var title: String {
-        let tags = contacts.flatMap { $0.tags.map { $0.name } }
-        let uniqueTags = Set(tags) // Get unique tags
-        if uniqueTags.isEmpty{
+        if isLongAgo {
+            return NSLocalizedString("Met long ago", comment: "")
+        }
+        let tags = contacts.flatMap { ($0.tags ?? []).compactMap { $0.name } }
+        let uniqueTags = Set(tags)
+        if uniqueTags.isEmpty {
             let formatter = DateFormatter()
             formatter.locale = Locale.current
             formatter.dateFormat = "MMM dd"
@@ -60,12 +75,14 @@ struct contactsGroup: Identifiable,Hashable {
     }
     
     var subtitle: String {
+        if isLongAgo {
+            return ""
+        }
         let calendar = Calendar.current
         let now = Date()
-
         
         let yearFromDate = calendar.dateComponents([.year], from: date)
-        if yearFromDate.year == 1{
+        if yearFromDate.year == 1 {
             return ""
         }
         
@@ -110,20 +127,62 @@ struct contactsGroup: Identifiable,Hashable {
 
 @Model
 final class Note {
-    var content: String
-    var creationDate: Date
-    
-    init( content: String, creationDate: Date) {
+    var content: String = ""
+    var creationDate: Date = Date()
+
+    @Relationship(inverse: \Contact.notes)
+    var contact: Contact?
+
+    init(content: String = "", creationDate: Date = Date(), contact: Contact? = nil) {
         self.content = content
         self.creationDate = creationDate
+        self.contact = contact
     }
 }
 
 @Model
 final class Tag {
-    var name: String
-    
-    init(name: String) {
+    var name: String = ""
+
+    @Relationship(inverse: \Contact.tags)
+    var contacts: [Contact]? = []
+
+    init(name: String = "", contacts: [Contact]? = []) {
         self.name = name
+        self.contacts = contacts
+    }
+}
+
+// Uniquing helpers for Tag
+extension Tag {
+    static func normalizedKey(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+    
+    var normalizedKey: String {
+        Self.normalizedKey(name)
+    }
+    
+    @MainActor
+    static func fetchAll(in context: ModelContext) -> [Tag] {
+        (try? context.fetch(FetchDescriptor<Tag>())) ?? []
+    }
+    
+    @MainActor
+    static func find(named name: String, in context: ModelContext) -> Tag? {
+        let key = normalizedKey(name)
+        return fetchAll(in: context).first { $0.normalizedKey == key }
+    }
+    
+    @MainActor
+    static func fetchOrCreate(named name: String, in context: ModelContext) -> Tag? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let existing = find(named: trimmed, in: context) {
+            return existing
+        }
+        let tag = Tag(name: trimmed)
+        context.insert(tag)
+        return tag
     }
 }

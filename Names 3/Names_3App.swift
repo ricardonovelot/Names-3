@@ -7,14 +7,25 @@
 
 import SwiftUI
 import SwiftData
+import UIKit
 
 @main
 struct Names_3App: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             Contact.self,
+            Note.self,
+            Tag.self,
+            // FaceBatch models intentionally NOT added here to keep the Contacts store stable
         ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+        let modelConfiguration = ModelConfiguration(
+            "default",
+            schema: schema,
+            isStoredInMemoryOnly: false,
+            cloudKitDatabase: .private("iCloud.com.ricardo.Names4")
+        )
 
         do {
             return try ModelContainer(for: schema, configurations: [modelConfiguration])
@@ -25,7 +36,17 @@ struct Names_3App: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            TabView {
+                ContentView()
+                    .tabItem {
+                        Label("People", systemImage: "person.3")
+                    }
+
+                NotesFeedView()
+                    .tabItem {
+                        Label("Notes", systemImage: "note.text")
+                    }
+            }
         }
         .modelContainer(sharedModelContainer)
     }

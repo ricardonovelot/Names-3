@@ -28,6 +28,11 @@ struct ContentView: View {
     @State private var date = Date()
 
     @State private var showPhotosPicker = false
+    @State private var showQuizView = false
+    @State private var showRegexHelp = false
+    @State private var showReviewNotes = false
+    @State private var showBulkAddFaces = false
+    @State private var showGroupPhotos = false
     
     @State private var name = ""
     @State private var hashtag = ""
@@ -35,44 +40,67 @@ struct ContentView: View {
     @State private var filterString = ""
     @State private var suggestedContacts: [Contact] = []
     
-    // Group contacts by the day of their timestamp, AI
+    @State private var showGroupDatePicker = false
+    @State private var selectedGroup: contactsGroup?
+    @State private var tempGroupDate = Date()
+
+    @State private var showPhotosDayPicker = false
+    @State private var pickedImageForBatch: UIImage?
+    @State private var photosPickerDay = Date()
+    @State private var groupForDateEdit: contactsGroup?
+
+    // Group contacts by the day of their timestamp, with a special "Met long ago" group at the top
     var groups: [contactsGroup] {
         let calendar = Calendar.current
-
-        // Group `contacts` by the start of the day
-        let groupedContacts = Dictionary(grouping: contacts) { contact in
+        
+        let longAgoContacts = contacts.filter { $0.isMetLongAgo }
+        let regularContacts = contacts.filter { !$0.isMetLongAgo }
+        
+        let longAgoParsed = parsedContacts.filter { $0.isMetLongAgo }
+        let regularParsed = parsedContacts.filter { !$0.isMetLongAgo }
+        
+        let groupedRegularContacts = Dictionary(grouping: regularContacts) { contact in
             calendar.startOfDay(for: contact.timestamp)
         }
-
-        // Group `parsedContacts` by the start of the day
-        let groupedParsedContacts = Dictionary(grouping: parsedContacts) { parsedContact in
+        let groupedRegularParsed = Dictionary(grouping: regularParsed) { parsedContact in
             calendar.startOfDay(for: parsedContact.timestamp)
         }
-
-        // Combine both grouped dictionaries
-        let allDates = Set(groupedContacts.keys).union(groupedParsedContacts.keys)
-
-        // Map combined dates to `contactsGroup`, ensuring items are sorted by creation time
-        return allDates.map { date in
-            let sortedContacts = (groupedContacts[date] ?? []).sorted { $0.timestamp < $1.timestamp }
-            let sortedParsedContacts = (groupedParsedContacts[date] ?? []).sorted { $0.timestamp < $1.timestamp }
-
+        
+        let allDates = Set(groupedRegularContacts.keys).union(groupedRegularParsed.keys)
+        
+        var result: [contactsGroup] = []
+        
+        if !longAgoContacts.isEmpty || !longAgoParsed.isEmpty {
+            let longAgoGroup = contactsGroup(
+                date: .distantPast,
+                contacts: longAgoContacts.sorted { $0.timestamp < $1.timestamp },
+                parsedContacts: longAgoParsed.sorted { $0.timestamp < $1.timestamp },
+                isLongAgo: true
+            )
+            result.append(longAgoGroup)
+        }
+        
+        let datedGroups = allDates.map { date in
+            let sortedContacts = (groupedRegularContacts[date] ?? []).sorted { $0.timestamp < $1.timestamp }
+            let sortedParsedContacts = (groupedRegularParsed[date] ?? []).sorted { $0.timestamp < $1.timestamp }
             return contactsGroup(
                 date: date,
                 contacts: sortedContacts,
-                parsedContacts: sortedParsedContacts
+                parsedContacts: sortedParsedContacts,
+                isLongAgo: false
             )
         }
-        .sorted { $0.date < $1.date } // Sort groups by date
+        .sorted { $0.date < $1.date }
+        
+        result.append(contentsOf: datedGroups)
+        return result
     }
-    
-    
     
     var dynamicBackground: Color {
         if fieldIsFocused {
-            return colorScheme == .light ? .clear : .clear // Background for keyboard
+            return colorScheme == .light ? .clear : .clear
         } else {
-            return colorScheme == .light ? .clear : .clear // Default background
+            return colorScheme == .light ? .clear : .clear
         }
     }
     
@@ -89,70 +117,36 @@ struct ContentView: View {
         NavigationStack {
             ScrollViewReader { proxy in
                 ScrollView(showsIndicators: false){
-                        ForEach(groups) { group in
-                            
-                            // Can this section be inside the LazyVGrid? does that improve optimization or are we still getting it from scrollview?
-                            Section{
-                                VStack(alignment: .leading){
-                                    HStack{
-                                        Text(group.title)
-                                            .font(.title)
-                                            .bold()
-                                        Spacer()
-                                    }
-                                        .padding(.leading)
-                                        .padding(.trailing, 14)
-                                    Text(group.subtitle)
-                                        .font(.subheadline)
-                                        .foregroundColor(.secondary)
-                                        .padding(.horizontal)
+                    ForEach(groups) { group in
+                        Section{
+                            VStack(alignment: .leading){
+                                HStack{
+                                    Text(group.title)
+                                        .font(.title)
+                                        .bold()
+                                    Spacer()
                                 }
-                                .padding(.bottom, 4)
-                                
-                                LazyVGrid(columns: Array(repeating: GridItem(spacing: 10), count: 4), spacing: 10) {
-                                    ForEach(group.contacts) { contact in
-                                        NavigationLink {
-                                            ContactDetailsView(contact: contact)
-                                        } label: {
-                                            GeometryReader {
-                                                let size = $0.size
-                                                ZStack{
-                                                    Image(uiImage: UIImage(data: contact.photo) ?? UIImage())
-                                                        .resizable()
-                                                        .aspectRatio(contentMode: .fill)
-                                                        .frame(width: size.width, height: size.height)
-                                                        .clipped()
-                                                        .background(Color(uiColor: .secondarySystemGroupedBackground))
-                                                    
-                                                    if !contact.photo.isEmpty {
-                                                        LinearGradient(gradient: Gradient(colors: [.black.opacity(0.0), .black.opacity(0.0), .black.opacity(0.6)]), startPoint: .top, endPoint: .bottom)
-                                                    }
-                                                    
-                                                    VStack {
-                                                        Spacer()
-                                                        Text(contact.name ?? "")
-                                                            .font(.footnote)
-                                                            .bold()
-                                                            .foregroundColor( contact.photo.isEmpty ? Color(uiColor: .label).opacity(0.8) : Color(uiColor: .white).opacity(0.8)
-                                                            )
-                                                            .padding(.bottom, 6)
-                                                            .padding(.horizontal, 6)
-                                                            .multilineTextAlignment(.center)
-                                                            .lineSpacing(-2)
-                                                    }
-                                                }
-                                            }
-                                            .frame(height: 88)
-                                            .contentShape(.rect)
-                                            .clipShape(RoundedRectangle(cornerRadius: 10))
-                                            .scrollTransition { content, phase in
-                                                content
-                                                    .opacity(phase.isIdentity ? 1 : 0.3)
-                                                    .scaleEffect(phase.isIdentity ? 1 : 0.9)
-                                            }
+                                .padding(.leading)
+                                .padding(.trailing, 14)
+                                Text(group.subtitle)
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                                    .padding(.horizontal)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture {
+                                        if !group.isLongAgo {
+                                            selectedGroup = group
+                                            tempGroupDate = group.date
                                         }
                                     }
-                                    ForEach(group.parsedContacts, id: \.self) { contact in
+                            }
+                            .padding(.bottom, 4)
+                            
+                            LazyVGrid(columns: Array(repeating: GridItem(spacing: 10), count: 4), spacing: 10) {
+                                ForEach(group.contacts) { contact in
+                                    NavigationLink {
+                                        ContactDetailsView(contact: contact)
+                                    } label: {
                                         GeometryReader {
                                             let size = $0.size
                                             ZStack{
@@ -161,14 +155,18 @@ struct ContentView: View {
                                                     .aspectRatio(contentMode: .fill)
                                                     .frame(width: size.width, height: size.height)
                                                     .clipped()
-                                                    .background(Color(uiColor: .black).opacity(0.05))
+                                                    .background(Color(uiColor: .secondarySystemGroupedBackground))
+                                                
+                                                if !contact.photo.isEmpty {
+                                                    LinearGradient(gradient: Gradient(colors: [.black.opacity(0.0), .black.opacity(0.0), .black.opacity(0.6)]), startPoint: .top, endPoint: .bottom)
+                                                }
                                                 
                                                 VStack {
                                                     Spacer()
                                                     Text(contact.name ?? "")
                                                         .font(.footnote)
                                                         .bold()
-                                                        .foregroundColor(UIImage(data: contact.photo) != UIImage() ? Color(uiColor: .label).opacity(0.8) : Color(uiColor: .white).opacity(0.8)
+                                                        .foregroundColor( contact.photo.isEmpty ? Color(uiColor: .label).opacity(0.8) : Color(uiColor: .white).opacity(0.8)
                                                         )
                                                         .padding(.bottom, 6)
                                                         .padding(.horizontal, 6)
@@ -177,26 +175,58 @@ struct ContentView: View {
                                                 }
                                             }
                                         }
-                                        
                                         .frame(height: 88)
                                         .contentShape(.rect)
                                         .clipShape(RoundedRectangle(cornerRadius: 10))
-                                        
+                                        .scrollTransition { content, phase in
+                                            content
+                                                .opacity(phase.isIdentity ? 1 : 0.3)
+                                                .scaleEffect(phase.isIdentity ? 1 : 0.9)
+                                        }
+                                    }
+                                }
+                                ForEach(Array(group.parsedContacts.enumerated()), id: \.offset) { _, contact in
+                                    GeometryReader {
+                                        let size = $0.size
+                                        ZStack{
+                                            Image(uiImage: UIImage(data: contact.photo) ?? UIImage())
+                                                .resizable()
+                                                .aspectRatio(contentMode: .fill)
+                                                .frame(width: size.width, height: size.height)
+                                                .clipped()
+                                                .background(Color(uiColor: .black).opacity(0.05))
+                                            
+                                            VStack {
+                                                Spacer()
+                                                Text(contact.name ?? "")
+                                                    .font(.footnote)
+                                                    .bold()
+                                                    .foregroundColor(UIImage(data: contact.photo) != UIImage() ? Color(uiColor: .label).opacity(0.8) : Color(uiColor: .white).opacity(0.8)
+                                                    )
+                                                    .padding(.bottom, 6)
+                                                    .padding(.horizontal, 6)
+                                                    .multilineTextAlignment(.center)
+                                                    .lineSpacing(-2)
+                                            }
+                                        }
                                     }
                                     
+                                    .frame(height: 88)
+                                    .contentShape(.rect)
+                                    .clipShape(RoundedRectangle(cornerRadius: 10))
                                     
                                 }
-                                .padding(.horizontal)
+                                
+                                
                             }
-                            
+                            .padding(.horizontal)
                         }
-                        
+                    }
                 }
-                // ScrollView modifiers
                 .defaultScrollAnchor(.bottom)
                 .scrollDismissesKeyboard(.interactively)
                 .onChange(of: contacts) { oldValue, newValue in
-                    proxy.scrollTo(contacts.last?.id) //When the count changes scroll to latest message
+                    proxy.scrollTo(contacts.last?.id)
                 }
             }
             .safeAreaInset(edge: .top){
@@ -210,9 +240,6 @@ struct ContentView: View {
                     )
                     .ignoresSafeArea(.all)
                     .frame(height: 100)
-//                    TransparentBlurUIView(removeAllFilters: true)
-//                    .ignoresSafeArea(.all)
-//                    .frame(height: 165)
                 }
                 .frame(height: 70)
             }
@@ -221,9 +248,30 @@ struct ContentView: View {
                 VStack{
                     HStack(spacing: 4){
                         Button{
-                            showPhotosPicker = true
+                            showQuizView = true
                         } label:{
-                            Image(systemName: "camera")
+                            Image(systemName: "questionmark.circle")
+                                .foregroundStyle(.white)
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                                .padding(10)
+                                .background(
+                                    LinearGradient(
+                                        gradient: Gradient(
+                                            colors:
+                                                [.black.opacity(0.1),
+                                                 .black.opacity(0.2)
+                                                ]),
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing))
+                                .background(.thickMaterial)
+                                .clipShape(Circle())
+                        }
+                        
+                        Button{
+                            showReviewNotes = true
+                        } label:{
+                            Image(systemName: "note.text")
                                 .foregroundStyle(.white)
                                 .font(.subheadline)
                                 .fontWeight(.medium)
@@ -257,6 +305,27 @@ struct ContentView: View {
                             .focused($fieldIsFocused)
                             .submitLabel(.send)
                         
+                        Button {
+                            showRegexHelp = true
+                        } label: {
+                            Image(systemName: "info.circle")
+                                .foregroundStyle(.white)
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                                .padding(10)
+                                .background(
+                                    LinearGradient(
+                                        gradient: Gradient(
+                                            colors:
+                                                [.black.opacity(0.1),
+                                                 .black.opacity(0.2)
+                                                ]),
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing))
+                                .background(.thickMaterial)
+                                .clipShape(Circle())
+                        }
+
                     }
                     
                     ScrollView(.horizontal){
@@ -288,29 +357,108 @@ struct ContentView: View {
                 }
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
                     Menu {
-//                        NavigationLink(destination: DeletedItemsView()) {
-//                            Label("Recently Deleted", systemImage: "trash")
-//                        }
                         Button(action: {
-                            //contentViewModel.saveAndExportCSV(context: viewContext)
                         }) {
                             Label("Export CSV", systemImage: "square.and.arrow.up")
                         }
+                        Button {
+                            showBulkAddFaces = true
+                        } label: {
+                            Label("Bulk add faces", systemImage: "person.crop.square.badge.plus")
+                        }
+                        Button {
+                            showGroupPhotos = true
+                        } label: {
+                            Label("Group Photos", systemImage: "person.3.sequence")
+                        }
                     } label: {
                         Image(systemName: "ellipsis.circle")
-                            .foregroundColor(.white)
-                            .font(.subheadline)
-                            .padding(6)
-                            .background(Color.black.opacity(0.05))
-                            .background(.ultraThinMaterial)
-                            .clipShape(Circle())
-                            .padding(.trailing, 12)
+                            
                     }
                 }
             }
             .toolbarBackground(.hidden)
             
             .photosPicker(isPresented: $showPhotosPicker, selection: $selectedItem, matching: .images)
+            .sheet(isPresented: $showQuizView) {
+                QuizView(contacts: contacts)
+            }
+            .sheet(isPresented: $showRegexHelp) {
+                RegexShortcutsView()
+            }
+            .sheet(isPresented: $showReviewNotes) {
+                ReviewNotesView(contacts: contacts)
+            }
+            .sheet(isPresented: $showBulkAddFaces) {
+                // Contacts save in the existing CloudKit store; batches use a dedicated CloudKit store
+                BulkAddFacesView(contactsContext: modelContext)
+                    .modelContainer(BatchModelContainer.shared)
+            }
+            .sheet(isPresented: $showGroupPhotos) {
+                GroupPhotosListView(contactsContext: modelContext)
+                    .modelContainer(BatchModelContainer.shared)
+            }
+            // Group actions bottom sheet
+            .sheet(item: $selectedGroup) { group in
+                GroupActionsSheet(
+                    date: group.date,
+                    onImport: {
+                        // Dismiss actions, then show the photos day picker with captured date
+                        let day = group.date
+                        selectedGroup = nil
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                            photosPickerDay = day
+                            showPhotosDayPicker = true
+                        }
+                    },
+                    onEditDate: {
+                        // Dismiss actions, then open the date picker for this group
+                        groupForDateEdit = group
+                        selectedGroup = nil
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                            tempGroupDate = group.date
+                            showGroupDatePicker = true
+                        }
+                    }
+                )
+                .presentationDetents([.height(220), .medium])
+                .presentationDragIndicator(.visible)
+            }
+            // Day-filtered photos picker
+            .sheet(isPresented: $showPhotosDayPicker) {
+                PhotosDayPickerView(day: photosPickerDay) { image in
+                    pickedImageForBatch = image
+                    showPhotosDayPicker = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                        showBulkAddFacesWithSeed(image: image, date: photosPickerDay)
+                    }
+                }
+            }
+            .sheet(isPresented: $showGroupDatePicker) {
+                NavigationStack {
+                    VStack {
+                        DatePicker("New Date", selection: $tempGroupDate, in: ...Date(), displayedComponents: .date)
+                            .datePickerStyle(GraphicalDatePickerStyle())
+                            .padding()
+                        Spacer()
+                    }
+                    .navigationTitle("Change Date")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("Cancel") {
+                                showGroupDatePicker = false
+                                groupForDateEdit = nil
+                            }
+                        }
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Apply") {
+                                applyGroupDateChange()
+                            }
+                        }
+                    }
+                }
+            }
         }
         
     }
@@ -318,17 +466,14 @@ struct ContentView: View {
 
     private func parseContacts() {
         let input = text
-        // Create an NSDataDetector for dates
         let dateDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.date.rawValue)
         var detectedDate: Date? = nil
         var cleanedInput = input
 
-        // Detect the first date in the text
         if let matches = dateDetector?.matches(in: input, options: [], range: NSRange(location: 0, length: input.utf16.count)) {
             for match in matches {
                 if match.resultType == .date, let date = match.date {
                     detectedDate = adjustToPast(date)
-                    // Remove the date text from the input
                     if let range = Range(match.range, in: input) {
                         cleanedInput.removeSubrange(range)
                     }
@@ -337,38 +482,39 @@ struct ContentView: View {
             }
         }
 
-        // Use a default date if no date is found
-        let fallbackDate = Date() // Current date as fallback
+        let fallbackDate = Date()
         let finalDate = detectedDate ?? fallbackDate
 
-        // Split the input by commas for each contact entry
         let nameEntries = cleanedInput.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
         
         var contacts: [Contact] = []
         var globalTags: [Tag] = []
+        var globalTagKeys = Set<String>()
 
-        // First, find all unique hashtags across the entire input
         let allWords = cleanedInput.split(separator: " ").map { String($0) }
         for word in allWords {
             if word.starts(with: "#") {
-                let tagName = word.dropFirst().trimmingCharacters(in: .punctuationCharacters)
-                if !tagName.isEmpty && !globalTags.contains(where: { $0.name == tagName }) {
-                    globalTags.append(Tag(name: String(tagName)))
+                let raw = String(word.dropFirst())
+                let trimmed = raw.trimmingCharacters(in: .punctuationCharacters)
+                let key = Tag.normalizedKey(trimmed)
+                if !trimmed.isEmpty && !globalTagKeys.contains(key) {
+                    if let tag = Tag.fetchOrCreate(named: trimmed, in: modelContext) {
+                        globalTags.append(tag)
+                        globalTagKeys.insert(key)
+                    }
                 }
             }
         }
         
-        // Parse each contact entry
         for entry in nameEntries {
             if entry.starts(with: "#") {
-                continue // Skip hashtags as names
+                continue
             }
 
             var nameComponents: [String] = []
             var notes: [Note] = []
             var summary: String? = nil
 
-            // Check for a summary (indicated by '::')
             if entry.contains("::") {
                 let parts = entry.split(separator: "::", maxSplits: 1)
                 if parts.count == 2 {
@@ -388,7 +534,6 @@ struct ContentView: View {
                 filterString = name
                 filterContacts()
 
-                // Check for notes (indicated by ':')
                 if let notePart = nameComponents.last, notePart.contains(":") {
                     let nameAndNote = notePart.split(separator: ":", maxSplits: 1)
                     if nameAndNote.count == 2 {
@@ -403,7 +548,6 @@ struct ContentView: View {
                     }
                 }
                 
-                // Remove any trailing colons from the name
                 if name.hasSuffix(":") {
                     name = String(name.dropLast())
                 }
@@ -417,25 +561,23 @@ struct ContentView: View {
     }
     
     private func filterContacts() {
-            if filterString.isEmpty {
-                suggestedContacts = contacts
-            } else {
-                suggestedContacts = contacts.filter { contact in
-                    if let name = contact.name {
-                        return name.starts(with: filterString)
-                    }
-                    return false
+        if filterString.isEmpty {
+            suggestedContacts = contacts
+        } else {
+            suggestedContacts = contacts.filter { contact in
+                if let name = contact.name {
+                    return name.starts(with: filterString)
                 }
+                return false
             }
         }
+    }
 
-    // Adjust dates to ensure they are in the past
     private func adjustToPast(_ date: Date) -> Date {
         let today = Date()
         let calendar = Calendar.current
 
         if date > today {
-            // If the date is in the future, subtract one year
             let adjustedDate = calendar.date(byAdding: .year, value: -1, to: date)
             return adjustedDate ?? date
         }
@@ -443,13 +585,17 @@ struct ContentView: View {
         return date
     }
     
-    // Function to save parsed contacts
     func saveContacts(modelContext: ModelContext) {
         for contact in parsedContacts {
             modelContext.insert(contact)
         }
         
-        // Clear text and parsed contacts after saving
+        do {
+            try modelContext.save()
+        } catch {
+            print("Save failed: \(error)")
+        }
+        
         text = ""
         parsedContacts = []
     }
@@ -457,31 +603,43 @@ struct ContentView: View {
     private func addItem() {
         withAnimation {
             let newContact = Contact(timestamp: Date(), notes: [], photo: Data())
-
             modelContext.insert(newContact)
-            
-            // Check if there is already an entry for today
-//            if let lastEntry = dates.last,
-//               Calendar.current.isDateInToday(lastEntry.date) {
-//                // Append the new contact to today's entry
-//                lastEntry.contacts.append(newContact)
-//            } else {
-//                // Create a new entry for today and insert it into the model
-//                let newDateEntry = contactsGroup(date: Calendar.current.startOfDay(for: Date()))
-//                newDateEntry.contacts.append(newContact)
-//                modelContext.insert(newDateEntry)
-//            }
         }
     }
-
-//    private func deleteItems(offsets: IndexSet) {
-//        withAnimation {
-//            for index in offsets {
-//                modelContext.delete(contacts[index])
-//            }
-//        }
-//    }
     
+    private func applyGroupDateChange() {
+        if let group = groupForDateEdit {
+            updateGroupDate(for: group, newDate: tempGroupDate)
+        }
+        showGroupDatePicker = false
+        groupForDateEdit = nil
+    }
+    
+    private func updateGroupDate(for group: contactsGroup, newDate: Date) {
+        for c in group.contacts {
+            c.isMetLongAgo = false
+            c.timestamp = combine(date: newDate, withTimeFrom: c.timestamp)
+        }
+        for c in group.parsedContacts {
+            c.isMetLongAgo = false
+            c.timestamp = combine(date: newDate, withTimeFrom: c.timestamp)
+        }
+    }
+    
+    private func combine(date: Date, withTimeFrom timeSource: Date) -> Date {
+        let cal = Calendar.current
+        let dateComps = cal.dateComponents([.year, .month, .day], from: date)
+        let timeComps = cal.dateComponents([.hour, .minute, .second, .nanosecond], from: timeSource)
+        var merged = DateComponents()
+        merged.year = dateComps.year
+        merged.month = dateComps.month
+        merged.day = dateComps.day
+        merged.hour = timeComps.hour
+        merged.minute = timeComps.minute
+        merged.second = timeComps.second
+        merged.nanosecond = timeComps.nanosecond
+        return cal.date(from: merged) ?? date
+    }
 }
 
 struct ContactFormView: View {
@@ -535,7 +693,6 @@ struct ContactDetailsView: View {
                                     .overlay {
                                         LinearGradient(gradient: Gradient(colors: [.black.opacity(0.0), .black.opacity(0.2), .black.opacity(0.8)]), startPoint: .init(x: 0.5, y: 0.05), endPoint: .bottom)
                                     }
-                                //.cornerRadius(12)
                             }
                             .contentShape(.rect)
                             .frame(height: 400)
@@ -558,7 +715,7 @@ struct ContactDetailsView: View {
                                 Image(systemName: "camera")
                                     .font(.system(size: 18))
                                     .padding(12)
-                                    .foregroundColor(image != UIImage() ? .blue.mix(with: .white, by: 0.3) : .blue )
+                                    .foregroundColor(image != UIImage() ? .blue.mix(with: .white, by: 0.3) : .blue)
                                     .background( image != UIImage() ? AnyShapeStyle(.ultraThinMaterial.opacity(0.7)) : AnyShapeStyle(Color(.blue.opacity(0.08))))
                                     .background(image != UIImage() ? .black.opacity(0.2) : .clear)
                                     .clipShape(Circle())
@@ -566,8 +723,8 @@ struct ContactDetailsView: View {
                                     .padding(.leading, 4)
                                 
                                 Group{
-                                    if !contact.tags.isEmpty {
-                                        Text(contact.tags.compactMap { $0.name }.sorted().joined(separator: ", "))
+                                    if !(contact.tags?.isEmpty ?? true) {
+                                        Text((contact.tags ?? []).compactMap { $0.name }.sorted().joined(separator: ", "))
                                             .foregroundColor(image != UIImage() ? .white : Color(.secondaryLabel) )
                                             .font(.system(size: 15, weight: .medium))
                                             .padding(.vertical, 7)
@@ -587,8 +744,6 @@ struct ContactDetailsView: View {
                                     }
                                 }
                                 .onTapGesture { showTagPicker = true }
-                                
-                                //}
                             }
                             .padding(.horizontal)
                             
@@ -602,9 +757,6 @@ struct ContactDetailsView: View {
                             .lineLimit(2...)
                             .padding(10)
                             .foregroundStyle(image != UIImage() ? Color(uiColor: .lightText) : Color.primary)
-                            //.background( image != UIImage() ? .black.opacity(0.02) : .clear)
-                            //.background( image != UIImage() ? Color(uiColor: .tertiarySystemBackground) : Color(uiColor: .tertiarySystemBackground))
-                            //.background(.ultraThinMaterial.opacity(0.9))
                             .background(
                                 BlurView(style: .regular)
                             )
@@ -614,12 +766,10 @@ struct ContactDetailsView: View {
                             
                             .padding(.horizontal).padding(.top, 12)
                             .onTapGesture {
-                                // TODO: viewModel.showImageSourceDialog = false
                             }
                             .gesture(
                                 DragGesture()
                                     .onChanged { value in
-                                        // TODO: make the drag gesture move the main note to a regular note
                                         viewState = value.translation
                                     }
                             )
@@ -627,7 +777,6 @@ struct ContactDetailsView: View {
                             HStack{
                                 Spacer()
                                 Text(contact.timestamp, style: .date)
-                                // TODO: \(contentViewModel.customFormattedDate(viewModel.item.dateMet, fallbackDate: Date()))
                                     .foregroundColor(image != UIImage() ? .white : Color(UIColor.secondaryLabel))
                                     .font(.system(size: 15))
                                     .frame(alignment: .trailing)
@@ -639,27 +788,28 @@ struct ContactDetailsView: View {
                                     }
                                     .padding(.bottom)
                                     .onAppear{
-                                        // TODO: dateTitle = viewModel.formattedDate(viewModel.item.dateMet, isDateMetLongAgo: viewModel.item.isDateMetLongAgo)
                                     }
                             }
                         }
                     }
-                    //.padding(image != UIImage() ? 16 : 0)
                     
-                    Text("Notes")
-                        .font(.body.smallCaps())
-                        .fontWeight(.light)
-                        .foregroundStyle(.secondary)
-                        .padding(.leading)
-                    
+                    HStack{
+                        Text("Notes")
+                            .font(.body.smallCaps())
+                            .fontWeight(.light)
+                            .foregroundStyle(.secondary)
+                            .padding(.leading)
+                        Spacer()
+                    }
                     Button(action: {
                         let newNote = Note(content: "Test", creationDate: Date())
-                        
-                        contact.notes.append(newNote)
-                        
-                        //try? modelContext.save()
-                        // TODO: viewModel.createNote()
-                        // viewModel.objectWillChange.send()
+                        if contact.notes == nil { contact.notes = [] }
+                        contact.notes?.append(newNote)
+                        do {
+                            try modelContext.save()
+                        } catch {
+                            print("Save failed: \(error)")
+                        }
                     }) {
                         HStack {
                             Image(systemName: "plus.circle.fill")
@@ -675,53 +825,47 @@ struct ContactDetailsView: View {
                     .buttonStyle(PlainButtonStyle())
                     
                     List{
-                        ForEach(contact.notes.indices.reversed(), id:\.self) { index in
+                        let array = contact.notes ?? []
+                        ForEach(array, id: \.self) { note in
                             Section{
                                 VStack {
-                                    TextField("Note Content", text: $contact.notes[index].content, axis: .vertical)
+                                    TextField("Note Content", text: Binding(
+                                        get: { note.content },
+                                        set: { note.content = $0 }
+                                    ), axis: .vertical)
                                         .lineLimit(2...)
                                     HStack {
                                         Spacer()
-                                        Text(contact.notes[index].creationDate, style: .date)
+                                        Text(note.creationDate, style: .date)
                                             .font(.caption)
                                     }
                                 }
-                                //.padding(.horizontal).padding(.vertical, 14)
-                                //.background(Color(uiColor: .tertiarySystemBackground))
-                                //.clipShape(RoundedRectangle(cornerRadius: 12))
-                                //.padding(.horizontal)
-                                
                                 .swipeActions(edge: .trailing) {
                                     Button(role: .destructive) {
-                                        modelContext.delete(contact.notes[index])
-                                        // TODO: viewModel.deleteNote(note)
+                                        modelContext.delete(note)
                                     } label: {
                                         Label("Delete", systemImage: "trash")
                                     }
                                 }
                                 .swipeActions(edge: .leading) {
                                     Button {
-                                        // TODO: showDatePickerFor(note: note)
                                     } label: {
                                         Label("Edit Date", systemImage: "calendar")
                                     }
                                     .tint(.blue)
                                 }
                             }
-                            
                         }
                     }
-                    .frame(width: g.size.width, height: g.size.height) // laverage geometry to make the list not collapse inside a scrollview
+                    .frame(width: g.size.width, height: g.size.height)
                 }
                 .padding(.top, image != UIImage() ? 0 : 8 )
                 .ignoresSafeArea(image != UIImage() ? .all : [])
-                //.containerRelativeFrame([.horizontal, .vertical])
                 .background(Color(UIColor.systemGroupedBackground))
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
                             Button {
-                                // TODO: contentViewModel.createItemWithSameDate(as: viewModel.item, context: viewContext)
                             } label: {
                                 Text("Duplicate")
                             }
@@ -745,11 +889,7 @@ struct ContactDetailsView: View {
                                     Text("Back")
                                         .fontWeight(image != UIImage() ? .medium : .regular)
                                 }
-                                .foregroundStyle(image != UIImage() ? Color(.lightText) : .accentColor)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 6)
-                                .background(image != UIImage() ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(Color(.clear)))
-                                .cornerRadius(100)
+                                .padding(.trailing, 8)
                             }
                             .padding(.leading, CustomBackButtonAnimationValue)
                             .onAppear{
@@ -772,7 +912,6 @@ struct ContactDetailsView: View {
             }
             .fullScreenCover(isPresented: $showCropView){
                 if let image = UIImage(data: contact.photo) {
-                    //                Text("Crop View")
                     CropView(
                         image: image,
                         initialScale: CGFloat(contact.cropScale),
@@ -783,15 +922,20 @@ struct ContactDetailsView: View {
                 }
             }
             .onChange(of: selectedItem) {
-                        Task {
-                            if let loaded = try? await selectedItem?.loadTransferable(type: Data.self) {
-                                contact.photo = loaded
-                                showCropView = true
-                            } else {
-                                print("Failed")
-                            }
+                Task {
+                    if let loaded = try? await selectedItem?.loadTransferable(type: Data.self) {
+                        contact.photo = loaded
+                        showCropView = true
+                        do {
+                            try modelContext.save()
+                        } catch {
+                            print("Save failed: \(error)")
                         }
+                    } else {
+                        print("Failed")
                     }
+                }
+            }
     }
     
     func updateCroppingParameters(croppedImage: UIImage?, scale: CGFloat, offset: CGSize) {
@@ -801,129 +945,13 @@ struct ContactDetailsView: View {
         contact.cropScale = Float(scale)
         contact.cropOffsetX = Float(offset.width)
         contact.cropOffsetY = Float(offset.height)
+        do {
+            try modelContext.save()
+        } catch {
+            print("Save failed: \(error)")
+        }
     }
 }
-
-
-//struct CustomPhotosPicker: View {
-//    @Bindable var contact: Contact
-//    @Environment(\.dismiss) private var dismiss
-//    
-//    @State private var allPhotos: [UIImage] = []
-//    @State private var loadingMorePhotos = false
-//    @State private var photoBatchLimit = 50 // Number of photos to load per batch
-//    @State private var lastFetchedIndex = 0 // Track the last fetched index
-//    
-//    var body: some View {
-//        NavigationStack {
-//            VStack {
-//                if allPhotos.isEmpty {
-//                    Text("No photos found")
-//                        .padding()
-//                } else {
-//                    ScrollView {
-//                        LazyVGrid(columns: Array(repeating: GridItem(spacing: 3), count: 3), spacing: 3) {
-//                            ForEach(allPhotos.indices, id: \.self) { index in
-//                                GeometryReader {
-//                                    let size = $0.size
-//                                    Image(uiImage: allPhotos[index])
-//                                        .resizable()
-//                                        .aspectRatio(contentMode: .fill)
-//                                        .frame(width: size.width, height: size.height)
-//                                        .clipped()
-//                                }
-//                                .frame(height: 130)
-//                                .contentShape(.rect)
-//                                .onTapGesture {
-//                                    contact.photo = allPhotos[index].heicData() ?? Data()
-//                                    dismiss()
-//                                }
-//                                // Load more photos when reaching the end of the current batch
-//                                .onAppear {
-//                                    if index == allPhotos.count - 1 && !loadingMorePhotos {
-//                                        loadNextBatchOfPhotos()
-//                                    }
-//                                }
-//                            }
-//                        }
-//                        .padding(.vertical, 15)
-//                    }
-//                }
-//            }
-//            .navigationTitle("Photos")
-//            .navigationBarTitleDisplayMode(.inline)
-//            .toolbar {
-//                ToolbarItem(placement: .topBarLeading) {
-//                    Button("Cancel") {
-//                        dismiss()
-//                    }
-//                }
-//                ToolbarItem(placement: .topBarTrailing) {
-//                    if !contact.photo.isEmpty {
-//                        Button("Remove") {
-//                            contact.photo = Data()
-//                            dismiss()
-//                        }
-//                    }
-//                }
-//            }
-//            .onAppear(perform: requestPhotoAccess)
-//        }
-//    }
-//    
-//    func requestPhotoAccess() {
-//        let isPreview = ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"]
-//        
-//        if isPreview == "1" { // Fetch sample photos for Preview
-//            for i in 1...9 {
-//                if let image = UIImage(named: "test-\(i)") {
-//                    allPhotos.append(image)
-//                }
-//            }
-//        } else { // Request authorization and fetch real photos
-//            PHPhotoLibrary.requestAuthorization { status in
-//                if status == .authorized || status == .limited {
-//                    loadNextBatchOfPhotos()
-//                } else {
-//                    print("Photo access denied or restricted.")
-//                }
-//            }
-//        }
-//    }
-//    
-//    func loadNextBatchOfPhotos() {
-//        guard !loadingMorePhotos else { return }
-//        loadingMorePhotos = true
-//
-//        // Configure fetch options to sort by creation date in descending order
-//        let fetchOptions = PHFetchOptions()
-//        fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-//        
-//        let assets = PHAsset.fetchAssets(with: .image, options: fetchOptions)
-//        let manager = PHImageManager.default()
-//        let requestOptions = PHImageRequestOptions()
-//        requestOptions.deliveryMode = .fastFormat
-//        requestOptions.isSynchronous = false // Asynchronous loading
-//        
-//        // Calculate the range for the next batch of photos
-//        let nextBatchRange = lastFetchedIndex..<(min(lastFetchedIndex + photoBatchLimit, assets.count))
-//        
-//        assets.enumerateObjects(at: IndexSet(integersIn: nextBatchRange), options: []) { asset, _, stop in
-//            manager.requestImage(for: asset, targetSize: CGSize(width: 100, height: 100), contentMode: .aspectFill, options: requestOptions) { image, _ in
-//                if let image = image {
-//                    DispatchQueue.main.async {
-//                        allPhotos.append(image)
-//                    }
-//                }
-//            }
-//        }
-//        
-//        lastFetchedIndex += photoBatchLimit // Update the last fetched index
-//        loadingMorePhotos = false // Reset loading state
-//    }
-//}
-
-
 
 struct CustomDatePicker: View {
     @Bindable var contact: Contact
@@ -940,12 +968,7 @@ struct CustomDatePicker: View {
                 Toggle("Met long ago", isOn: $contact.isMetLongAgo)
                     .onChange(of: contact.isMetLongAgo) { old, new in
                         if true {
-                            //                    viewModel.item.dateMet = Date.distantPast
-                            //                    viewModel.objectWillChange.send()
                         } else {
-                            //                    viewModel.item.dateMet = storedDateMet
-                            //                    viewModel.objectWillChange.send()
-                            
                         }
                     }
                     Divider()
@@ -963,10 +986,6 @@ struct CustomDatePicker: View {
     }
 }
 
-
-
-
-
 struct CustomTagPicker: View {
     @Environment(\.modelContext) private var modelContext
     @Query private var tags: [Tag]
@@ -981,12 +1000,12 @@ struct CustomTagPicker: View {
                 if !searchText.isEmpty {
                     Section{
                         Button{
-                            let newTag = Tag(name: searchText)
-                            modelContext.insert(newTag)
-                            //try? modelContext.save()
-                            //itemDetailViewModel.addTag(named: searchText)
-                            //viewModel.fetchTags()
-                            
+                            if let tag = Tag.fetchOrCreate(named: searchText, in: modelContext) {
+                                if !(contact.tags?.contains(where: { $0.normalizedKey == tag.normalizedKey }) ?? false) {
+                                    if contact.tags == nil { contact.tags = [] }
+                                    contact.tags?.append(tag)
+                                }
+                            }
                         } label: {
                             Group{
                                 HStack{
@@ -999,30 +1018,33 @@ struct CustomTagPicker: View {
                 }
                 
                 Section{
-                    ForEach(tags, id: \.self) { tag in
+                    let uniqueTags: [Tag] = {
+                        var map: [String: Tag] = [:]
+                        for tag in tags {
+                            let key = tag.normalizedKey
+                            if map[key] == nil { map[key] = tag }
+                        }
+                        return map.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                    }()
+                    
+                    ForEach(uniqueTags, id: \.self) { tag in
                         HStack{
                             Text(tag.name)
                             Spacer()
-                            if contact.tags.contains(tag){
+                            if contact.tags?.contains(where: { $0.normalizedKey == tag.normalizedKey }) == true {
                                 Image(systemName: "checkmark")
                                     .foregroundColor(.accentColor)
                             }
                         }
                         .contentShape(Rectangle())
                         .onTapGesture {
-                            if !contact.tags.contains(tag){
-                                print("not tag already added")
-                                contact.tags.append(tag)
+                            if let existingIndex = contact.tags?.firstIndex(where: { $0.normalizedKey == tag.normalizedKey }) {
+                                contact.tags?.remove(at: existingIndex)
                             } else {
-                                if let index = contact.tags.firstIndex(where: {$0.id == tag.id}) {
-                                    contact.tags.remove(at: index)
-                                }
+                                if contact.tags == nil { contact.tags = [] }
+                                contact.tags?.append(tag)
                             }
-    
                         }
-                        //                TagRow(tag: tag, isSelected: viewModel.selectedTags.contains(tag)) {
-                        //                    viewModel.toggleTagSelection(tag)
-                        //                }
                     }
                 }
             }
@@ -1042,7 +1064,7 @@ func ??<T>(lhs: Binding<Optional<T>>, rhs: T) -> Binding<T> {
 }
 
 #Preview("List") {
-        ContentView().modelContainer(for: Contact.self, inMemory: true)
+        ContentView().modelContainer(for: [Contact.self, Note.self, Tag.self], inMemory: true)
 }
 
 #Preview("Contact Detail") {
@@ -1051,37 +1073,43 @@ func ??<T>(lhs: Binding<Optional<T>>, rhs: T) -> Binding<T> {
             ContactDetailsView(contact:.ross)
         }
     }
-    // Preview line above wont allow to manipulate data in the current implmentation, theory is that data is being manipulated not in the correct codelcontainer/modelcontext
 }
 
+private func downscaleJPEG(data: Data, maxDimension: CGFloat, quality: CGFloat) -> Data {
+    guard let image = UIImage(data: data) else { return data }
+    let width = image.size.width
+    let height = image.size.height
+    let maxSide = max(width, height)
+    guard maxSide > maxDimension else {
+        return image.jpegData(compressionQuality: quality) ?? data
+    }
+    let scale = maxDimension / maxSide
+    let newSize = CGSize(width: floor(width * scale), height: floor(height * scale))
+    let format = UIGraphicsImageRendererFormat.default()
+    format.scale = 1
+    let renderer = UIGraphicsImageRenderer(size: newSize, format: format)
+    let scaled = renderer.image { _ in
+        image.draw(in: CGRect(origin: .zero, size: newSize))
+    }
+    return scaled.jpegData(compressionQuality: quality) ?? data
+}
 
-// Define a new struct named BlurView, which conforms to UIViewRepresentable. This allows SwiftUI to use UIViews.
 struct BlurView: UIViewRepresentable {
-    
-    // Declare a property 'style' of type UIBlurEffect.Style to store the blur effect style.
     let style: UIBlurEffect.Style
     
-    // Initializer for the BlurView, taking a UIBlurEffect.Style as a parameter and setting it to the 'style' property.
     init(style: UIBlurEffect.Style) {
         self.style = style
     }
     
-    // Required method of UIViewRepresentable protocol. It creates and returns the UIVisualEffectView.
     func makeUIView(context: Context) -> UIVisualEffectView {
-        // Create a UIBlurEffect with the specified 'style'.
         let blurEffect = UIBlurEffect(style: style)
-        // Initialize a UIVisualEffectView with the blurEffect.
         let blurView = UIVisualEffectView(effect: blurEffect)
-        // Return the configured blurView.
         return blurView
     }
     
-    // Required method of UIViewRepresentable protocol. Here, it's empty as we don't need to update the view after creation.
     func updateUIView(_ uiView: UIVisualEffectView, context: Context) {}
 }
 
-
-// navigationBarBackButtonHidden - swipe back gesture
 extension UINavigationController: @retroactive UIGestureRecognizerDelegate {
     override open func viewDidLoad() {
         super.viewDidLoad()
@@ -1090,5 +1118,85 @@ extension UINavigationController: @retroactive UIGestureRecognizerDelegate {
 
     public func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         return viewControllers.count > 1
+    }
+}
+
+private struct GroupActionsSheet: View {
+    let date: Date
+    let onImport: () -> Void
+    let onEditDate: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(date, style: .date)
+                        .font(.title3.weight(.semibold))
+                    Text(relativeString(for: date))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Button {
+                    onImport()
+                } label: {
+                    HStack {
+                        Image(systemName: "photo.on.rectangle.angled")
+                        Text("Import photos for this day")
+                            .fontWeight(.semibold)
+                        Spacer()
+                    }
+                    .padding()
+                    .background(Color(UIColor.secondarySystemGroupedBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    onEditDate()
+                } label: {
+                    HStack {
+                        Image(systemName: "calendar.badge.clock")
+                        Text("Edit date")
+                        Spacer()
+                    }
+                    .padding()
+                    .background(Color(UIColor.secondarySystemGroupedBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+                .buttonStyle(.plain)
+
+                Spacer(minLength: 8)
+            }
+            .padding()
+            .navigationTitle("Group")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+
+    private func relativeString(for date: Date) -> String {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .full
+        return f.localizedString(for: date, relativeTo: Date())
+    }
+}
+
+private extension ContentView {
+    func showBulkAddFacesWithSeed(image: UIImage, date: Date) {
+        // Use a separate sheet presentation to feed initial image/date
+        // We repurpose showBulkAddFaces by passing seed via environment in a custom wrapper.
+        // The sheet above creates BulkAddFacesView with no seed; we instead present inline here:
+        // For simplicity, present inline:
+        let root = UIHostingController(
+            rootView: BulkAddFacesView(contactsContext: modelContext, initialImage: image, initialDate: date)
+                .modelContainer(BatchModelContainer.shared)
+        )
+        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let window = scene.windows.first,
+           let rootVC = window.rootViewController {
+            root.modalPresentationStyle = .formSheet
+            rootVC.present(root, animated: true)
+        }
     }
 }
