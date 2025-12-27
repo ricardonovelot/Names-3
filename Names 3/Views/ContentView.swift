@@ -30,7 +30,6 @@ struct ContentView: View {
     @State private var showPhotosPicker = false
     @State private var showQuizView = false
     @State private var showRegexHelp = false
-    @State private var showReviewNotes = false
     @State private var showBulkAddFaces = false
     @State private var showGroupPhotos = false
     
@@ -119,183 +118,52 @@ struct ContentView: View {
             ScrollViewReader { proxy in
                 ScrollView(showsIndicators: false){
                     ForEach(groups) { group in
-                        Section{
-                            VStack(alignment: .leading){
-                                HStack{
-                                    Text(group.title)
-                                        .font(.title)
-                                        .bold()
-                                    Spacer()
+                        GroupSectionView(
+                            group: group,
+                            onHeaderTap: {
+                                if !group.isLongAgo {
+                                    selectedGroup = group
+                                    tempGroupDate = group.date
                                 }
-                                .padding(.leading)
-                                .padding(.trailing, 14)
-                                Text(group.subtitle)
-                                    .font(.subheadline)
-                                    .foregroundColor(.secondary)
-                                    .padding(.horizontal)
                             }
-                            .padding(.bottom, 4)
-                            .contentShape(Rectangle())
-                                                                  .onTapGesture {
-                                                                      if !group.isLongAgo {
-                                                                          selectedGroup = group
-                                                                          tempGroupDate = group.date
-                                                                      }
-                                                                  }
-
-                            
-                            LazyVGrid(columns: Array(repeating: GridItem(spacing: 10), count: 4), spacing: 10) {
-                                ForEach(group.contacts) { contact in
-                                    NavigationLink {
-                                        ContactDetailsView(contact: contact)
-                                    } label: {
-                                        GeometryReader {
-                                            let size = $0.size
-                                            ZStack{
-                                                Image(uiImage: UIImage(data: contact.photo) ?? UIImage())
-                                                    .resizable()
-                                                    .aspectRatio(contentMode: .fill)
-                                                    .frame(width: size.width, height: size.height)
-                                                    .clipped()
-                                                    .background(Color(uiColor: .secondarySystemGroupedBackground))
-                                                
-                                                if !contact.photo.isEmpty {
-                                                    LinearGradient(gradient: Gradient(colors: [.black.opacity(0.0), .black.opacity(0.0), .black.opacity(0.6)]), startPoint: .top, endPoint: .bottom)
-                                                }
-                                                
-                                                VStack {
-                                                    Spacer()
-                                                    Text(contact.name ?? "")
-                                                        .font(.footnote)
-                                                        .bold()
-                                                        .foregroundColor( contact.photo.isEmpty ? Color(uiColor: .label).opacity(0.8) : Color(uiColor: .white).opacity(0.8)
-                                                        )
-                                                        .padding(.bottom, 6)
-                                                        .padding(.horizontal, 6)
-                                                        .multilineTextAlignment(.center)
-                                                        .lineSpacing(-2)
-                                                }
-                                            }
-                                        }
-                                        .frame(height: 88)
-                                        .contentShape(.rect)
-                                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                                        .scrollTransition { content, phase in
-                                            content
-                                                .opacity(phase.isIdentity ? 1 : 0.3)
-                                                .scaleEffect(phase.isIdentity ? 1 : 0.9)
-                                        }
-                                    }
-                                }
-                                ForEach(Array(group.parsedContacts.enumerated()), id: \.offset) { _, contact in
-                                    GeometryReader {
-                                        let size = $0.size
-                                        ZStack{
-                                            Image(uiImage: UIImage(data: contact.photo) ?? UIImage())
-                                                .resizable()
-                                                .aspectRatio(contentMode: .fill)
-                                                .frame(width: size.width, height: size.height)
-                                                .clipped()
-                                                .background(Color(uiColor: .black).opacity(0.05))
-                                            
-                                            VStack {
-                                                Spacer()
-                                                Text(contact.name ?? "")
-                                                    .font(.footnote)
-                                                    .bold()
-                                                    .foregroundColor(UIImage(data: contact.photo) != UIImage() ? Color(uiColor: .label).opacity(0.8) : Color(uiColor: .white).opacity(0.8)
-                                                    )
-                                                    .padding(.bottom, 6)
-                                                    .padding(.horizontal, 6)
-                                                    .multilineTextAlignment(.center)
-                                                    .lineSpacing(-2)
-                                            }
-                                        }
-                                    }
-                                    
-                                    .frame(height: 88)
-                                    .contentShape(.rect)
-                                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                                    
-                                }
-                                
-                                
-                            }
-                            .padding(.horizontal)
-                        }
+                        )
                     }
                 }
                 .defaultScrollAnchor(.bottom)
                 .scrollDismissesKeyboard(.interactively)
                 .onChange(of: contacts) { oldValue, newValue in
-                    proxy.scrollTo(contacts.last?.id)
+                    if let lastID = contacts.last?.id {
+                        withAnimation {
+                            proxy.scrollTo(lastID, anchor: .bottom)
+                        }
+                    }
                 }
             }
-            .safeAreaInset(edge: .top){
-                ZStack(alignment: .top) {
-                    SmoothLinearGradient(
-                        from: Color(red: 0.0, green: 0.0, blue: 0.04).opacity(0.62),
-                        to: Color(red: 0.0, green: 0.0, blue: 0.04).opacity(0.0),
-                        startPoint: UnitPoint(x: 0.5, y: 0.18),
-                        endPoint: .bottom,
-                        curve: .easeInOut
-                    )
-                    .ignoresSafeArea(.all)
-                    .frame(height: 100)
-                }
-                .frame(height: 70)
-            }
+//            .safeAreaInset(edge: .top){
+//                ZStack(alignment: .top) {
+//                    SmoothLinearGradient(
+//                        from: Color(red: 0.0, green: 0.0, blue: 0.04).opacity(0.62),
+//                        to: Color(red: 0.0, green: 0.0, blue: 0.04).opacity(0.0),
+//                        startPoint: UnitPoint(x: 0.5, y: 0.18),
+//                        endPoint: .bottom,
+//                        curve: .easeInOut
+//                    )
+//                    .ignoresSafeArea(.all)
+//                    .frame(height: 100)
+//                }
+//                .frame(height: 70)
+//            }
             
             .safeAreaInset(edge: .bottom) {
                 VStack{
-                    HStack(spacing: 4){
-                        Button{
-                            showQuizView = true
-                        } label:{
-                            Image(systemName: "questionmark.circle")
-                                .foregroundStyle(.white)
-                                .font(.subheadline)
-                                .fontWeight(.medium)
-                                .padding(10)
-                                .background(
-                                    LinearGradient(
-                                        gradient: Gradient(
-                                            colors:
-                                                [.black.opacity(0.1),
-                                                 .black.opacity(0.2)
-                                                ]),
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing))
-                                .background(.thickMaterial)
-                                .clipShape(Circle())
-                        }
-                        
-                        Button{
-                            showReviewNotes = true
-                        } label:{
-                            Image(systemName: "note.text")
-                                .foregroundStyle(.white)
-                                .font(.subheadline)
-                                .fontWeight(.medium)
-                                .padding(10)
-                                .background(
-                                    LinearGradient(
-                                        gradient: Gradient(
-                                            colors:
-                                                [.black.opacity(0.1),
-                                                 .black.opacity(0.2)
-                                                ]),
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing))
-                                .background(.thickMaterial)
-                                .clipShape(Circle())
-                        }
+                    HStack(spacing: 6){
+                       
                         
                         TextField("", text: $text, axis: .vertical)
-                            .padding(.horizontal,16)
+                            .padding(.horizontal,32)
                             .padding(.vertical,8)
-                            .background(Color(uiColor: .secondarySystemGroupedBackground))
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .liquidGlass(in: Capsule())
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                             .onChange(of: text){ oldValue, newValue in
                                 if let last = newValue.last, last == "\n" {
                                     text.removeLast()
@@ -307,27 +175,15 @@ struct ContentView: View {
                             .focused($fieldIsFocused)
                             .submitLabel(.send)
                         
-                        Button {
-                            showRegexHelp = true
-                        } label: {
-                            Image(systemName: "info.circle")
-                                .foregroundStyle(.white)
-                                .font(.subheadline)
+                        Button{
+                            showBulkAddFaces = true
+                        } label:{
+                            Image(systemName: "camera")
                                 .fontWeight(.medium)
                                 .padding(10)
-                                .background(
-                                    LinearGradient(
-                                        gradient: Gradient(
-                                            colors:
-                                                [.black.opacity(0.1),
-                                                 .black.opacity(0.2)
-                                                ]),
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing))
-                                .background(.thickMaterial)
+                                .liquidGlass(in: Capsule())
                                 .clipShape(Circle())
                         }
-
                     }
                     
                     ScrollView(.horizontal){
@@ -339,7 +195,6 @@ struct ContentView: View {
                     }
                     .frame(height: 20)
                 }
-                .padding(.bottom, 8)
                 .padding(.horizontal)
                 .background(dynamicBackground)
             }
@@ -352,14 +207,14 @@ struct ContentView: View {
             
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Text("Names")
-                        .font(.system(size: 32, weight: .heavy))
-                        .foregroundColor(.white)
-                        .padding(.leading)
-                    
-                    
-                    DatePicker(selection: $date, in: ...Date(), displayedComponents: .date){}
-                        .labelsHidden()
+//                    Text("Names")
+//                        .font(.system(size: 32, weight: .heavy))
+//                        .foregroundColor(.white)
+//                        .padding(.leading)
+//                    
+//                    
+//                    DatePicker(selection: $date, in: ...Date(), displayedComponents: .date){}
+//                        .labelsHidden()
                     
                 }
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
@@ -369,18 +224,24 @@ struct ContentView: View {
                             Label("Export CSV", systemImage: "square.and.arrow.up")
                         }
                         Button {
-                            showBulkAddFaces = true
-                        } label: {
-                            Label("Bulk add faces", systemImage: "person.crop.square.badge.plus")
-                        }
-                        Button {
                             showGroupPhotos = true
                         } label: {
                             Label("Group Photos", systemImage: "person.3.sequence")
                         }
+                        Button {
+                            showQuizView = true
+                        } label: {
+                            Label("Faces Quiz", systemImage: "questionmark.circle")
+                        }
+                        Button {
+                            showRegexHelp = true
+                        } label: {
+                            Label("Instructions", systemImage: "info.circle")
+                        }
                     } label: {
-                        Image(systemName: "ellipsis.circle")
-                            
+                        Image(systemName: "ellipsis")
+                            .fontWeight(.medium)
+                            .liquidGlass(in: Capsule())
                     }
                 }
             }
@@ -392,9 +253,6 @@ struct ContentView: View {
             }
             .sheet(isPresented: $showRegexHelp) {
                 RegexShortcutsView()
-            }
-            .sheet(isPresented: $showReviewNotes) {
-                ReviewNotesView(contacts: contacts)
             }
             .sheet(isPresented: $showBulkAddFaces) {
                 // Contacts save in the existing CloudKit store; batches use a dedicated CloudKit store
@@ -670,6 +528,130 @@ private extension ContentView {
         } else {
             completion?()
         }
+    }
+}
+
+
+
+// MARK: - Extracted Views to reduce type-checking complexity
+
+private struct GroupSectionView: View {
+    let group: contactsGroup
+    let onHeaderTap: () -> Void
+    
+    var body: some View {
+        Section {
+            VStack(alignment: .leading){
+                HStack{
+                    Text(group.title)
+                        .font(.title)
+                        .bold()
+                    Spacer()
+                }
+                .padding(.leading)
+                .padding(.trailing, 14)
+                Text(group.subtitle)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal)
+            }
+            .padding(.bottom, 4)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                onHeaderTap()
+            }
+            
+            LazyVGrid(columns: Array(repeating: GridItem(spacing: 10), count: 4), spacing: 10) {
+                ForEach(group.contacts) { contact in
+                    ContactTile(contact: contact)
+                }
+                ForEach(Array(group.parsedContacts.enumerated()), id: \.offset) { _, contact in
+                    ParsedContactTile(contact: contact)
+                }
+            }
+            .padding(.horizontal)
+        }
+    }
+}
+
+private struct ContactTile: View {
+    let contact: Contact
+    
+    var body: some View {
+        NavigationLink {
+            ContactDetailsView(contact: contact)
+        } label: {
+            GeometryReader { proxy in
+                let size = proxy.size
+                ZStack{
+                    Image(uiImage: UIImage(data: contact.photo) ?? UIImage())
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: size.width, height: size.height)
+                        .clipped()
+                        .background(Color(uiColor: .secondarySystemGroupedBackground))
+                    
+                    if !contact.photo.isEmpty {
+                        LinearGradient(gradient: Gradient(colors: [.black.opacity(0.0), .black.opacity(0.0), .black.opacity(0.6)]), startPoint: .top, endPoint: .bottom)
+                    }
+                    
+                    VStack {
+                        Spacer()
+                        Text(contact.name ?? "")
+                            .font(.footnote)
+                            .bold()
+                            .foregroundColor( contact.photo.isEmpty ? Color(uiColor: .label).opacity(0.8) : Color(uiColor: .white).opacity(0.8)
+                            )
+                            .padding(.bottom, 6)
+                            .padding(.horizontal, 6)
+                            .multilineTextAlignment(.center)
+                            .lineSpacing(-2)
+                    }
+                }
+            }
+            .frame(height: 88)
+            .contentShape(.rect)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .scrollTransition { content, phase in
+                content
+                    .opacity(phase.isIdentity ? 1 : 0.3)
+                    .scaleEffect(phase.isIdentity ? 1 : 0.9)
+            }
+        }
+    }
+}
+
+private struct ParsedContactTile: View {
+    let contact: Contact
+    
+    var body: some View {
+        GeometryReader { proxy in
+            let size = proxy.size
+            ZStack{
+                Image(uiImage: UIImage(data: contact.photo) ?? UIImage())
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: size.width, height: size.height)
+                    .clipped()
+                    .background(Color(uiColor: .black).opacity(0.05))
+                
+                VStack {
+                    Spacer()
+                    Text(contact.name ?? "")
+                        .font(.footnote)
+                        .bold()
+                        .foregroundColor(UIImage(data: contact.photo) != UIImage() ? Color(uiColor: .label).opacity(0.8) : Color(uiColor: .white).opacity(0.8)
+                        )
+                        .padding(.bottom, 6)
+                        .padding(.horizontal, 6)
+                        .multilineTextAlignment(.center)
+                        .lineSpacing(-2)
+                }
+            }
+        }
+        .frame(height: 88)
+        .contentShape(.rect)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 }
 

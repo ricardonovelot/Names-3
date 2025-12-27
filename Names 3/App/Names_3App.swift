@@ -39,13 +39,7 @@ struct Names_3App: App {
         WindowGroup {
             TabView {
                 
-                reelsView()
-                .task {
-                    PerformanceMonitor.shared.start()
-                }
-                .tabItem {
-                    Label("Gallery", systemImage: "camera.macro")
-                }
+                
                 
                 ContentView()
                     .tabItem {
@@ -56,6 +50,14 @@ struct Names_3App: App {
                     .tabItem {
                         Label("Notes", systemImage: "note.text")
                     }
+                
+                reelsView()
+                .task {
+                    PerformanceMonitor.shared.start()
+                }
+                .tabItem {
+                    Label("Explore", systemImage: "camera.macro")
+                }
             }
         }
         .environmentObject(settings)
