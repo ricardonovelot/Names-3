@@ -1,179 +1,80 @@
-Agent guide for UIKit
+# Agent guide for Swift and SwiftUI
 
-This repository primarily uses Swift and SwiftUI. Use UIKit only when explicitly requested, or when integrating with Apple frameworks/APIs that are UIKit-first. When writing UIKit code in this project, follow these guidelines to avoid common pitfalls and ensure modern, safe API usage.
+This repository contains an Xcode project written with Swift and SwiftUI. Please follow the guidelines below so that the development experience is built on modern, safe API usage.
 
-Role
 
-- You are a Senior iOS Engineer specializing in UIKit, Swift Concurrency, and modern iOS platform APIs.
-- Your code must always adhere to Apple’s Human Interface Guidelines and App Review guidelines.
-- Prefer programmatic UIKit (no storyboards or nibs) unless the user requests otherwise.
+## Role
 
-Core instructions
+You are a **Senior iOS Engineer**, specializing in SwiftUI, SwiftData, and related frameworks. Your code must always adhere to Apple's Human Interface Guidelines and App Review guidelines.
 
-- Target iOS 26.0 or later.
-- Swift 6.2 or later, using modern Swift concurrency (async/await, actors).
-- Use SwiftUI where it is already architecturally established; only introduce UIKit where necessary or requested, and keep interoperability clean.
+
+## Core instructions
+
+- Target iOS 26.0 or later. (Yes, it definitely exists.)
+- Swift 6.2 or later, using modern Swift concurrency.
+- SwiftUI backed up by `@Observable` classes for shared data.
 - Do not introduce third-party frameworks without asking first.
-- Use dependency injection; avoid singletons except where platform APIs require them.
+- Avoid UIKit unless requested.
 
-Swift instructions
 
-- Assume strict Swift concurrency rules are enforced.
-- Annotate UI-facing types and APIs with @MainActor. UIKit must be used on the main actor.
-- Prefer Swift-native APIs over legacy Foundation methods where equivalents exist (e.g. strings.replacing("a", with: "b")).
-- Prefer modern Foundation: URL.documentsDirectory, URL.appending(path:), URL.resourceValues.
-- Avoid force unwrap and force try unless the failure is unrecoverable and intentionally fatal.
-- Prefer Result Builders, generics, and protocols to keep code testable and composable.
-- Use Task { @MainActor in ... } or @MainActor funcs to ensure UI updates occur on the main thread; do not use DispatchQueue.main.async.
-- When sleeping, use Task.sleep(for: .seconds(…)) not Task.sleep(nanoseconds:).
-- Filter text with localizedStandardContains(_:) rather than contains(_:) for user input.
+## Swift instructions
 
-Architecture
+- Always mark `@Observable` classes with `@MainActor`.
+- Assume strict Swift concurrency rules are being applied.
+- Prefer Swift-native alternatives to Foundation methods where they exist, such as using `replacing("hello", with: "world")` with strings rather than `replacingOccurrences(of: "hello", with: "world")`.
+- Prefer modern Foundation API, for example `URL.documentsDirectory` to find the app’s documents directory, and `appending(path:)` to append strings to a URL.
+- Never use C-style number formatting such as `Text(String(format: "%.2f", abs(myNumber)))`; always use `Text(abs(change), format: .number.precision(.fractionLength(2)))` instead.
+- Prefer static member lookup to struct instances where possible, such as `.circle` rather than `Circle()`, and `.borderedProminent` rather than `BorderedProminentButtonStyle()`.
+- Never use old-style Grand Central Dispatch concurrency such as `DispatchQueue.main.async()`. If behavior like this is needed, always use modern Swift concurrency.
+- Filtering text based on user-input must be done using `localizedStandardContains()` as opposed to `contains()`.
+- Avoid force unwraps and force `try` unless it is unrecoverable.
 
-- Keep View Controllers thin. Move business logic to dedicated types (view models, services). Inject dependencies.
-- Use child view controller containment correctly when composing screens.
-- Prefer protocol-based abstractions and composition over inheritance-heavy hierarchies.
-- Break files by responsibility: one primary type per file. Keep extensions close to their features.
-- Use Coordinator-like objects when navigation becomes non-trivial.
-- Separate model, view, and controller responsibilities. Avoid Massive View Controller anti-patterns.
 
-Concurrency and threading
+## SwiftUI instructions
 
-- All UIKit work (view lifecycle, presenting controllers, updating UI) must be @MainActor.
-- Use URLSession.data(for:) for async networking.
-- Use async/await APIs across Foundation and platform frameworks where available.
-- Cancel pending tasks in deinit or appropriate lifecycle methods (e.g. viewWillDisappear) to prevent leaks or stale updates.
-- Avoid using NSOperationQueue/DispatchQueues for UI. Prefer Task and structured concurrency.
+- Always use `foregroundStyle()` instead of `foregroundColor()`.
+- Always use `clipShape(.rect(cornerRadius:))` instead of `cornerRadius()`.
+- Always use the `Tab` API instead of `tabItem()`.
+- Never use `ObservableObject`; always prefer `@Observable` classes instead.
+- Never use the `onChange()` modifier in its 1-parameter variant; either use the variant that accepts two parameters or accepts none.
+- Never use `onTapGesture()` unless you specifically need to know a tap’s location or the number of taps. All other usages should use `Button`.
+- Never use `Task.sleep(nanoseconds:)`; always use `Task.sleep(for:)` instead.
+- Never use `UIScreen.main.bounds` to read the size of the available space.
+- Do not break views up using computed properties; place them into new `View` structs instead.
+- Do not force specific font sizes; prefer using Dynamic Type instead.
+- Use the `navigationDestination(for:)` modifier to specify navigation, and always use `NavigationStack` instead of the old `NavigationView`.
+- If using an image for a button label, always specify text alongside like this: `Button("Tap me", systemImage: "plus", action: myButtonAction)`.
+- When rendering SwiftUI views, always prefer using `ImageRenderer` to `UIGraphicsImageRenderer`.
+- Don’t apply the `fontWeight()` modifier unless there is good reason. If you want to make some text bold, always use `bold()` instead of `fontWeight(.bold)`.
+- Do not use `GeometryReader` if a newer alternative would work as well, such as `containerRelativeFrame()` or `visualEffect()`.
+- When making a `ForEach` out of an `enumerated` sequence, do not convert it to an array first. So, prefer `ForEach(x.enumerated(), id: \.element.id)` instead of `ForEach(Array(x.enumerated()), id: \.element.id)`.
+- When hiding scroll view indicators, use the `.scrollIndicators(.hidden)` modifier rather than using `showsIndicators: false` in the scroll view initializer.
+- Place view logic into view models or similar, so it can be tested.
+- Avoid `AnyView` unless it is absolutely required.
+- Avoid specifying hard-coded values for padding and stack spacing unless requested.
+- Avoid using UIKit colors in SwiftUI code.
 
-Auto Layout and layout
 
-- Prefer Auto Layout with anchors, NSLayoutConstraint.activate, NSLayoutGuide, and UIStackView.
-- Do not rely on UIScreen.main.bounds for layout. Use view.safeAreaLayoutGuide, view.layoutMarginsGuide, and readableContentGuide.
-- Use contentHuggingPriority/contentCompressionResistancePriority where required.
-- Never add constraints repeatedly (e.g. in viewDidLayoutSubviews) without guarding against duplicates.
-- Avoid setting frames directly unless absolutely necessary (e.g. in custom layout/animation).
-- Use NSDirectionalEdgeInsets to support right-to-left (RTL) automatically.
+## SwiftData instructions
 
-Lists and collections
+If SwiftData is configured to use CloudKit:
 
-- Prefer UICollectionView with:
-  - UICollectionViewCompositionalLayout for advanced layouts.
-  - Modern cell APIs: CellRegistration and UIListContentConfiguration or custom content configurations.
-  - Diffable data sources (NSDiffableDataSourceSnapshot/NSDiffableDataSourceSectionSnapshot).
-- For table views (only if required):
-  - Use UITableViewDiffableDataSource and UITableView.CellRegistration.
-  - Use UIListContentConfiguration for standard cells.
-- Implement prefetching for large data (UICollectionViewDataSourcePrefetching/UITableViewDataSourcePrefetching) when needed.
+- Never use `@Attribute(.unique)`.
+- Model properties must always either have default values or be marked as optional.
+- All relationships must be marked optional.
 
-Navigation, presentation, and menus
 
-- Use UINavigationController for push navigation.
-- Use UISheetPresentationController for modals with detents and grabbers where appropriate.
-- Use UIMenu, UIAction, and UIBarButtonItem with primaryAction for modern menus and contextual actions.
-- Use UIContextMenuInteraction for peek-and-pop style interactions.
-- Always present on the topmost visible view controller; do not call present twice concurrently.
-- Dismiss modals cleanly and avoid leaking presenters.
+## Project structure
 
-Forms and search
+- Use a consistent project structure, with folder layout determined by app features.
+- Follow strict naming conventions for types, properties, methods, and SwiftData models.
+- Break different types up into different Swift files rather than placing multiple structs, classes, or enums into a single file.
+- Write unit tests for core application logic.
+- Only write UI tests if unit tests are not possible.
+- Add code comments and documentation comments as needed.
+- If the project requires secrets such as API keys, never include them in the repository.
 
-- Prefer UICollectionView configured with .insetGrouped list appearance for form-like screens.
-- Use UISearchController integrated via navigationItem.searchController for search.
-- Update search results on the main actor with throttling/debouncing if needed.
 
-Controls and configuration
+## PR instructions
 
-- Use the modern configuration APIs:
-  - UIButton.Configuration instead of manual titleEdgeInsets/contentEdgeInsets.
-  - UIListContentConfiguration for cell content.
-  - Symbol-based images via UIImage(systemName:) with UIImage.SymbolConfiguration.
-- Use primaryAction for buttons when appropriate to unify accessibility and UIControlEvents.
-
-Images and media
-
-- Prefer system SF Symbols where possible.
-- Use PHPickerViewController instead of UIImagePickerController.
-- For rendering images from SwiftUI, prefer ImageRenderer. From UIKit, use UIGraphicsImageRenderer only when SwiftUI not involved.
-- Use caching and prefetching for large image lists.
-
-Animations and transitions
-
-- Use UIViewPropertyAnimator for interruptible, interactive animations.
-- Use UIView.animate(withDuration:delay:options:animations:) only for simple cases.
-- Prefer custom UIViewControllerTransitioningDelegate for advanced transitions; keep them isolated and reusable.
-
-Interoperability with SwiftUI
-
-- When bridging, wrap UIKit in UIViewRepresentable/UIViewControllerRepresentable, or host SwiftUI in UIHostingController.
-- Keep boundaries clean: pass minimal data and callback closures. Avoid cross-layer singletons.
-- Keep UI updates on the correct actor; SwiftUI and UIKit both require main-actor isolation for UI.
-
-Accessibility and internationalization
-
-- Use leading/trailing instead of left/right for constraints, support RTL.
-- Set accessibility labels, traits, and values. Test with VoiceOver.
-- Respect Dynamic Type using preferredFont(forTextStyle:) and UIFontMetrics for custom fonts.
-- Use UIContentSizeCategoryDidChange to react to dynamic type changes if needed (or override traitCollectionDidChange).
-- Use String Catalogs for localization.
-
-Lifecycles and gotchas
-
-- Always call super in lifecycle methods (viewDidLoad, viewWillAppear, etc.).
-- Avoid adding targets or gesture recognizers multiple times. Balance add/remove.
-- Ensure delegates are weak to avoid retain cycles.
-- Do not keep strong references from cells to view controllers. Use closures carefully with [weak self].
-- Never perform heavy work on the main actor. Hop to a background Task when appropriate, then back to @MainActor to update UI.
-- Clean up observers (NotificationCenter) in deinit or use structured, automatic APIs (e.g. Combine or async sequences) when feasible.
-
-Networking, storage, and data
-
-- Use URLSession with async/await APIs.
-- Decode JSON using Codable; set Date decoding strategies explicitly.
-- Use FileManager and modern URL APIs; avoid string paths.
-- Persist user choices in UserDefaults via strongly typed wrappers where feasible.
-
-Testing
-
-- Write unit tests for view models, data sources, and services.
-- Keep view controllers light so they’re easy to initialize in tests (loadViewIfNeeded()).
-- Use dependency injection to supply fakes/mocks.
-- UI tests only when unit tests can’t cover critical behavior.
-
-Performance
-
-- Batch updates via diffable data sources and snapshots; avoid reloadData when possible.
-- Use prefetching and placeholder content for long lists.
-- Cache layouts and expensive computations.
-- Profile with Instruments (Time Profiler, Allocations, Leaks).
-
-Security and privacy
-
-- Do not embed secrets in the repository.
-- Request permissions just-in-time, with clear rationale matching Info.plist usage descriptions.
-- Follow Apple privacy guidelines for data collection and storage.
-
-PR instructions
-
-- If installed, ensure SwiftLint returns no warnings or errors before committing.
-- Keep PRs focused and small. Provide rationale in summaries and inline comments if needed.
-- Include tests for new logic and screenshots/videos for UI changes where helpful.
-
-Common AI pitfalls to avoid in UIKit
-
-- Adding constraints multiple times or in the wrong lifecycle method. Create constraints once (e.g. in viewDidLoad) and activate/update them in a controlled way.
-- Mixing manual frames with Auto Layout without clear intent; prefer Auto Layout.
-- Presenting a controller while another presentation is in progress; serialize presentations and dismissals.
-- Retain cycles via delegates/closures; always use weak where appropriate and audit ownership.
-- Using outdated APIs (UIWebView, legacy image picker, manual menu systems); use WKWebView, PHPickerViewController, UIMenu/UIAction.
-- Hardcoding layout constants that don’t respect safe areas, layout margins, and Dynamic Type; use guides and metrics.
-- Touch handling with gesture recognizers that conflict with system navigation; use system controls or properly configured UIGestureRecognizers.
-- Updating UI from background threads; ensure @MainActor or hop to the main actor before touching UIKit.
-
-Minimal UIKit template (programmatic)
-
-- Subclass UIViewController
-- Build a view hierarchy in loadView or viewDidLoad using UIStackView and constraints.
-- Configure controls with modern configuration APIs.
-- Use a view model injected via initializer for logic and data.
-- Snapshot updates using diffable data sources when lists are involved.
-- Present modals with UISheetPresentationController when appropriate.
-- Ensure accessibility and Dynamic Type compliance from the start.
+- If installed, make sure SwiftLint returns no warnings or errors before committing.

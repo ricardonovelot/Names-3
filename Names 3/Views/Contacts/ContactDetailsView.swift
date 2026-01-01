@@ -8,6 +8,9 @@ struct ContactDetailsView: View {
     @Environment(\.dismiss) private var dismiss
 
     @Bindable var contact: Contact
+    var isCreationFlow: Bool = false
+    var onSave: (() -> Void)? = nil
+    var onCancel: (() -> Void)? = nil
 
     @State var viewState = CGSize.zero
 
@@ -172,35 +175,30 @@ struct ContactDetailsView: View {
                 .buttonStyle(PlainButtonStyle())
 
                 List{
-                    let array = contact.notes ?? []
+                    let array = (contact.notes ?? []).filter { $0.isArchived == false }
                     ForEach(array, id: \.self) { note in
                         Section{
-                            VStack {
-                                TextField("Note Content", text: Binding(
-                                    get: { note.content },
-                                    set: { note.content = $0 }
-                                ), axis: .vertical)
-                                    .lineLimit(2...)
-                                HStack {
-                                    Spacer()
-                                    Text(note.creationDate, style: .date)
-                                        .font(.caption)
+                            NoteEditableRow(note: note, showContact: false)
+                                .swipeActions(edge: .trailing) {
+                                    Button(role: .destructive) {
+                                        note.isArchived = true
+                                        note.archivedDate = Date()
+                                        do {
+                                            try modelContext.save()
+                                        } catch {
+                                            print("Save failed: \(error)")
+                                        }
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
                                 }
-                            }
-                            .swipeActions(edge: .trailing) {
-                                Button(role: .destructive) {
-                                    modelContext.delete(note)
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
+                                .swipeActions(edge: .leading) {
+                                    Button {
+                                    } label: {
+                                        Label("Edit Date", systemImage: "calendar")
+                                    }
+                                    .tint(.blue)
                                 }
-                            }
-                            .swipeActions(edge: .leading) {
-                                Button {
-                                } label: {
-                                    Label("Edit Date", systemImage: "calendar")
-                                }
-                                .tint(.blue)
-                            }
                         }
                     }
                 }
@@ -210,38 +208,62 @@ struct ContactDetailsView: View {
             .ignoresSafeArea(image != UIImage() ? .all : [])
             .background(Color(UIColor.systemGroupedBackground))
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button {
-                        } label: {
-                            Text("Duplicate")
+                if isCreationFlow {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Cancel") {
+                            onCancel?() ?? dismiss()
                         }
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Save") {
+                            do {
+                                try modelContext.save()
+                            } catch {
+                                print("Save failed: \(error)")
+                            }
+                            onSave?()
+                        }
+                    }
+                } else {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Menu {
+                            Button {
+                            } label: {
+                                Text("Duplicate")
+                            }
+                            Button {
+                                contact.isArchived = true
+                                contact.archivedDate = Date()
+                                do {
+                                    try modelContext.save()
+                                } catch {
+                                    print("Save failed: \(error)")
+                                }
+                                dismiss()
+                            } label: {
+                                Text("Delete")
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
+                    }
+                    ToolbarItem(placement: .navigationBarLeading) {
                         Button {
-                            modelContext.delete(contact)
                             dismiss()
                         } label: {
-                            Text("Delete")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                    }
-                }
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button {
-                        dismiss()
-                    } label: {
-                        HStack {
-                            HStack{
-                                Image(systemName: image != UIImage() ? "" : "chevron.backward")
-                                Text("Back")
-                                    .fontWeight(image != UIImage() ? .medium : .regular)
+                            HStack {
+                                HStack{
+                                    Image(systemName: image != UIImage() ? "" : "chevron.backward")
+                                    Text("Back")
+                                        .fontWeight(image != UIImage() ? .medium : .regular)
+                                }
+                                .padding(.trailing, 8)
                             }
-                            .padding(.trailing, 8)
-                        }
-                        .padding(.leading, CustomBackButtonAnimationValue)
-                        .onAppear{
-                            withAnimation {
-                                CustomBackButtonAnimationValue = 0
+                            .padding(.leading, CustomBackButtonAnimationValue)
+                            .onAppear{
+                                withAnimation {
+                                    CustomBackButtonAnimationValue = 0
+                                }
                             }
                         }
                     }
@@ -255,7 +277,7 @@ struct ContactDetailsView: View {
             CustomDatePicker(contact: contact)
         }
         .sheet(isPresented: $showTagPicker) {
-            CustomTagPicker(contact: contact)
+            TagPickerView(mode: .contactToggle(contact: contact))
         }
         .fullScreenCover(isPresented: $showCropView){
             if let image = UIImage(data: contact.photo) {

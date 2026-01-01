@@ -7,52 +7,62 @@ struct HomeView: View {
 
     @Query(filter: #Predicate<Contact> { $0.isArchived == false }, sort: \Contact.timestamp, order: .reverse)
     private var contacts: [Contact]
-    @Query private var tags: [Tag]
+
+    @Query(sort: [SortDescriptor(\Note.creationDate, order: .reverse)])
+    private var notes: [Note]
+
+    @Query(filter: #Predicate<QuickNote> { $0.isProcessed == false }, sort: [SortDescriptor(\QuickNote.date, order: .reverse)])
+    private var unprocessedQuickNotes: [QuickNote]
 
     @State private var showBulkAddFaces = false
     @State private var showQuizView = false
     @State private var showDeletedView = false
     @State private var showManageTags = false
     @State private var showGroupPhotos = false
-
-    private var todayCount: Int {
-        let cal = Calendar.current
-        return contacts.filter { !$0.isMetLongAgo && cal.isDateInToday($0.timestamp) }.count
-    }
-
-    private var longAgoCount: Int {
-        contacts.filter { $0.isMetLongAgo }.count
-    }
-
-    private var totalContacts: Int {
-        contacts.count
-    }
+    @State private var showNotesQuiz = false
 
     private var topRecent: [Contact] {
         Array(contacts.prefix(12))
+    }
+
+    private var recentNotes: [Note] {
+        Array(notes.prefix(6))
+    }
+
+    private var recentUnprocessedQuickNotes: [QuickNote] {
+        Array(unprocessedQuickNotes.prefix(6))
     }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    header
 
-                    statsRow
+                    UnprocessedQuickNotesSectionView(
+                        quickNotes: recentUnprocessedQuickNotes
+                    )
 
-                    quickActions
+                    QuizCardsSectionView(
+                        onFacesQuiz: { showQuizView = true },
+                        onNotesQuiz: { showNotesQuiz = true }
+                    )
 
-                    recentSection
+                    RecentNotesSectionView(
+                        notes: recentNotes
+                    )
+
+                    recentContactsSection
                 }
                 .padding(.horizontal)
                 .padding(.top, 12)
                 .padding(.bottom, 24)
             }
-            .navigationTitle("Home")
-            .navigationBarTitleDisplayMode(.large)
         }
         .sheet(isPresented: $showQuizView) {
             QuizView(contacts: contacts)
+        }
+        .sheet(isPresented: $showNotesQuiz) {
+            NotesQuizView(contacts: contacts)
         }
         .sheet(isPresented: $showDeletedView) {
             DeletedView()
@@ -70,65 +80,10 @@ struct HomeView: View {
         }
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Welcome back")
-                .font(.headline)
-                .foregroundStyle(.secondary)
-            Text("Names")
-                .font(.largeTitle.bold())
-        }
-    }
-
-    private var statsRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 12) {
-                StatCard(title: "Total", value: totalContacts, color: .accentColor)
-                StatCard(title: "Today", value: todayCount, color: .green)
-                StatCard(title: "Long ago", value: longAgoCount, color: .orange)
-                StatCard(title: "Tags", value: tags.count, color: .purple)
-            }
-            .padding(.vertical, 4)
-        }
-    }
-
-    private var quickActions: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Quick Actions")
-                .font(.title3.bold())
-            LazyVGrid(columns: [
-                GridItem(.flexible(), spacing: 10),
-                GridItem(.flexible(), spacing: 10)
-            ], spacing: 10) {
-                QuickActionButton(title: "Add Faces", systemImage: "camera.viewfinder", tint: .blue) {
-                    showBulkAddFaces = true
-                }
-                QuickActionButton(title: "Faces Quiz", systemImage: "questionmark.circle", tint: .teal) {
-                    showQuizView = true
-                }
-                QuickActionButton(title: "People", systemImage: "person.3", tint: .indigo) {
-                    tabSelection = .people
-                }
-                QuickActionButton(title: "Explore", systemImage: "camera.macro", tint: .pink) {
-                    tabSelection = .explore
-                }
-                QuickActionButton(title: "Group Photos", systemImage: "person.3.sequence", tint: .mint) {
-                    showGroupPhotos = true
-                }
-                QuickActionButton(title: "Manage Tags", systemImage: "tag", tint: .purple) {
-                    showManageTags = true
-                }
-                QuickActionButton(title: "Deleted", systemImage: "trash", tint: .red) {
-                    showDeletedView = true
-                }
-            }
-        }
-    }
-
-    private var recentSection: some View {
+    private var recentContactsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Recent")
+                Text("Contacts")
                     .font(.title3.bold())
                 Spacer()
                 Button {
@@ -156,60 +111,6 @@ struct HomeView: View {
                 }
             }
         }
-    }
-}
-
-private struct StatCard: View {
-    let title: String
-    let value: Int
-    let color: Color
-
-    var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                Text("\(value)")
-                    .font(.title2.bold())
-            }
-            Spacer()
-        }
-        .padding()
-        .frame(width: 150, height: 70)
-        .background(.thinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(color.opacity(0.15))
-        )
-    }
-}
-
-private struct QuickActionButton: View {
-    let title: String
-    let systemImage: String
-    let tint: Color
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                Image(systemName: systemImage)
-                    .font(.title3)
-                    .frame(width: 28, height: 28)
-                    .foregroundStyle(.white)
-                    .background(tint)
-                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                Text(title)
-                    .font(.subheadline.bold())
-                Spacer(minLength: 0)
-            }
-            .padding(12)
-            .background(.ultraThinMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        }
-        .buttonStyle(.plain)
     }
 }
 
@@ -245,5 +146,186 @@ private struct RecentTile: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .contentShape(.rect)
+    }
+}
+
+private struct RecentNotesSectionView: View {
+    let notes: [Note]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Notes")
+                .font(.title3.bold())
+
+            if notes.isEmpty {
+                Text("No recent notes")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(notes, id: \.self) { note in
+                        NavigationLink {
+                            NoteDetailView(note: note)
+                        } label: {
+                            NoteListRow(note: note, showContact: true)
+                        }
+                        .buttonStyle(.plain)
+
+                        if note.id != notes.last?.id {
+                            Divider()
+                        }
+                    }
+
+                    NavigationLink {
+                        NotesFeedView()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text("See all notes")
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(12)
+                .background(.ultraThinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+        }
+    }
+}
+
+private struct UnprocessedQuickNotesSectionView: View {
+    let quickNotes: [QuickNote]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Unprocessed Quick Notes")
+                .font(.title3.bold())
+
+            if quickNotes.isEmpty {
+                Text("No unprocessed quick notes")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(quickNotes, id: \.self) { qn in
+                        QuickNoteRow(quickNote: qn)
+
+                        if qn.id != quickNotes.last?.id {
+                            Divider()
+                        }
+                    }
+
+                    NavigationLink {
+                        QuickNotesFeedView()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text("See all quick notes")
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(12)
+                .background(.ultraThinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+        }
+    }
+}
+
+private struct QuickNoteRow: View {
+    let quickNote: QuickNote
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(quickNote.content.isEmpty ? "—" : quickNote.content)
+                .font(.body)
+                .foregroundStyle(.primary)
+                .lineLimit(3)
+
+            HStack {
+                Spacer()
+                Group {
+                    if quickNote.isLongAgo {
+                        Text("Long time ago")
+                    } else {
+                        Text(quickNote.date, style: .date)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 2)
+        .contentShape(Rectangle())
+    }
+}
+
+private struct QuizCardsSectionView: View {
+    let onFacesQuiz: () -> Void
+    let onNotesQuiz: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button(action: onFacesQuiz) {
+                HStack(spacing: 12) {
+                    Image(systemName: "questionmark.circle")
+                        .font(.system(size: 28, weight: .regular))
+                        .frame(width: 40, height: 40)
+                        .foregroundStyle(.white)
+                        .background(Color.teal)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Faces Quiz")
+                            .font(.headline)
+                        Text("Practice recognizing faces")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(16)
+                .background(.ultraThinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .buttonStyle(.plain)
+
+            Button(action: onNotesQuiz) {
+                HStack(spacing: 12) {
+                    Image(systemName: "note.text")
+                        .font(.system(size: 28, weight: .regular))
+                        .frame(width: 40, height: 40)
+                        .foregroundStyle(.white)
+                        .background(Color.orange)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Notes Quiz")
+                            .font(.headline)
+                        Text("Test your memory of notes")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(16)
+                .background(.ultraThinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(maxWidth: .infinity)
     }
 }

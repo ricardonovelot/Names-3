@@ -9,17 +9,7 @@ struct QuickNotesFeedView: View {
     @Query(sort: [SortDescriptor(\QuickNote.date, order: .reverse)])
     private var quickNotes: [QuickNote]
 
-    @State private var text: String = ""
-    @FocusState private var fieldIsFocused: Bool
-    @State private var bottomInputHeight: CGFloat = 0
-
-    private var dynamicBackground: Color {
-        if fieldIsFocused {
-            return colorScheme == .light ? .clear : .clear
-        } else {
-            return colorScheme == .light ? .clear : .clear
-        }
-    }
+    @State private var parsedContacts: [Contact] = []
 
     var body: some View {
         NavigationStack {
@@ -63,107 +53,10 @@ struct QuickNotesFeedView: View {
                 }
             }
             .navigationTitle("Quick Notes")
-            .safeAreaInset(edge: .bottom) { bottomInput }
-        }
-    }
-
-    @ViewBuilder
-    private var bottomInput: some View {
-        VStack {
-            HStack(spacing: 6) {
-                TextField("", text: $text, axis: .vertical)
-                    .padding(.horizontal, 32)
-                    .padding(.vertical, 8)
-                    .focused($fieldIsFocused)
-                    .submitLabel(.send)
-                    .onChange(of: text) { oldValue, newValue in
-                        if let last = newValue.last, last == "\n" {
-                            text.removeLast()
-                            saveQuickNote()
-                        }
-                    }
-                    .liquidGlass(in: Capsule())
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .safeAreaInset(edge: .bottom) {
+                QuickInputView(mode: .quickNotes, parsedContacts: $parsedContacts)
             }
         }
-        .padding(.horizontal)
-        .background(dynamicBackground)
-        .background(
-            GeometryReader { proxy in
-                Color.clear
-                    .preference(key: BottomInputHeightKey.self, value: proxy.size.height)
-            }
-        )
-        .onPreferenceChange(BottomInputHeightKey.self) { bottomInputHeight = $0 }
-    }
-
-    private func saveQuickNote() {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-
-        if let qn = buildQuickNoteFromText(trimmed) {
-            modelContext.insert(qn)
-            try? modelContext.save()
-        }
-
-        text = ""
-    }
-
-    private func buildQuickNoteFromText(_ raw: String) -> QuickNote? {
-        var working = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        let lower = working.lowercased()
-        if lower.hasPrefix("quick note") {
-            working = String(working.dropFirst("quick note".count)).trimmingCharacters(in: .whitespacesAndNewlines)
-        } else if lower.hasPrefix("quick") {
-            working = String(working.dropFirst("quick".count)).trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        if working.hasPrefix(":") {
-            working.removeFirst()
-            working = working.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        if working.isEmpty { return nil }
-
-        let dateDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.date.rawValue)
-        var detectedDate: Date? = nil
-        if let matches = dateDetector?.matches(in: working, options: [], range: NSRange(location: 0, length: working.utf16.count)) {
-            for match in matches {
-                if match.resultType == .date, let date = match.date {
-                    detectedDate = adjustToPast(date)
-                    if let range = Range(match.range, in: working) {
-                        working.removeSubrange(range)
-                    }
-                    break
-                }
-            }
-        }
-
-        var isLongAgo = false
-        let patterns = ["\\blong\\s*time\\s*ago\\b", "\\blta\\b"]
-        for pattern in patterns {
-            if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
-                let range = NSRange(location: 0, length: working.utf16.count)
-                if regex.firstMatch(in: working, options: [], range: range) != nil {
-                    isLongAgo = true
-                }
-                working = regex.stringByReplacingMatches(in: working, options: [], range: range, withTemplate: "")
-            }
-        }
-
-        let content = working.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !content.isEmpty else { return nil }
-
-        let when = detectedDate ?? Date()
-        return QuickNote(content: content, date: when, isLongAgo: isLongAgo, isProcessed: false)
-    }
-
-    private func adjustToPast(_ date: Date) -> Date {
-        let today = Date()
-        let calendar = Calendar.current
-        if date > today {
-            let adjustedDate = calendar.date(byAdding: .year, value: -1, to: date)
-            return adjustedDate ?? date
-        }
-        return date
     }
 }
 
@@ -215,12 +108,5 @@ private struct QuickNoteEditableRow: View {
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
         }
-    }
-}
-
-private struct BottomInputHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
     }
 }

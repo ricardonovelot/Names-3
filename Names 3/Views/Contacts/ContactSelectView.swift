@@ -10,6 +10,7 @@ struct ContactSelectView: View {
     @State private var searchText: String = ""
     @State private var navigateNew: Bool = false
     @State private var created: Contact?
+    @State private var showCreateSheet: Bool = false
 
     let onSelect: (Contact) -> Void
 
@@ -40,7 +41,7 @@ struct ContactSelectView: View {
                         let newContact = Contact()
                         modelContext.insert(newContact)
                         created = newContact
-                        navigateNew = true
+                        showCreateSheet = true
                     } label: {
                         Label("New", systemImage: "person.badge.plus")
                     }
@@ -48,15 +49,35 @@ struct ContactSelectView: View {
             }
             .background(
                 NavigationLink(
-                    destination: {
-                        if let c = created {
-                            ContactDetailsView(contact: c)
-                        }
-                    },
-                    isActive: $navigateNew
-                ) { EmptyView() }
+                    destination: OptionalContactDetails(contact: created),
+                    isActive: $navigateNew,
+                    label: { EmptyView() }
+                )
                 .hidden()
             )
+        }
+        .sheet(isPresented: $showCreateSheet) {
+            if let c = created {
+                NavigationStack {
+                    ContactDetailsView(
+                        contact: c,
+                        isCreationFlow: true,
+                        onSave: {
+                            // Ensure saved already inside ContactDetailsView
+                            showCreateSheet = false
+                            onSelect(c)
+                        },
+                        onCancel: {
+                            if let toDelete = created {
+                                modelContext.delete(toDelete)
+                                do { try modelContext.save() } catch { print("Save failed: \(error)") }
+                            }
+                            created = nil
+                            showCreateSheet = false
+                        }
+                    )
+                }
+            }
         }
     }
 
@@ -65,5 +86,19 @@ struct ContactSelectView: View {
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return list }
         return list.filter { ($0.name ?? "").localizedCaseInsensitiveContains(q) }
+    }
+}
+
+private struct OptionalContactDetails: View {
+    let contact: Contact?
+
+    var body: some View {
+        Group {
+            if let c = contact {
+                ContactDetailsView(contact: c)
+            } else {
+                EmptyView()
+            }
+        }
     }
 }

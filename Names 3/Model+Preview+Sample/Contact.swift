@@ -13,6 +13,8 @@ class Contact {
     var name: String? = ""
     var summary: String? = ""
     var isMetLongAgo: Bool = false
+    var isArchived: Bool = false
+    var archivedDate: Date? = nil
 
     var notes: [Note]?
     var tags: [Tag]?
@@ -28,6 +30,8 @@ class Contact {
         name: String = "",
         summary: String = "",
         isMetLongAgo: Bool = false,
+        isArchived: Bool = false,
+        archivedDate: Date? = nil,
         timestamp: Date = Date(),
         notes: [Note]? = nil,
         tags: [Tag]? = nil,
@@ -40,6 +44,8 @@ class Contact {
         self.name = name
         self.summary = summary
         self.isMetLongAgo = isMetLongAgo
+        self.isArchived = isArchived
+        self.archivedDate = archivedDate
         self.notes = notes
         self.tags = tags
         self.timestamp = timestamp
@@ -52,7 +58,11 @@ class Contact {
 }
 
 struct contactsGroup: Identifiable, Hashable {
-    let id = UUID()
+    var id: String {
+        if isLongAgo { return "long-ago" }
+        let day = Calendar.current.startOfDay(for: date).timeIntervalSince1970
+        return "day-\(day)"
+    }
     let date: Date
     let contacts: [Contact]
     let parsedContacts: [Contact]
@@ -129,13 +139,26 @@ struct contactsGroup: Identifiable, Hashable {
 final class Note {
     var content: String = ""
     var creationDate: Date = Date()
+    var isLongAgo: Bool = false
+    var isArchived: Bool = false
+    var archivedDate: Date? = nil
 
     @Relationship(inverse: \Contact.notes)
     var contact: Contact?
 
-    init(content: String = "", creationDate: Date = Date(), contact: Contact? = nil) {
+    init(
+        content: String = "",
+        creationDate: Date = Date(),
+        isLongAgo: Bool = false,
+        isArchived: Bool = false,
+        archivedDate: Date? = nil,
+        contact: Contact? = nil
+    ) {
         self.content = content
         self.creationDate = creationDate
+        self.isLongAgo = isLongAgo
+        self.isArchived = isArchived
+        self.archivedDate = archivedDate
         self.contact = contact
     }
 }
@@ -143,12 +166,16 @@ final class Note {
 @Model
 final class Tag {
     var name: String = ""
+    var isArchived: Bool = false
+    var archivedDate: Date? = nil
 
     @Relationship(inverse: \Contact.tags)
     var contacts: [Contact]? = []
 
-    init(name: String = "", contacts: [Contact]? = []) {
+    init(name: String = "", isArchived: Bool = false, archivedDate: Date? = nil, contacts: [Contact]? = []) {
         self.name = name
+        self.isArchived = isArchived
+        self.archivedDate = archivedDate
         self.contacts = contacts
     }
 }
@@ -179,6 +206,10 @@ extension Tag {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         if let existing = find(named: trimmed, in: context) {
+            if existing.isArchived {
+                existing.isArchived = false
+                existing.archivedDate = nil
+            }
             return existing
         }
         let tag = Tag(name: trimmed)

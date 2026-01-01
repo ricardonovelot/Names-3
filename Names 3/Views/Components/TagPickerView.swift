@@ -4,11 +4,12 @@ import SwiftData
 struct TagPickerView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
-    @Query private var tags: [Tag]
+    @Query(filter: #Predicate<Tag> { $0.isArchived == false }) private var tags: [Tag]
 
     enum Mode {
         case contactToggle(contact: Contact)
         case groupApply(onApply: (Tag) -> Void)
+        case manage
     }
 
     let mode: Mode
@@ -17,6 +18,7 @@ struct TagPickerView: View {
     @State private var selectedForGroup: Tag?
     @State private var renamingTag: Tag?
     @State private var renameText: String = ""
+    @State private var isRenaming: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -31,6 +33,9 @@ struct TagPickerView: View {
                                     toggle(tag: created, for: contact)
                                 case .groupApply:
                                     selectedForGroup = created
+                                case .manage:
+                                    // No selection; just create
+                                    break
                                 }
                                 searchText = ""
                             }
@@ -46,13 +51,13 @@ struct TagPickerView: View {
 
                 Section {
                     let uniqueTags = uniqueSortedTags()
-                    ForEach(uniqueTags, id: \.self) { tag in
+                    ForEach(uniqueTags, id: \.normalizedKey) { tag in
                         HStack {
                             Text(tag.name)
                             Spacer()
                             if isSelected(tag: tag) {
                                 Image(systemName: "checkmark")
-                                    .foregroundStyle(.accent)
+                                    .foregroundStyle(.tint)
                             }
                         }
                         .contentShape(Rectangle())
@@ -62,16 +67,25 @@ struct TagPickerView: View {
                                 toggle(tag: tag, for: contact)
                             case .groupApply:
                                 selectedForGroup = tag
+                            case .manage:
+                                break
                             }
                         }
                         .swipeActions {
                             Button {
                                 renamingTag = tag
                                 renameText = tag.name
+                                isRenaming = true
                             } label: {
                                 Label("Rename", systemImage: "pencil")
                             }
                             .tint(.orange)
+                            
+                            Button(role: .destructive) {
+                                archive(tag: tag)
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
                         }
                     }
                 }
@@ -101,9 +115,13 @@ struct TagPickerView: View {
                         }
                         .disabled(selectedForGroup == nil && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
+                case .manage:
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done") { dismiss() }
+                    }
                 }
             }
-            .sheet(item: $renamingTag) { tag in
+            .sheet(isPresented: $isRenaming) {
                 NavigationStack {
                     Form {
                         Section("Rename tag") {
@@ -117,6 +135,7 @@ struct TagPickerView: View {
                     .toolbar {
                         ToolbarItem(placement: .topBarLeading) {
                             Button("Cancel") {
+                                isRenaming = false
                                 renamingTag = nil
                                 renameText = ""
                             }
@@ -127,6 +146,7 @@ struct TagPickerView: View {
                                 if let t = renamingTag, !trimmed.isEmpty {
                                     _ = Tag.rename(t, to: trimmed, in: modelContext)
                                 }
+                                isRenaming = false
                                 renamingTag = nil
                                 renameText = ""
                             }
@@ -153,6 +173,8 @@ struct TagPickerView: View {
             return (contact.tags ?? []).contains(where: { $0.normalizedKey == tag.normalizedKey })
         case .groupApply:
             return selectedForGroup?.normalizedKey == tag.normalizedKey
+        case .manage:
+            return false
         }
     }
 
@@ -164,6 +186,16 @@ struct TagPickerView: View {
             arr.append(tag)
         }
         contact.tags = arr
+        do {
+            try modelContext.save()
+        } catch {
+            print("Save failed: \(error)")
+        }
+    }
+    
+    private func archive(tag: Tag) {
+        tag.isArchived = true
+        tag.archivedDate = Date()
         do {
             try modelContext.save()
         } catch {
@@ -187,6 +219,8 @@ extension Tag {
                 }
                 contact.tags = arr
             }
+            existing.isArchived = false
+            existing.archivedDate = nil
             context.delete(tag)
             do { try context.save() } catch { print("Save failed: \(error)") }
             return existing

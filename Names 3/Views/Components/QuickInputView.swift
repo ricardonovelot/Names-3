@@ -14,6 +14,9 @@ struct QuickInputView: View {
     let mode: QuickInputMode
     @Binding var parsedContacts: [Contact]
     var onCameraTap: (() -> Void)? = nil
+    var onQuickNoteAdded: (() -> Void)? = nil
+    var onQuickNoteDetected: (() -> Void)? = nil
+    var onQuickNoteCleared: (() -> Void)? = nil
 
     // People suggestions and selection
     @Query(filter: #Predicate<Contact> { $0.isArchived == false })
@@ -31,8 +34,37 @@ struct QuickInputView: View {
     @State private var filterString: String = ""
     @State private var suggestedContacts: [Contact] = []
     @State private var parseDebounceWork: DispatchWorkItem?
+    @State private var quickNoteActive: Bool = false
+    @State private var suppressNextClear: Bool = false
 
-    private var quickNoteKeywords: [String] { ["quick note", "quick"] }
+    private var quickNoteKeywords: [String] { ["quick note", "quick", "qn"] }
+
+    private func isQuickNoteCommand(_ input: String) -> Bool {
+        let s = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        // prefix forms for "quick" / "quick note"
+        let prefixPattern = #"^(quick\s*note|quick)\b[\s:]*"#
+        if s.range(of: prefixPattern, options: [.regularExpression, .caseInsensitive]) != nil {
+            return true
+        }
+        // anywhere standalone token "qn" (optionally followed by colon)
+        let anywhereQN = #"(?i)\bqn\b"#
+        return s.range(of: anywhereQN, options: .regularExpression) != nil
+    }
+
+    private func stripQuickNotePrefix(from input: String) -> String {
+        var s = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefixPattern = #"(?i)^(quick\s*note|quick)\b[\s:]*"#
+        if let r = s.range(of: prefixPattern, options: .regularExpression) {
+            s = String(s[r.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        // Remove any standalone "qn" tokens (case-insensitive), optional spaces and trailing punctuation like ":" or ",".
+        let qnPattern = #"(?i)\bqn\b\s*[:;,]?"#
+        s = s.replacingOccurrences(of: qnPattern, with: "", options: .regularExpression)
+        // Collapse multiple spaces and trim again
+        s = s.replacingOccurrences(of: #"\s{2,}"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return s
+    }
 
     var body: some View {
         VStack {
@@ -85,11 +117,16 @@ struct QuickInputView: View {
                                 } else {
                                     if mode == .people {
                                         parseDebounceWork?.cancel()
-                                        let work = DispatchWorkItem {
+                                        let s = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                                        if isQuickNoteCommand(s) {
                                             parsePeopleInput()
+                                        } else {
+                                            let work = DispatchWorkItem {
+                                                parsePeopleInput()
+                                            }
+                                            parseDebounceWork = work
+                                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
                                         }
-                                        parseDebounceWork = work
-                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
                                     }
                                 }
                             }
@@ -112,6 +149,7 @@ struct QuickInputView: View {
             }
         }
         .padding(.horizontal)
+        .padding(.bottom, 16)
         .background(
             GeometryReader { proxy in
                 Color.clear
@@ -154,7 +192,6 @@ struct QuickInputView: View {
         defer { isLoading = false }
 
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let lowerTrimmed = trimmed.lowercased()
 
         if let existing = selectedExistingContact, mode == .people {
             if let note = buildNoteFromText(for: existing, text: noteTextForExisting) {
@@ -168,10 +205,15 @@ struct QuickInputView: View {
             return
         }
 
-        if quickNoteKeywords.contains(where: { lowerTrimmed.hasPrefix($0) }) || mode == .quickNotes {
+        if isQuickNoteCommand(trimmed) || mode == .quickNotes {
             if let qn = buildQuickNoteFromText(trimmed) {
                 modelContext.insert(qn)
                 do { try modelContext.save() } catch { print("Save failed: \(error)") }
+                if mode == .people {
+                    onQuickNoteAdded?()
+                    suppressNextClear = true
+                    quickNoteActive = true
+                }
             }
             resetTextAndPreview()
             return
@@ -196,31 +238,61 @@ struct QuickInputView: View {
     }
 
     private func parsePeopleInput() {
-        let input = text
-        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        var workingInput = text
+        var trimmed = workingInput.trimmingCharacters(in: .whitespacesAndNewlines)
+
         if trimmed.isEmpty {
-            parsedContacts = []
-            filterString = ""
-            suggestedContacts = []
-            return
-        }
-        let lower = trimmed.lowercased()
-        if quickNoteKeywords.contains(where: { lower.hasPrefix($0) }) {
+            if quickNoteActive {
+                if suppressNextClear {
+                    suppressNextClear = false
+                } else {
+                    quickNoteActive = false
+                    onQuickNoteCleared?()
+                }
+            }
             parsedContacts = []
             filterString = ""
             suggestedContacts = []
             return
         }
 
+        let detected = isQuickNoteCommand(trimmed)
+        if detected {
+            if !quickNoteActive {
+                quickNoteActive = true
+                onQuickNoteDetected?()
+            }
+            parsedContacts = []
+            filterString = ""
+            suggestedContacts = []
+            return
+        } else if quickNoteActive {
+            // Lost quick-note detection (e.g. "Maria Qn" -> "Maria Q"):
+            // Exit quick-notes mode, strip markers, keep remaining text, then continue parsing People.
+            quickNoteActive = false
+            onQuickNoteCleared?()
+            let sanitized = stripQuickNoteMarkers(from: workingInput)
+            workingInput = sanitized
+            text = sanitized
+            trimmed = sanitized.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                parsedContacts = []
+                filterString = ""
+                suggestedContacts = []
+                return
+            }
+        }
+
+        // From here on, parse People input using workingInput
         let dateDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.date.rawValue)
         var detectedDate: Date? = nil
-        var cleanedInput = input
+        var cleanedInput = workingInput
 
-        if let matches = dateDetector?.matches(in: input, options: [], range: NSRange(location: 0, length: input.utf16.count)) {
+        if let matches = dateDetector?.matches(in: workingInput, options: [], range: NSRange(location: 0, length: workingInput.utf16.count)) {
             for match in matches {
                 if match.resultType == .date, let date = match.date {
                     detectedDate = adjustToPast(date)
-                    if let range = Range(match.range, in: input) {
+                    if let range = Range(match.range, in: workingInput) {
                         cleanedInput.removeSubrange(range)
                     }
                     break
@@ -323,11 +395,11 @@ struct QuickInputView: View {
         if filterString.isEmpty {
             suggestedContacts = contacts
         } else {
+            let q = filterString.trimmingCharacters(in: .whitespacesAndNewlines)
             suggestedContacts = contacts.filter { contact in
-                if let name = contact.name {
-                    return name.starts(with: filterString)
-                }
-                return false
+                guard let name = contact.name, !q.isEmpty else { return false }
+                if name.localizedStandardContains(q) { return true }
+                return name.lowercased().hasPrefix(q.lowercased())
             }
         }
     }
@@ -407,18 +479,7 @@ struct QuickInputView: View {
     }
 
     private func buildQuickNoteFromText(_ raw: String) -> QuickNote? {
-        var working = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        let lower = working.lowercased()
-        if lower.hasPrefix("quick note") {
-            working = String(working.dropFirst("quick note".count)).trimmingCharacters(in: .whitespacesAndNewlines)
-        } else if lower.hasPrefix("quick") {
-            working = String(working.dropFirst("quick".count)).trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        if working.hasPrefix(":") {
-            working.removeFirst()
-            working = working.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
+        var working = stripQuickNotePrefix(from: raw)
 
         if working.isEmpty { return nil }
 
@@ -466,6 +527,33 @@ struct QuickInputView: View {
         }
 
         return date
+    }
+
+    private func stripQuickNoteMarkers(from input: String) -> String {
+        var s = input.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Remove prefix "quick note" or "quick"
+        let prefixPattern = #"(?i)^(quick\s*note|quick)\b[\s:]*"#
+        if let r = s.range(of: prefixPattern, options: .regularExpression) {
+            s = String(s[r.upperBound...])
+        }
+
+        // Tokenize and remove standalone q/qa/qn variants (case-insensitive) with trailing punctuation
+        let separators = CharacterSet.whitespacesAndNewlines
+        let punct = CharacterSet.punctuationCharacters
+        let filteredTokens: [String] = s.components(separatedBy: separators).compactMap { raw in
+            guard !raw.isEmpty else { return nil }
+            let trimmedToken = raw.trimmingCharacters(in: punct)
+            if trimmedToken.isEmpty { return nil }
+            let lower = trimmedToken.lowercased()
+            if lower == "qn" || lower == "q" { return nil }
+            if lower == "quick" || lower == "quicknote" { return nil }
+            return raw
+        }
+
+        let joined = filteredTokens.joined(separator: " ")
+        return joined.replacingOccurrences(of: #"\s{2,}"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

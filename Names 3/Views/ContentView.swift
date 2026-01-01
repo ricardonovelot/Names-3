@@ -15,16 +15,15 @@ struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.colorScheme) private var colorScheme
     
-    @Query private var contacts: [Contact]
+    @Query(filter: #Predicate<Contact> { $0.isArchived == false })
+    private var contacts: [Contact]
     @State private var parsedContacts: [Contact] = []
     
     @State private var selectedItem: PhotosPickerItem?
     
     @State private var isAtBottom = false
     private let dragThreshold: CGFloat = 100
-    @FocusState private var fieldIsFocused: Bool
     
-    @State private var text = ""
     @State private var date = Date()
 
     @State private var showPhotosPicker = false
@@ -36,18 +35,29 @@ struct ContentView: View {
     @State private var name = ""
     @State private var hashtag = ""
     
-    @State private var filterString = ""
-    @State private var suggestedContacts: [Contact] = []
-    
     @State private var showGroupDatePicker = false
-    @State private var selectedGroup: contactsGroup?
     @State private var tempGroupDate = Date()
 
-    @State private var showPhotosDayPicker = false
-    @State private var pickedImageForBatch: UIImage?
-    @State private var photosPickerDay = Date()
     @State private var groupForDateEdit: contactsGroup?
     @State private var isLoading = false
+    @State private var showGroupTagPicker = false
+    @State private var groupForTagEdit: contactsGroup?
+    @State private var showManageTags = false
+    @State private var selectedTag: Tag?
+    @State private var newTagName: String = ""
+    @State private var showDeletedView = false
+    @State private var showInlineQuickNotes = false
+    @State private var hasPendingQuickNoteInput = false
+    @State private var quickInputResetID = 0
+    @State private var showAllGroupTagDates = false
+    @State private var contactForDateEdit: Contact?
+    
+    private struct PhotosSheetPayload: Identifiable, Hashable {
+        let id = UUID()
+        let scope: PhotosPickerScope
+    }
+    @State private var photosSheet: PhotosSheetPayload?
+    @State private var pickedImageForBatch: UIImage?
 
     // Group contacts by the day of their timestamp, with a special "Met long ago" group at the top
     var groups: [contactsGroup] {
@@ -96,107 +106,136 @@ struct ContentView: View {
         return result
     }
     
-    var dynamicBackground: Color {
-        if fieldIsFocused {
-            return colorScheme == .light ? .clear : .clear
-        } else {
-            return colorScheme == .light ? .clear : .clear
-        }
-    }
-    
-    var gridSpacing = 10.0
-    
-    var columns = [
+    private let gridSpacing: CGFloat = 10.0
+    private let columns: [GridItem] = [
         GridItem(.flexible(), spacing: 10.0),
         GridItem(.flexible(), spacing: 10.0),
         GridItem(.flexible(), spacing: 10.0),
         GridItem(.flexible(), spacing: 10.0)
     ]
     
-    var body: some View {
-        NavigationStack {
-            ScrollViewReader { proxy in
-                ScrollView(showsIndicators: false){
-                    ForEach(groups) { group in
-                        GroupSectionView(
-                            group: group,
-                            onHeaderTap: {
-                                if !group.isLongAgo {
-                                    selectedGroup = group
-                                    tempGroupDate = group.date
-                                }
+    @ViewBuilder
+    private var listContent: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                ForEach(groups) { group in
+                    GroupSectionView(
+                        group: group,
+                        isLast: group.id == groups.last?.id,
+                        onImport: {
+                            guard !group.isLongAgo else { return }
+                            photosSheet = PhotosSheetPayload(scope: .day(group.date))
+                        },
+                        onEditDate: {
+                            guard !group.isLongAgo else { return }
+                            groupForDateEdit = group
+                            Task {
+                                try? await Task.sleep(for: .milliseconds(150))
+                                tempGroupDate = group.date
+                                showGroupDatePicker = true
                             }
-                        )
-                    }
-                }
-                .defaultScrollAnchor(.bottom)
-                .scrollDismissesKeyboard(.interactively)
-                .onChange(of: contacts) { oldValue, newValue in
-                    if let lastID = contacts.last?.id {
-                        withAnimation {
-                            proxy.scrollTo(lastID, anchor: .bottom)
+                        },
+                        onEditTag: {
+                            guard !group.isLongAgo else { return }
+                            groupForTagEdit = group
+                            Task {
+                                try? await Task.sleep(for: .milliseconds(150))
+                                showGroupTagPicker = true
+                            }
+                        },
+                        onRenameTag: {
+                            guard !group.isLongAgo else { return }
+                            Task {
+                                try? await Task.sleep(for: .milliseconds(150))
+                                showManageTags = true
+                            }
+                        },
+                        onDeleteAll: {
+                            guard !group.isLongAgo else { return }
+                            deleteAllEntries(in: group)
+                        },
+                        onChangeDateForContact: { contact in
+                            contactForDateEdit = contact
+                        },
+                        onTapHeader: {
+                            guard !group.isLongAgo else { return }
+                            photosSheet = PhotosSheetPayload(scope: .day(group.date))
                         }
+                    )
+                }
+            }
+            .scrollIndicators(.hidden)
+            .scrollDismissesKeyboard(.interactively)
+            .onAppear {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(50))
+                    scrollToBottom(proxy)
+                }
+            }
+            .onChange(of: contacts) { oldValue, newValue in
+                if !showInlineQuickNotes {
+                    Task { @MainActor in
+                        scrollToBottom(proxy)
                     }
                 }
             }
-//            .safeAreaInset(edge: .top){
-//                ZStack(alignment: .top) {
-//                    SmoothLinearGradient(
-//                        from: Color(red: 0.0, green: 0.0, blue: 0.04).opacity(0.62),
-//                        to: Color(red: 0.0, green: 0.0, blue: 0.04).opacity(0.0),
-//                        startPoint: UnitPoint(x: 0.5, y: 0.18),
-//                        endPoint: .bottom,
-//                        curve: .easeInOut
-//                    )
-//                    .ignoresSafeArea(.all)
-//                    .frame(height: 100)
-//                }
-//                .frame(height: 70)
-//            }
-            
-            .safeAreaInset(edge: .bottom) {
-                VStack{
-                    HStack(spacing: 6){
-                       
-                        
-                        TextField("", text: $text, axis: .vertical)
-                            .padding(.horizontal,32)
-                            .padding(.vertical,8)
-                            .liquidGlass(in: Capsule())
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            .onChange(of: text){ oldValue, newValue in
-                                if let last = newValue.last, last == "\n" {
-                                    text.removeLast()
-                                    saveContacts(modelContext: modelContext)
-                                } else {
-                                    parseContacts()
-                                }
-                            }
-                            .focused($fieldIsFocused)
-                            .submitLabel(.send)
-                        
-                        Button{
-                            showBulkAddFaces = true
-                        } label:{
-                            Image(systemName: "camera")
-                                .fontWeight(.medium)
-                                .padding(10)
-                                .liquidGlass(in: Capsule())
-                                .clipShape(Circle())
-                        }
+            .onChange(of: parsedContacts) { oldValue, newValue in
+                if !showInlineQuickNotes {
+                    Task { @MainActor in
+                        scrollToBottom(proxy)
                     }
-                    
-                    ScrollView(.horizontal){
-                        HStack{
-                            ForEach(suggestedContacts){ contact in
-                                Text(contact.name!)
-                            }
-                        }
-                    }
-                    .frame(height: 20)
                 }
-                .padding(.horizontal)
-                .background(dynamicBackground)
+            }
+            .onChange(of: showInlineQuickNotes) { oldValue, newValue in
+                if newValue == false {
+                    Task { @MainActor in
+                        scrollToBottom(proxy)
+                    }
+                }
+            }
+        }
+    }
+    
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                listContent
+                    .opacity(showInlineQuickNotes ? 0 : 1)
+                    .offset(y: showInlineQuickNotes ? -16 : 0)
+                    .allowsHitTesting(!showInlineQuickNotes)
+                    .zIndex(0)
+                    .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showInlineQuickNotes)
+
+                QuickNotesInlineView()
+                    .opacity(showInlineQuickNotes ? 1 : 0)
+                    .offset(y: showInlineQuickNotes ? 0 : 28)
+                    .allowsHitTesting(showInlineQuickNotes)
+                    .zIndex(1)
+                    .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showInlineQuickNotes)
+            }
+            .safeAreaInset(edge: .bottom) {
+                QuickInputView(mode: .people, parsedContacts: $parsedContacts) {
+                    photosSheet = PhotosSheetPayload(scope: .all)
+                } onQuickNoteAdded: {
+                    hasPendingQuickNoteInput = false
+                } onQuickNoteDetected: {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                        showInlineQuickNotes = true
+                    }
+                    hasPendingQuickNoteInput = true
+                } onQuickNoteCleared: {
+                    hasPendingQuickNoteInput = false
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                        showInlineQuickNotes = false
+                    }
+                }
+                .id(quickInputResetID)
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear
+                            .preference(key: BottomInsetHeightPreferenceKey.self, value: proxy.size.height)
+                    }
+                )
             }
             .background(Color(uiColor: .systemGroupedBackground))
             .overlay {
@@ -204,24 +243,33 @@ struct ContentView: View {
                     LoadingOverlay(message: "Loading…")
                 }
             }
-            
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-//                    Text("Names")
-//                        .font(.system(size: 32, weight: .heavy))
-//                        .foregroundColor(.white)
-//                        .padding(.leading)
-//                    
-//                    
-//                    DatePicker(selection: $date, in: ...Date(), displayedComponents: .date){}
-//                        .labelsHidden()
-                    
+                ToolbarItem(placement: .navigationBarLeading) {
+                    if showInlineQuickNotes {
+                        Button("People", systemImage: "chevron.left") {
+                            if hasPendingQuickNoteInput {
+                                // First tap clears pending input
+                                quickInputResetID &+= 1
+                                hasPendingQuickNoteInput = false
+                            } else {
+                                // Second tap exits quick view
+                                withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                                    showInlineQuickNotes = false
+                                }
+                            }
+                        }
+                    }
                 }
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
                     Menu {
                         Button(action: {
                         }) {
                             Label("Export CSV", systemImage: "square.and.arrow.up")
+                        }
+                        Button {
+                            showDeletedView = true
+                        } label: {
+                            Label("Deleted", systemImage: "trash")
                         }
                         Button {
                             showGroupPhotos = true
@@ -254,8 +302,10 @@ struct ContentView: View {
             .sheet(isPresented: $showRegexHelp) {
                 RegexShortcutsView()
             }
+            .sheet(isPresented: $showDeletedView) {
+                DeletedView()
+            }
             .sheet(isPresented: $showBulkAddFaces) {
-                // Contacts save in the existing CloudKit store; batches use a dedicated CloudKit store
                 BulkAddFacesView(contactsContext: modelContext)
                     .modelContainer(BatchModelContainer.shared)
             }
@@ -263,218 +313,39 @@ struct ContentView: View {
                 GroupPhotosListView(contactsContext: modelContext)
                     .modelContainer(BatchModelContainer.shared)
             }
-            // Group actions bottom sheet
-            .sheet(item: $selectedGroup) { group in
-                GroupActionsSheet(
-                    date: group.date,
-                    onImport: {
-                        let day = group.date
-                        selectedGroup = nil
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                            photosPickerDay = day
-                            showPhotosDayPicker = true
-                        }
-                    },
-                    onEditDate: {
-                        groupForDateEdit = group
-                        selectedGroup = nil
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                            tempGroupDate = group.date
-                            showGroupDatePicker = true
-                        }
-                    }
-                )
-                .presentationDetents([.height(220), .medium])
-                .presentationDragIndicator(.visible)
-            }
-            // Day-filtered photos picker
-            // Use a host that overlays a spinner until content is ready to render
-            .sheet(isPresented: $showPhotosDayPicker) {
-                PhotosDayPickerHost(day: photosPickerDay) { image in
+            .sheet(item: $photosSheet) { payload in
+                PhotosDayPickerHost(scope: payload.scope) { image, date in
                     pickedImageForBatch = image
-                    showPhotosDayPicker = false
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                        showBulkAddFacesWithSeed(image: image, date: photosPickerDay)
-                    }
-                }
-            }
-            .sheet(isPresented: $showGroupDatePicker) {
-                NavigationStack {
-                    VStack {
-                        DatePicker("New Date", selection: $tempGroupDate, in: ...Date(), displayedComponents: .date)
-                            .datePickerStyle(GraphicalDatePickerStyle())
-                            .padding()
-                        Spacer()
-                    }
-                    .navigationTitle("Change Date")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarLeading) {
-                            Button("Cancel") {
-                                showGroupDatePicker = false
-                                groupForDateEdit = nil
-                            }
+                    photosSheet = nil
+                    let seedDate: Date = {
+                        switch payload.scope {
+                        case .day(let d):
+                            return date ?? d
+                        case .all:
+                            return date ?? Date()
                         }
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button("Apply") {
-                                applyGroupDateChange()
-                            }
-                        }
+                    }()
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(150))
+                        showBulkAddFacesWithSeed(image: image, date: seedDate)
                     }
                 }
             }
-        }
-        
-    }
-
-   
-
-    private func parseContacts() {
-        let input = text
-        let dateDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.date.rawValue)
-        var detectedDate: Date? = nil
-        var cleanedInput = input
-
-        if let matches = dateDetector?.matches(in: input, options: [], range: NSRange(location: 0, length: input.utf16.count)) {
-            for match in matches {
-                if match.resultType == .date, let date = match.date {
-                    detectedDate = adjustToPast(date)
-                    if let range = Range(match.range, in: input) {
-                        cleanedInput.removeSubrange(range)
-                    }
-                    break
-                }
+            .sheet(item: $contactForDateEdit) { contact in
+                CustomDatePicker(contact: contact)
             }
-        }
-
-        let fallbackDate = Date()
-        let finalDate = detectedDate ?? fallbackDate
-
-        let nameEntries = cleanedInput.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-        
-        var contacts: [Contact] = []
-        var globalTags: [Tag] = []
-        var globalTagKeys = Set<String>()
-
-        let allWords = cleanedInput.split(separator: " ").map { String($0) }
-        for word in allWords {
-            if word.starts(with: "#") {
-                let raw = String(word.dropFirst())
-                let trimmed = raw.trimmingCharacters(in: .punctuationCharacters)
-                let key = Tag.normalizedKey(trimmed)
-                if !trimmed.isEmpty && !globalTagKeys.contains(key) {
-                    if let tag = Tag.fetchOrCreate(named: trimmed, in: modelContext) {
-                        globalTags.append(tag)
-                        globalTagKeys.insert(key)
-                    }
-                }
+            .sheet(isPresented: $showGroupTagPicker) {
+                TagPickerView(mode: .groupApply { tag in
+                    applyGroupTagChange(tag)
+                })
+            }
+            .sheet(isPresented: $showManageTags) {
+                TagPickerView(mode: .manage)
             }
         }
         
-        for entry in nameEntries {
-            if entry.starts(with: "#") {
-                continue
-            }
-
-            var nameComponents: [String] = []
-            var notes: [Note] = []
-            var summary: String? = nil
-
-            if entry.contains("::") {
-                let parts = entry.split(separator: "::", maxSplits: 1)
-                if parts.count == 2 {
-                    nameComponents = parts[0].split(separator: ",").map { String($0.trimmingCharacters(in: .whitespaces)) }
-                    summary = String(parts[1].trimmingCharacters(in: .whitespaces))
-                } else {
-                    nameComponents = parts[0].split(separator: ",").map { String($0.trimmingCharacters(in: .whitespaces)) }
-                }
-            } else {
-                nameComponents = entry.split(separator: ",").map { String($0.trimmingCharacters(in: .whitespaces)) }
-            }
-            
-            var name = nameComponents.joined(separator: " ")
-            
-            if !name.isEmpty {
-                
-                filterString = name
-                filterContacts()
-
-                if let notePart = nameComponents.last, notePart.contains(":") {
-                    let nameAndNote = notePart.split(separator: ":", maxSplits: 1)
-                    if nameAndNote.count == 2 {
-                        name = nameAndNote[0].trimmingCharacters(in: .whitespaces)
-                        let noteContent = nameAndNote[1].trimmingCharacters(in: .whitespaces)
-                        if !noteContent.isEmpty {
-                            let note = Note(content: noteContent, creationDate: finalDate)
-                            notes.append(note)
-                        }
-                    } else {
-                        name = nameAndNote[0].trimmingCharacters(in: .whitespaces)
-                    }
-                }
-                
-                if name.hasSuffix(":") {
-                    name = String(name.dropLast())
-                }
-                
-                let contact = Contact(name: name, timestamp: finalDate, notes: notes, tags: globalTags, photo: Data())
-                contact.summary = summary
-                contacts.append(contact)
-            }
-        }
-        parsedContacts = contacts
-    }
-    
-    private func filterContacts() {
-        if filterString.isEmpty {
-            suggestedContacts = contacts
-        } else {
-            suggestedContacts = contacts.filter { contact in
-                if let name = contact.name {
-                    return name.starts(with: filterString)
-                }
-                return false
-            }
-        }
     }
 
-    private func adjustToPast(_ date: Date) -> Date {
-        let today = Date()
-        let calendar = Calendar.current
-
-        if date > today {
-            let adjustedDate = calendar.date(byAdding: .year, value: -1, to: date)
-            return adjustedDate ?? date
-        }
-
-        return date
-    }
-    
-    func saveContacts(modelContext: ModelContext) {
-        isLoading = true
-        defer { isLoading = false }
-
-        for contact in parsedContacts {
-            modelContext.insert(contact)
-        }
-        
-        do {
-            try modelContext.save()
-        } catch {
-            print("Save failed: \(error)")
-        }
-        
-        text = ""
-        parsedContacts = []
-    }
-
-    private func addItem() {
-        withAnimation {
-            let newContact = Contact(timestamp: Date(), notes: [], photo: Data())
-            modelContext.insert(newContact)
-        }
-    }
-    
     private func applyGroupDateChange() {
         if let group = groupForDateEdit {
             updateGroupDate(for: group, newDate: tempGroupDate)
@@ -508,9 +379,81 @@ struct ContentView: View {
         merged.nanosecond = timeComps.nanosecond
         return cal.date(from: merged) ?? date
     }
+
+    // Helper to compute the bottom-most visible item ID, matching list order
+    private func bottomMostID() -> PersistentIdentifier? {
+        if let lastGroup = groups.last {
+            if let id = lastGroup.parsedContacts.last?.id {
+                return id
+            }
+            if let id = lastGroup.contacts.last?.id {
+                return id
+            }
+        }
+        // Fallbacks if groups are empty or have no items
+        return contacts.last?.id ?? parsedContacts.last?.id
+    }
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        if let id = bottomMostID() {
+            withAnimation(nil) {
+                proxy.scrollTo(id, anchor: .bottom)
+            }
+        }
+    }
+    
+    private func tagDateOptions() -> [(date: Date, tags: String)] {
+        groups
+            .filter { !$0.isLongAgo }
+            .compactMap { group in
+                let names = group.contacts
+                    .flatMap { ($0.tags ?? []).compactMap { $0.name } }
+                let unique = Array(Set(names)).sorted {
+                    $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+                }
+                guard !unique.isEmpty else { return nil }
+                return (date: group.date, tags: unique.joined(separator: ", "))
+            }
+            .sorted { $0.date > $1.date }
+    }
+    
+    private func applyGroupTagChange(_ tag: Tag) {
+        guard let group = groupForTagEdit else {
+            showGroupTagPicker = false
+            return
+        }
+        for c in group.contacts {
+            c.tags = [tag]
+        }
+        for c in group.parsedContacts {
+            c.tags = [tag]
+        }
+        do {
+            try modelContext.save()
+        } catch {
+            print("Save failed: \(error)")
+        }
+        showGroupTagPicker = false
+        groupForTagEdit = nil
+    }
+
+    private func deleteAllEntries(in group: contactsGroup) {
+        let idsToRemove = Set(group.parsedContacts.map { ObjectIdentifier($0) })
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
+            parsedContacts.removeAll { idsToRemove.contains(ObjectIdentifier($0)) }
+        }
+
+        for c in group.contacts {
+            c.isArchived = true
+            c.archivedDate = Date()
+        }
+        do {
+            try modelContext.save()
+        } catch {
+            print("Save failed: \(error)")
+        }
+    }
 }
-
-
 
 private extension ContentView {
     func showBulkAddFacesWithSeed(image: UIImage, date: Date, completion: (() -> Void)? = nil) {
@@ -531,51 +474,110 @@ private extension ContentView {
     }
 }
 
-
-
 // MARK: - Extracted Views to reduce type-checking complexity
 
 private struct GroupSectionView: View {
     let group: contactsGroup
-    let onHeaderTap: () -> Void
+    let isLast: Bool
+    let onImport: () -> Void
+    let onEditDate: () -> Void
+    let onEditTag: () -> Void
+    let onRenameTag: () -> Void
+    let onDeleteAll: () -> Void
+    let onChangeDateForContact: (Contact) -> Void
+    let onTapHeader: () -> Void
     
     var body: some View {
         Section {
-            VStack(alignment: .leading){
-                HStack{
-                    Text(group.title)
-                        .font(.title)
-                        .bold()
-                    Spacer()
-                }
-                .padding(.leading)
-                .padding(.trailing, 14)
-                Text(group.subtitle)
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal)
-            }
-            .padding(.bottom, 4)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                onHeaderTap()
-            }
-            
+            header
             LazyVGrid(columns: Array(repeating: GridItem(spacing: 10), count: 4), spacing: 10) {
                 ForEach(group.contacts) { contact in
-                    ContactTile(contact: contact)
+                    ContactTile(contact: contact, onChangeDate: {
+                        onChangeDateForContact(contact)
+                    })
                 }
-                ForEach(Array(group.parsedContacts.enumerated()), id: \.offset) { _, contact in
+                .transaction { t in
+                    t.animation = nil
+                }
+
+                ForEach(group.parsedContacts) { contact in
                     ParsedContactTile(contact: contact)
+                        .transition(.asymmetric(
+                            insertion: .move(edge: .bottom).combined(with: .opacity),
+                            removal: .opacity.combined(with: .scale(scale: 0.98))
+                        ))
+                }
+                .transaction { t in
+                    t.animation = nil
                 }
             }
             .padding(.horizontal)
+            .padding(.bottom, isLast ? 0 : 16)
+            .scrollTargetLayout()
+        }
+    }
+
+    @ViewBuilder
+    private var header: some View {
+        let content = VStack(alignment: .leading) {
+            HStack {
+                Text(group.title)
+                    .font(.title)
+                    .bold()
+                Spacer()
+            }
+            .padding(.leading)
+            .padding(.trailing, 14)
+            Text(group.subtitle)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal)
+        }
+        .padding(.bottom, 4)
+        .contentShape(.rect)
+
+        if group.isLongAgo {
+            content
+        } else {
+            content
+                .onTapGesture {
+                    onTapHeader()
+                }
+                .contextMenu {
+                    Button {
+                        onImport()
+                    } label: {
+                        Label("Import Photos", systemImage: "photo.on.rectangle")
+                    }
+                    Button {
+                        onEditDate()
+                    } label: {
+                        Label("Change Date", systemImage: "calendar")
+                    }
+                    Button {
+                        onEditTag()
+                    } label: {
+                        Label("Apply Tag", systemImage: "tag")
+                    }
+                    Button {
+                        onRenameTag()
+                    } label: {
+                        Label("Manage Tags", systemImage: "tag.square")
+                    }
+                    Button(role: .destructive) {
+                        onDeleteAll()
+                    } label: {
+                        Label("Delete All", systemImage: "trash")
+                    }
+                }
         }
     }
 }
 
 private struct ContactTile: View {
     let contact: Contact
+    @Environment(\.modelContext) private var modelContext
+    var onChangeDate: (() -> Void)?
     
     var body: some View {
         NavigationLink {
@@ -618,6 +620,25 @@ private struct ContactTile: View {
                     .scaleEffect(phase.isIdentity ? 1 : 0.9)
             }
         }
+        .contextMenu {
+            Button {
+                onChangeDate?()
+            } label: {
+                Label("Change Date", systemImage: "calendar")
+            }
+
+            Button(role: .destructive) {
+                contact.isArchived = true
+                contact.archivedDate = Date()
+                do {
+                    try modelContext.save()
+                } catch {
+                    print("Save failed: \(error)")
+                }
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
     }
 }
 
@@ -655,7 +676,12 @@ private struct ParsedContactTile: View {
     }
 }
 
-
+private struct BottomInsetHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
 
 #Preview("List") {
         ContentView().modelContainer(for: [Contact.self, Note.self, Tag.self], inMemory: true)

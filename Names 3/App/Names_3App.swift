@@ -9,17 +9,22 @@ import SwiftUI
 import SwiftData
 import UIKit
 
+enum AppTab: Hashable {
+    case people
+    case home
+}
+
 @main
 struct Names_3App: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @StateObject private var settings = AppSettings()
+    @State private var tabSelection: AppTab = .people
     
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             Contact.self,
             Note.self,
             Tag.self,
-            // FaceBatch models intentionally NOT added here to keep the Contacts store stable
+            QuickNote.self,
         ])
         let modelConfiguration = ModelConfiguration(
             "default",
@@ -37,30 +42,20 @@ struct Names_3App: App {
 
     var body: some Scene {
         WindowGroup {
-            TabView {
-                
-                
-                
+            TabView(selection: $tabSelection) {
                 ContentView()
                     .tabItem {
                         Label("People", systemImage: "person.3")
                     }
-
-                NotesFeedView()
-                    .tabItem {
-                        Label("Notes", systemImage: "note.text")
-                    }
+                    .tag(AppTab.people)
                 
-                reelsView()
-                .task {
-                    PerformanceMonitor.shared.start()
-                }
-                .tabItem {
-                    Label("Explore", systemImage: "camera.macro")
-                }
+                HomeView(tabSelection: $tabSelection)
+                    .tabItem {
+                        Label("Recent", systemImage: "house")
+                    }
+                    .tag(AppTab.home)
             }
         }
-        .environmentObject(settings)
         .modelContainer(sharedModelContainer)
     }
 }

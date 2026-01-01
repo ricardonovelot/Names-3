@@ -41,7 +41,8 @@ struct NoteEditableRow: View {
         .contentShape(Rectangle())
         .sheet(isPresented: $showDatePicker) {
             CustomNoteDatePicker(note: note)
-                .presentationDetents([.medium])
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
         }
     }
 }

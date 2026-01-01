@@ -30,8 +30,7 @@ struct NotesFeedView: View {
                 } else {
                     List {
                         ForEach(notes, id: \.self) { note in
-                            NoteRow(note: note)
-                                .contentShape(Rectangle())
+                            NoteEditableRow(note: note, showContact: true)
                                 .swipeActions(edge: .trailing) {
                                     Button(role: .destructive) {
                                         modelContext.delete(note)
@@ -62,40 +61,6 @@ struct NotesFeedView: View {
     }
 }
 
-private struct NoteRow: View {
-    @Environment(\.modelContext) private var modelContext
-    let note: Note
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(note.content.isEmpty ? "—" : note.content)
-                .font(.body)
-                .foregroundStyle(.primary)
-                .lineLimit(3)
-
-            HStack(spacing: 8) {
-                if let contact = note.contact {
-                    Text(contact.name ?? "Unknown")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                } else {
-                    Text("No contact")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                Text(note.creationDate, style: .date)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.vertical, 6)
-    }
-}
-
 struct AddNoteSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
@@ -105,7 +70,9 @@ struct AddNoteSheet: View {
 
     @State private var content: String = ""
     @State private var date: Date = Date()
+    @State private var isLongAgo: Bool = false
     @State private var selectedContact: Contact?
+    @State private var showContactSelect: Bool = false
 
     init() {}
 
@@ -115,14 +82,24 @@ struct AddNoteSheet: View {
                 Section("Note") {
                     TextField("Write a note...", text: $content, axis: .vertical)
                         .lineLimit(3...6)
-                    DatePicker("Date", selection: $date, in: ...Date(), displayedComponents: .date)
+                }
+
+                Section("Date") {
+                    Toggle("Long ago", isOn: $isLongAgo)
+                    DatePicker("Exact Date", selection: $date, in: ...Date(), displayedComponents: .date)
+                        .datePickerStyle(.automatic)
+                        .disabled(isLongAgo)
                 }
 
                 Section("Contact") {
-                    Picker("Attach to", selection: $selectedContact) {
-                        Text("Select a contact").tag(Optional<Contact>.none)
-                        ForEach(contacts.sorted(by: { ($0.name ?? "").localizedCaseInsensitiveCompare($1.name ?? "") == .orderedAscending }), id: \.self) { contact in
-                            Text(contact.name ?? "Unnamed").tag(Optional<Contact>.some(contact))
+                    Button {
+                        showContactSelect = true
+                    } label: {
+                        HStack {
+                            Text("Attach to")
+                            Spacer()
+                            Text(selectedContact?.name ?? "Select or create")
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -143,6 +120,12 @@ struct AddNoteSheet: View {
                 }
             }
         }
+        .sheet(isPresented: $showContactSelect) {
+            ContactSelectView { contact in
+                selectedContact = contact
+                showContactSelect = false
+            }
+        }
     }
 
     private var canSave: Bool {
@@ -153,7 +136,7 @@ struct AddNoteSheet: View {
     private func save() {
         guard let selectedContact else { return }
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        let note = Note(content: trimmed, creationDate: date, contact: selectedContact)
+        let note = Note(content: trimmed, creationDate: date, isLongAgo: isLongAgo, contact: selectedContact)
         modelContext.insert(note)
         do {
             try modelContext.save()

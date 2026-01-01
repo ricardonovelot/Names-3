@@ -33,11 +33,6 @@
 			path = "Names 3";
 			sourceTree = "<group>";
 		};
-		C4A559F72EFF266B00C53424 /* Video Feed Test */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "Video Feed Test";
-			sourceTree = "<group>";
-		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -55,7 +50,6 @@
 		8C5BEF212CBCF6D8007D0D5E = {
 			isa = PBXGroup;
 			children = (
-				C4A559F72EFF266B00C53424 /* Video Feed Test */,
 				8C5BEF2C2CBCF6D8007D0D5E /* Names 3 */,
 				8C5BEF2B2CBCF6D8007D0D5E /* Products */,
 			);
@@ -86,7 +80,6 @@
 			);
 			fileSystemSynchronizedGroups = (
 				8C5BEF2C2CBCF6D8007D0D5E /* Names 3 */,
-				C4A559F72EFF266B00C53424 /* Video Feed Test */,
 			);
 			name = "Names 3";
 			packageProductDependencies = (
