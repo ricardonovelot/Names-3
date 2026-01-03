@@ -2,6 +2,7 @@ import SwiftUI
 import SwiftData
 import PhotosUI
 import UIKit
+import Vision
 
 struct ContactDetailsView: View {
     @Environment(\.modelContext) private var modelContext
@@ -22,6 +23,12 @@ struct ContactDetailsView: View {
     @State private var showTagPicker = false
     @State private var showCropView = false
     @State private var isLoading = false
+    
+    @State private var showReplacePhotoAlert = false
+    @State private var pendingPhotoData: Data?
+    @State private var showFaceAssignment = false
+    @State private var detectedFaces: [FaceAssignmentView.DetectedFaceInfo] = []
+    @State private var pendingSourceImage: UIImage?
 
     @Query private var notes: [Note]
 
@@ -290,6 +297,36 @@ struct ContactDetailsView: View {
                 }
             }
         }
+        .sheet(isPresented: $showFaceAssignment) {
+            if let sourceImage = pendingSourceImage {
+                FaceAssignmentView(
+                    sourceImage: sourceImage,
+                    detectedFaces: detectedFaces,
+                    targetContact: contact
+                ) { assignedFaces in
+                    handleMultipleFacesAssigned(assignedFaces)
+                }
+            }
+        }
+        .alert("Replace Photo?", isPresented: $showReplacePhotoAlert) {
+            Button("Cancel", role: .cancel) {
+                pendingPhotoData = nil
+            }
+            Button("Replace") {
+                if let data = pendingPhotoData {
+                    contact.photo = data
+                    showCropView = true
+                    do {
+                        try modelContext.save()
+                    } catch {
+                        print("Save failed: \(error)")
+                    }
+                }
+                pendingPhotoData = nil
+            }
+        } message: {
+            Text("This contact already has a photo. Do you want to replace it?")
+        }
         .overlay {
             if isLoading {
                 LoadingOverlay(message: "Processing photo…")
@@ -298,17 +335,7 @@ struct ContactDetailsView: View {
         .onChange(of: selectedItem) {
             isLoading = true
             Task {
-                if let loaded = try? await selectedItem?.loadTransferable(type: Data.self) {
-                    contact.photo = loaded
-                    showCropView = true
-                    do {
-                        try modelContext.save()
-                    } catch {
-                        print("Save failed: \(error)")
-                    }
-                } else {
-                    print("Failed")
-                }
+                await handlePhotoSelection()
                 isLoading = false
             }
         }
@@ -326,5 +353,132 @@ struct ContactDetailsView: View {
         } catch {
             print("Save failed: \(error)")
         }
+    }
+    
+    @MainActor
+    private func handlePhotoSelection() async {
+        guard let loaded = try? await selectedItem?.loadTransferable(type: Data.self),
+              let selectedImage = UIImage(data: loaded) else {
+            print("Failed to load image")
+            return
+        }
+        
+        let faces = await detectFaces(in: selectedImage)
+        
+        if faces.isEmpty {
+            contact.photo = loaded
+            showCropView = true
+            do {
+                try modelContext.save()
+            } catch {
+                print("Save failed: \(error)")
+            }
+            return
+        }
+        
+        if faces.count == 1 {
+            await handleSingleFace(faces[0], sourceImage: selectedImage, originalData: loaded)
+        } else {
+            pendingSourceImage = selectedImage
+            detectedFaces = faces
+            showFaceAssignment = true
+        }
+    }
+    
+    @MainActor
+    private func handleSingleFace(_ face: FaceAssignmentView.DetectedFaceInfo, sourceImage: UIImage, originalData: Data) {
+        let hasExistingPhoto = !contact.photo.isEmpty
+        
+        if hasExistingPhoto {
+            pendingPhotoData = face.image.jpegData(compressionQuality: 0.92)
+            showReplacePhotoAlert = true
+        } else {
+            contact.photo = face.image.jpegData(compressionQuality: 0.92) ?? Data()
+            showCropView = true
+            do {
+                try modelContext.save()
+            } catch {
+                print("Save failed: \(error)")
+            }
+        }
+    }
+    
+    private func handleMultipleFacesAssigned(_ assignedFaces: [FaceAssignmentView.AssignedFace]) {
+        for assignedFace in assignedFaces {
+            let name = assignedFace.name
+            
+            let fetchDescriptor = FetchDescriptor<Contact>(
+                predicate: #Predicate<Contact> { contact in
+                    contact.name == name && contact.isArchived == false
+                }
+            )
+            
+            if let existingContact = try? modelContext.fetch(fetchDescriptor).first {
+                let hasExistingPhoto = !existingContact.photo.isEmpty
+                if !hasExistingPhoto {
+                    existingContact.photo = assignedFace.image.jpegData(compressionQuality: 0.92) ?? Data()
+                }
+            } else {
+                let newContact = Contact(
+                    name: name,
+                    timestamp: contact.timestamp,
+                    photo: assignedFace.image.jpegData(compressionQuality: 0.92) ?? Data()
+                )
+                modelContext.insert(newContact)
+            }
+        }
+        
+        do {
+            try modelContext.save()
+        } catch {
+            print("Save failed: \(error)")
+        }
+    }
+    
+    private func detectFaces(in image: UIImage) async -> [FaceAssignmentView.DetectedFaceInfo] {
+        guard let cgImage = image.cgImage else { return [] }
+        
+        let request = VNDetectFaceRectanglesRequest()
+        let handler = VNImageRequestHandler(cgImage: cgImage)
+        
+        do {
+            try handler.perform([request])
+            
+            if let observations = request.results as? [VNFaceObservation] {
+                let imageSize = CGSize(width: CGFloat(cgImage.width), height: CGFloat(cgImage.height))
+                let fullRect = CGRect(origin: .zero, size: imageSize)
+                
+                var detectedFaces: [FaceAssignmentView.DetectedFaceInfo] = []
+                
+                for face in observations {
+                    let bb = face.boundingBox
+                    let scaleFactor: CGFloat = 1.8
+                    
+                    let scaledBox = CGRect(
+                        x: bb.origin.x * imageSize.width - (bb.width * imageSize.width * (scaleFactor - 1)) / 2,
+                        y: (1 - bb.origin.y - bb.height) * imageSize.height - (bb.height * imageSize.height * (scaleFactor - 1)) / 2,
+                        width: bb.width * imageSize.width * scaleFactor,
+                        height: bb.height * imageSize.height * scaleFactor
+                    ).integral
+                    
+                    let clipped = scaledBox.intersection(fullRect)
+                    if !clipped.isNull && !clipped.isEmpty {
+                        if let cropped = cgImage.cropping(to: clipped) {
+                            let faceImage = UIImage(cgImage: cropped)
+                            detectedFaces.append(FaceAssignmentView.DetectedFaceInfo(
+                                image: faceImage,
+                                boundingBox: clipped
+                            ))
+                        }
+                    }
+                }
+                
+                return detectedFaces
+            }
+        } catch {
+            print("Face detection failed: \(error)")
+        }
+        
+        return []
     }
 }

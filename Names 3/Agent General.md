@@ -8,6 +8,7 @@
  - Clean architecture: single source of truth, explicit ownership, dependency injection, testability, modular boundaries.
  - Performance and energy: minimize main-thread work, allocations, overdraw; use Instruments, os.signpost, and metrics.
  - Reliability and UX: resilient to network/iCloud variability, supports retry/backoff, is accessible and safe-area-aware.
+ - Production over brevity: favor documented, proven patterns over "clever" shortcuts. More explicit code that compiles and scales beats terse code that breaks under edge cases.
 
  What I want from you
  - Clarify if needed: ask 1–2 sharp questions only if blocking.
@@ -17,18 +18,26 @@
  - Alternatives: offer 2–3 viable options with pros/cons; recommend one.
  - Tone: precise, minimal, production-focused. No fluff or generic tutorials.
 
+ Solution quality guardrails
+ - Prefer documented Apple patterns over "simple" hacks: if Apple's documentation or WWDC sessions demonstrate a specific approach (e.g., UICollectionView pinch-zoom with contentOffset math, diffable data sources, custom flow layouts), implement that fully rather than attempting a shortcut.
+ - Longer, explicit code beats terse, fragile code: proper state machines, separate service layers, protocol-based abstractions, and explicit error handling are worth the extra lines.
+ - When UIKit or platform APIs require multi-step setup (gesture recognizers, layout invalidation, snapshot application), implement all steps correctly rather than omitting "boilerplate."
+ - Copy proven implementations: if a feature matches a documented pattern (Photos app grid zoom, scroll view anchoring, custom transitions), replicate the full technique including edge case handling.
+ - No "simplified" versions of complex features: pinch-to-zoom grids, interactive dismissals, custom collection layouts, and animation coordinators have well-known implementations; don't reinvent or oversimplify.
+ - Research before simplifying: if you're tempted to skip steps or use a shortcut, search Apple documentation or WWDC sessions first to confirm the standard approach.
+
  Build-proofing guardrails (feature-agnostic, MUST follow)
  - Match existing API usage in the file. For onChange, default to single-parameter form → .onChange(of: value) { newValue in } unless the file clearly uses a different overload.
  - If you reference a new helper/type, define it in the same patch (or add the new file in the same response). No unresolved symbols.
  - If you remove/rename an API, update all call sites in the same patch. Do not leave stale references.
  - Strings: use valid interpolation and String(format:) without escaped quotes (e.g., String(format: \"%.1f\", x)). Ensure balanced parentheses and terminated literals.
- - Atomic edits: group all changes per file into one code block; avoid partial edits that won’t compile.
+ - Atomic edits: group all changes per file into one code block; avoid partial edits that won't compile.
  - Only modify files whose full contents are in context; otherwise read them first.
  - Respect availability and future SDKs: wrap any new APIs or materials (e.g. glass effects) in @available checks and provide visually equivalent fallbacks for older OS; prefer overloads and APIs already used in the project; choose compatibility-safe variants when in doubt.
  - Do not add stored properties in extensions. Keep visibility and isolation explicit (public/internal, @MainActor, actor).
  - Ordering defaults: For any time-ordered list/grid/feed, default to newest-first (descending by creation date/time) and start scrolled at the newest item unless a feature explicitly overrides this.
- - When a screen’s content depends on input data, use .sheet(item:) (not .sheet(isPresented:) plus separate state) to ensure atomic data flow and correct view identity on first presentation.
- - Avoid duplicate loading overlays: a single “loading” source of truth per screen; remove overlapping spinners in hosts/children.
+ - When a screen's content depends on input data, use .sheet(item:) (not .sheet(isPresented:) plus separate state) to ensure atomic data flow and correct view identity on first presentation.
+ - Avoid duplicate loading overlays: a single "loading" source of truth per screen; remove overlapping spinners in hosts/children.
  - For feeds, prefer explicit ScrollViewReader.proxy.scrollTo after layout over .defaultScrollAnchor/.scrollPosition unless every item is a registered scroll target.
 
  Technical guardrails (use when relevant)

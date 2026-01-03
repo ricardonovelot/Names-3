@@ -301,20 +301,21 @@ struct ContentView: View {
                     .modelContainer(BatchModelContainer.shared)
             }
             .sheet(item: $photosSheet) { payload in
-                PhotosDayPickerHost(scope: payload.scope) { image, date in
-                    pickedImageForBatch = image
-                    photosSheet = nil
-                    let seedDate: Date = {
-                        switch payload.scope {
-                        case .day(let d):
-                            return date ?? d
-                        case .all:
-                            return date ?? Date()
-                        }
-                    }()
-                    Task { @MainActor in
-                        try? await Task.sleep(for: .milliseconds(150))
-                        showBulkAddFacesWithSeed(image: image, date: seedDate)
+                PhotosDayPickerHost(
+                    scope: payload.scope,
+                    contactsContext: modelContext,
+                    initialScrollDate: selectedContact?.timestamp,
+                    onPick: { image, date in
+                        print("✅ [ContentView] onPick called - dismissing photos sheet")
+                        pickedImageForBatch = image
+                        photosSheet = nil
+                    }
+                )
+                .onAppear {
+                    if let date = selectedContact?.timestamp {
+                        print("🔵 [ContentView] Opening photo picker with scroll date: \(date) for contact: \(selectedContact?.name ?? "unknown")")
+                    } else {
+                        print("🔵 [ContentView] Opening photo picker without scroll date")
                     }
                 }
             }

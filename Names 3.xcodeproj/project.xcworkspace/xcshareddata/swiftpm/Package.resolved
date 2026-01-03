@@ -1,6 +1,33 @@
 {
-  "originHash" : "9bf07cf1ab5e78dc27f587bc5f6d8afee291a6b0682bf41dec0428a139ff8ac9",
+  "originHash" : "50e6032af60987d8ca757756fbb9b8428d622f3fbe2546869e47be7617be1bea",
   "pins" : [
+    {
+      "identity" : "chronicle",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Aeastr/Chronicle.git",
+      "state" : {
+        "revision" : "58d83613a3402a43f7cbe00f68aecb4e6866f591",
+        "version" : "3.0.1"
+      }
+    },
+    {
+      "identity" : "obfuscate",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Aeastr/Obfuscate.git",
+      "state" : {
+        "revision" : "03bc039fefebf4150cfa594cc68dc83dede068ff",
+        "version" : "1.0.0"
+      }
+    },
+    {
+      "identity" : "portal",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Aeastr/Portal",
+      "state" : {
+        "revision" : "83386ea12631e120c0f751387f6bb7218e17b7ca",
+        "version" : "5.1.0"
+      }
+    },
     {
       "identity" : "smoothgradient",
       "kind" : "remoteSourceControl",
@@ -8,6 +35,24 @@
       "state" : {
         "revision" : "61bf248fad31c7921c9985b418e6e9297cd7b861",
         "version" : "1.0.0"
+      }
+    },
+    {
+      "identity" : "swift-log",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-log.git",
+      "state" : {
+        "revision" : "bc386b95f2a16ccd0150a8235e7c69eab2b866ca",
+        "version" : "1.8.0"
+      }
+    },
+    {
+      "identity" : "swift-syntax",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swiftlang/swift-syntax",
+      "state" : {
+        "revision" : "0687f71944021d616d34d922343dcef086855920",
+        "version" : "600.0.1"
       }
     }
   ],

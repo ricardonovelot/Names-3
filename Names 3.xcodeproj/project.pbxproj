@@ -8,6 +8,9 @@
 
 /* Begin PBXBuildFile section */
 		98812BB32D2B36CD00D125BE /* SmoothGradient in Frameworks */ = {isa = PBXBuildFile; productRef = 98812BB22D2B36CD00D125BE /* SmoothGradient */; };
+		C4792B872F09080D00F8E698 /* PortalHeaders in Frameworks */ = {isa = PBXBuildFile; productRef = C4792B862F09080D00F8E698 /* PortalHeaders */; };
+		C4792B892F09080D00F8E698 /* PortalTransitions in Frameworks */ = {isa = PBXBuildFile; productRef = C4792B882F09080D00F8E698 /* PortalTransitions */; };
+		C4792B8B2F09080D00F8E698 /* _PortalPrivate in Frameworks */ = {isa = PBXBuildFile; productRef = C4792B8A2F09080D00F8E698 /* _PortalPrivate */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -40,7 +43,10 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C4792B892F09080D00F8E698 /* PortalTransitions in Frameworks */,
 				98812BB32D2B36CD00D125BE /* SmoothGradient in Frameworks */,
+				C4792B8B2F09080D00F8E698 /* _PortalPrivate in Frameworks */,
+				C4792B872F09080D00F8E698 /* PortalHeaders in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -84,6 +90,9 @@
 			name = "Names 3";
 			packageProductDependencies = (
 				98812BB22D2B36CD00D125BE /* SmoothGradient */,
+				C4792B862F09080D00F8E698 /* PortalHeaders */,
+				C4792B882F09080D00F8E698 /* PortalTransitions */,
+				C4792B8A2F09080D00F8E698 /* _PortalPrivate */,
 			);
 			productName = "Names 3";
 			productReference = 8C5BEF2A2CBCF6D8007D0D5E /* Names 3.app */;
@@ -115,6 +124,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				98812BB12D2B36CD00D125BE /* XCRemoteSwiftPackageReference "SmoothGradient" */,
+				C4792B852F09080D00F8E698 /* XCRemoteSwiftPackageReference "Portal" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 8C5BEF2B2CBCF6D8007D0D5E /* Products */;
@@ -366,6 +376,14 @@
 				minimumVersion = 1.0.0;
 			};
 		};
+		C4792B852F09080D00F8E698 /* XCRemoteSwiftPackageReference "Portal" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/Aeastr/Portal";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 5.1.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -373,6 +391,21 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 98812BB12D2B36CD00D125BE /* XCRemoteSwiftPackageReference "SmoothGradient" */;
 			productName = SmoothGradient;
+		};
+		C4792B862F09080D00F8E698 /* PortalHeaders */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C4792B852F09080D00F8E698 /* XCRemoteSwiftPackageReference "Portal" */;
+			productName = PortalHeaders;
+		};
+		C4792B882F09080D00F8E698 /* PortalTransitions */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C4792B852F09080D00F8E698 /* XCRemoteSwiftPackageReference "Portal" */;
+			productName = PortalTransitions;
+		};
+		C4792B8A2F09080D00F8E698 /* _PortalPrivate */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C4792B852F09080D00F8E698 /* XCRemoteSwiftPackageReference "Portal" */;
+			productName = _PortalPrivate;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

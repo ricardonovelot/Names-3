@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import UIKit
 
 struct PhotoDetailViewWrapper: UIViewControllerRepresentable {
     let image: UIImage
@@ -15,7 +16,11 @@ struct PhotoDetailViewWrapper: UIViewControllerRepresentable {
             image: image,
             date: date,
             contactsContext: contactsContext,
-            onComplete: onComplete
+            onComplete: { image, date in
+                if let date = date {
+                    onComplete(image, date)
+                }
+            }
         )
         
         // Set up transition
@@ -25,7 +30,7 @@ struct PhotoDetailViewWrapper: UIViewControllerRepresentable {
         )
         context.coordinator.transitionDelegate = delegate
         vc.transitioningDelegate = delegate
-        vc.modalPresentationStyle = .custom
+        vc.modalPresentationStyle = UIModalPresentationStyle.custom
         
         return vc
     }

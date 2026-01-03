@@ -1,22 +1,44 @@
 import SwiftUI
 import Photos
 import UIKit
+import SwiftData
 
 struct PhotosDayPickerView: View {
     let scope: PhotosPickerScope
+    let contactsContext: ModelContext
     let onPick: (UIImage, Date?) -> Void
+    let initialScrollDate: Date?
     
     @StateObject private var viewModel: PhotosPickerViewModel
     @Environment(\.dismiss) private var dismiss
     
     private let imageManager = PHCachingImageManager()
     
+    @State private var selectedPhotoDetail: PhotoDetail?
+    
+    // Made public so PhotoGridView can use it
+    struct PhotoDetail: Identifiable {
+        let id = UUID()
+        let image: UIImage
+        let date: Date?
+        let originFrame: CGRect
+        let originImage: UIImage?
+    }
+    
     // MARK: - Initialization
     
-    init(scope: PhotosPickerScope, onPick: @escaping (UIImage, Date?) -> Void) {
+    init(scope: PhotosPickerScope, contactsContext: ModelContext, initialScrollDate: Date? = nil, onPick: @escaping (UIImage, Date?) -> Void) {
         self.scope = scope
+        self.contactsContext = contactsContext
+        self.initialScrollDate = initialScrollDate
         self.onPick = onPick
-        self._viewModel = StateObject(wrappedValue: PhotosPickerViewModel(scope: scope))
+        self._viewModel = StateObject(wrappedValue: PhotosPickerViewModel(scope: scope, initialScrollDate: initialScrollDate))
+        
+        if let scrollDate = initialScrollDate {
+            print("🔵 [PhotosDayPickerView] Initialized with scroll date: \(scrollDate)")
+        } else {
+            print("🔵 [PhotosDayPickerView] Initialized without scroll date")
+        }
     }
     
     // MARK: - Body
@@ -47,6 +69,24 @@ struct PhotosDayPickerView: View {
                 .onDisappear {
                     viewModel.stopObservingChanges()
                 }
+        }
+        .fullScreenCover(item: $selectedPhotoDetail) { detail in
+            PhotoDetailViewWrapper(
+                image: detail.image,
+                date: detail.date,
+                contactsContext: contactsContext,
+                originFrame: detail.originFrame,
+                originImage: detail.originImage,
+                onComplete: { finalImage, finalDate in
+                    print("✅ [PhotosDayPicker] Photo detail completed")
+                    onPick(finalImage, finalDate)
+                    selectedPhotoDetail = nil
+                },
+                onDismiss: {
+                    print("🔵 [PhotosDayPicker] Photo detail dismissed")
+                    selectedPhotoDetail = nil
+                }
+            )
         }
     }
     
@@ -92,8 +132,10 @@ struct PhotosDayPickerView: View {
         PhotoGridView(
             assets: viewModel.assets,
             imageManager: imageManager,
-            onPick: { image, date in
-                onPick(image, date)
+            contactsContext: contactsContext,
+            initialScrollDate: initialScrollDate,
+            onPhotoDetail: { detail in
+                selectedPhotoDetail = detail
             },
             onAppearAtIndex: { index in
                 if index < viewModel.assets.count {

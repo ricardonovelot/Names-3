@@ -1,23 +1,22 @@
 import SwiftUI
 import UIKit
 import Photos
-import os.log
+import SwiftData
 
-private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "PhotoGrid", category: "PhotoGrid")
+// MARK: - PhotoGridView
 
 struct PhotoGridView: UIViewRepresentable {
     let assets: [PHAsset]
     let imageManager: PHCachingImageManager
-    let onPick: (UIImage, Date?) -> Void
+    let contactsContext: ModelContext
+    let initialScrollDate: Date?
+    let onPhotoDetail: (PhotosDayPickerView.PhotoDetail) -> Void
     let onAppearAtIndex: (Int) -> Void
     
     func makeUIView(context: Context) -> UIView {
         let containerView = UIView()
         
-        let layout = PinchableGridLayout()
-        layout.minimumInteritemSpacing = 1
-        layout.minimumLineSpacing = 1
-        layout.sectionInset = UIEdgeInsets(top: 1, left: 1, bottom: 1, right: 1)
+        let layout = context.coordinator.makeCompositionalLayout()
         
         let collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
         collectionView.backgroundColor = UIColor.systemGroupedBackground
@@ -28,10 +27,6 @@ struct PhotoGridView: UIViewRepresentable {
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         
         collectionView.register(PhotoCell.self, forCellWithReuseIdentifier: PhotoCell.reuseIdentifier)
-        
-        let pinch = UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePinch(_:)))
-        pinch.delegate = context.coordinator
-        collectionView.addGestureRecognizer(pinch)
         
         context.coordinator.configureDataSource(for: collectionView)
         
@@ -56,12 +51,13 @@ struct PhotoGridView: UIViewRepresentable {
         context.coordinator.collectionView = collectionView
         context.coordinator.floatingHeader = floatingHeader
         context.coordinator.containerView = containerView
+        context.coordinator.installPinchGesture(on: collectionView)
         
         return containerView
     }
     
     func updateUIView(_ uiView: UIView, context: Context) {
-        context.coordinator.updateAssets(assets)
+        context.coordinator.updateAssets(assets, initialScrollDate: initialScrollDate)
     }
     
     static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
@@ -71,14 +67,18 @@ struct PhotoGridView: UIViewRepresentable {
     func makeCoordinator() -> Coordinator {
         Coordinator(
             imageManager: imageManager,
-            onPick: onPick,
+            contactsContext: contactsContext,
+            onPhotoDetail: onPhotoDetail,
             onAppearAtIndex: onAppearAtIndex
         )
     }
     
-    final class Coordinator: NSObject, UICollectionViewDelegate, UICollectionViewDataSourcePrefetching, UIGestureRecognizerDelegate, UIScrollViewDelegate, PhotoCellPinchDelegate {
+    // MARK: - Coordinator
+    
+    final class Coordinator: NSObject {
         let imageManager: PHCachingImageManager
-        let onPick: (UIImage, Date?) -> Void
+        let contactsContext: ModelContext
+        let onPhotoDetail: (PhotosDayPickerView.PhotoDetail) -> Void
         let onAppearAtIndex: (Int) -> Void
         
         weak var collectionView: UICollectionView?
@@ -88,24 +88,97 @@ struct PhotoGridView: UIViewRepresentable {
         private var dataSource: UICollectionViewDiffableDataSource<MonthSection, String>?
         private var assetsByID: [String: PHAsset] = [:]
         private var sections: [MonthSection] = []
-        
-        private var startZoomScale: CGFloat = 1.0
-        private var previousItemSize: CGSize = .zero
-        private var previousContentOffset: CGPoint = .zero
-        private var pinchLocation: CGPoint = .zero
-        private var isZooming: Bool = false
-        
-        private var transitionOriginFrame: CGRect = .zero
-        private var transitionOriginImage: UIImage?
-        private weak var presentedDetailVC: PhotoDetailViewController?
+        private var hasPerformedInitialScroll = false
+        private var pendingScrollDate: Date?
+        private var isWaitingForMoreAssets = false
         
         private let imageCache = ImageCacheService.shared
         
-        init(imageManager: PHCachingImageManager, onPick: @escaping (UIImage, Date?) -> Void, onAppearAtIndex: @escaping (Int) -> Void) {
+        // Compositional layout state
+        private(set) var compositionalLayout: UICollectionViewCompositionalLayout?
+        private let itemSpacing: CGFloat = 1
+        private let sectionInsets = NSDirectionalEdgeInsets(top: 1, leading: 1, bottom: 1, trailing: 1)
+        private var zoomScale: CGFloat = 1.0
+        
+        // Zoom tunables and pinch anchoring state
+        private let zoomGain: CGFloat = 1.6
+        private let minZoomScale: CGFloat = 0.5
+        private let maxZoomScale: CGFloat = 6.0
+        private let baseCellWidth: CGFloat = 120
+        
+        // Grid pinch-to-zoom state
+        private var pinchStartZoomScale: CGFloat = 1.0
+        private var pinchStartOffset: CGPoint = .zero
+        private var pinchStartLocationInCV: CGPoint = .zero
+        private var pinchStartIndexPath: IndexPath?
+        private var pinchStartOffsetInCell: CGPoint = .zero
+        private var pinchStartContentSize: CGSize = .zero
+        
+        // More anchoring state to improve stability during zoom-out
+        private var pinchStartCellSide: CGFloat = 0
+        private var pinchStartInset: UIEdgeInsets = .zero
+        
+        // Transition delegate - STRONG reference to prevent deallocation during presentation
+        private var transitionDelegate: PhotoZoomTransitionDelegate?
+        
+        // Track loading state to prevent coordinator deallocation
+        private var isLoadingDetail = false
+        private var currentDetailRequestID: PHImageRequestID?
+        
+        // Keep strong reference to presented detail VC to prevent parent deallocation
+        private var presentedDetailVC: PhotoDetailViewController?
+        
+        init(imageManager: PHCachingImageManager, contactsContext: ModelContext, onPhotoDetail: @escaping (PhotosDayPickerView.PhotoDetail) -> Void, onAppearAtIndex: @escaping (Int) -> Void) {
             self.imageManager = imageManager
-            self.onPick = onPick
+            self.contactsContext = contactsContext
+            self.onPhotoDetail = onPhotoDetail
             self.onAppearAtIndex = onAppearAtIndex
             super.init()
+        }
+        
+        func makeCompositionalLayout() -> UICollectionViewCompositionalLayout {
+            let layout = UICollectionViewCompositionalLayout { [weak self] sectionIndex, environment in
+                guard let self = self else { return nil }
+                
+                let containerWidth = environment.container.contentSize.width
+                let availableWidth = max(0, containerWidth - self.sectionInsets.leading - self.sectionInsets.trailing)
+                
+                let columns = self.computeColumns(availableWidth: availableWidth)
+                let cellSide = self.computeCellSide(availableWidth: availableWidth, columns: columns)
+                
+                let itemSize = NSCollectionLayoutSize(widthDimension: .absolute(cellSide), heightDimension: .absolute(cellSide))
+                let item = NSCollectionLayoutItem(layoutSize: itemSize)
+                
+                let groupSize = NSCollectionLayoutSize(widthDimension: .absolute(availableWidth), heightDimension: .absolute(cellSide))
+                let group = NSCollectionLayoutGroup.horizontal(layoutSize: groupSize, subitem: item, count: columns)
+                group.interItemSpacing = .fixed(self.itemSpacing)
+                
+                let section = NSCollectionLayoutSection(group: group)
+                section.interGroupSpacing = self.itemSpacing
+                section.contentInsets = self.sectionInsets
+                return section
+            }
+            self.compositionalLayout = layout
+            return layout
+        }
+        
+        private func computeColumns(availableWidth: CGFloat) -> Int {
+            let desiredCell = max(40, baseCellWidth * max(zoomScale, 0.01))
+            let columns = Int(floor((availableWidth + itemSpacing) / (desiredCell + itemSpacing)))
+            return max(1, min(40, columns))
+        }
+        
+        private func computeCellSide(availableWidth: CGFloat, columns: Int) -> CGFloat {
+            guard columns > 0 else { return 40 }
+            let totalSpacing = CGFloat(columns - 1) * itemSpacing
+            return max(40, floor((availableWidth - totalSpacing) / CGFloat(columns)))
+        }
+        
+        private func currentCellSide() -> CGFloat {
+            guard let collectionView = collectionView else { return baseCellWidth }
+            let availableWidth = max(0, collectionView.bounds.width - sectionInsets.leading - sectionInsets.trailing)
+            let columns = computeColumns(availableWidth: availableWidth)
+            return computeCellSide(availableWidth: availableWidth, columns: columns)
         }
         
         func configureDataSource(for collectionView: UICollectionView) {
@@ -122,7 +195,7 @@ struct PhotoGridView: UIViewRepresentable {
                 }
                 
                 if let asset = self.assetsByID[identifier] {
-                    let cellSize = (collectionView.collectionViewLayout as? PinchableGridLayout)?.itemSize.width ?? 240
+                    let cellSize = self.currentCellSide()
                     let targetSize = self.optimalTargetSize(for: cellSize)
                     
                     cell.configure(
@@ -131,14 +204,13 @@ struct PhotoGridView: UIViewRepresentable {
                         cache: self.imageCache,
                         targetSize: targetSize
                     )
-                    cell.pinchDelegate = self
                 }
                 
                 return cell
             }
         }
         
-        func updateAssets(_ newAssets: [PHAsset]) {
+        func updateAssets(_ newAssets: [PHAsset], initialScrollDate: Date?) {
             var assetsByMonth: [MonthSection: [PHAsset]] = [:]
             var seenIDs = Set<String>()
             
@@ -163,7 +235,7 @@ struct PhotoGridView: UIViewRepresentable {
                 snapshot.appendSections([section])
                 
                 if let assetsInSection = assetsByMonth[section] {
-                    let sortedAssets = assetsInSection.sorted { 
+                    let sortedAssets = assetsInSection.sorted {
                         ($0.creationDate ?? .distantPast) > ($1.creationDate ?? .distantPast)
                     }
                     let ids = sortedAssets.map { $0.localIdentifier }
@@ -171,165 +243,143 @@ struct PhotoGridView: UIViewRepresentable {
                 }
             }
             
-            dataSource?.apply(snapshot, animatingDifferences: false)
-            updateFloatingHeader()
+            if !hasPerformedInitialScroll && initialScrollDate != nil {
+                pendingScrollDate = initialScrollDate
+                isWaitingForMoreAssets = true
+            }
+            
+            let shouldAttemptScroll = !hasPerformedInitialScroll && 
+                                     pendingScrollDate != nil && 
+                                     !sections.isEmpty &&
+                                     shouldScrollNow(targetDate: pendingScrollDate!)
+            
+            if shouldAttemptScroll {
+                print("🔵 [PhotoGrid] Will perform initial scroll to date: \(pendingScrollDate!)")
+                print("🔵 [PhotoGrid] Total sections: \(sections.count), Total assets: \(newAssets.count)")
+            }
+            
+            dataSource?.apply(snapshot, animatingDifferences: false) { [weak self] in
+                guard let self = self else { return }
+                self.updateFloatingHeader()
+                
+                if shouldAttemptScroll, let scrollDate = self.pendingScrollDate {
+                    print("🔵 [PhotoGrid] Applying snapshot complete, performing scroll")
+                    self.scrollToDate(scrollDate)
+                    self.hasPerformedInitialScroll = true
+                    self.pendingScrollDate = nil
+                    self.isWaitingForMoreAssets = false
+                }
+            }
+        }
+        
+        private func shouldScrollNow(targetDate: Date) -> Bool {
+            guard !sections.isEmpty else { return false }
+            
+            let targetMonthStart = monthStart(for: targetDate)
+            
+            if sections.contains(where: { $0.date == targetMonthStart }) {
+                print("✅ [PhotoGrid] Target month found in loaded sections")
+                return true
+            }
+            
+            let oldestSection = sections.max(by: { $0.date < $1.date })
+            let newestSection = sections.min(by: { $0.date < $1.date })
+            
+            if let oldest = oldestSection?.date, let newest = newestSection?.date {
+                let isInRange = targetDate >= oldest && targetDate <= newest
+                print("🔵 [PhotoGrid] Target date range check - Oldest: \(oldest), Newest: \(newest), Target: \(targetDate), InRange: \(isInRange)")
+                
+                if isInRange {
+                    print("✅ [PhotoGrid] Target date is within loaded range")
+                    return true
+                }
+            }
+            
+            if sections.count > 10 {
+                print("✅ [PhotoGrid] Enough sections loaded (\(sections.count)), proceeding with scroll")
+                return true
+            }
+            
+            print("⏳ [PhotoGrid] Waiting for more assets - current sections: \(sections.count)")
+            return false
+        }
+        
+        private func scrollToDate(_ date: Date) {
+            guard let collectionView = collectionView else {
+                print("❌ [PhotoGrid] No collectionView available for scrolling")
+                return
+            }
+            
+            print("🔵 [PhotoGrid] scrollToDate called for: \(date)")
+            
+            let targetMonthStart = monthStart(for: date)
+            print("🔵 [PhotoGrid] Target month start: \(targetMonthStart)")
+            print("🔵 [PhotoGrid] Available sections: \(sections.map { $0.date })")
+            
+            if let sectionIndex = sections.firstIndex(where: { $0.date == targetMonthStart }) {
+                print("✅ [PhotoGrid] Found exact match at section \(sectionIndex)")
+                
+                // Find the specific item closest to the target date within this section
+                guard let snapshot = dataSource?.snapshot() else {
+                    print("❌ [PhotoGrid] No snapshot available")
+                    return
+                }
+                
+                let section = sections[sectionIndex]
+                let items = snapshot.itemIdentifiers(inSection: section)
+                
+                var closestItemIndex = 0
+                var closestDiff: TimeInterval = .infinity
+                
+                for (index, itemID) in items.enumerated() {
+                    if let asset = assetsByID[itemID], let assetDate = asset.creationDate {
+                        let diff = abs(assetDate.timeIntervalSince(date))
+                        if diff < closestDiff {
+                            closestDiff = diff
+                            closestItemIndex = index
+                        }
+                    }
+                }
+                
+                print("✅ [PhotoGrid] Found closest item at index \(closestItemIndex) within section")
+                let indexPath = IndexPath(item: closestItemIndex, section: sectionIndex)
+                
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    print("🎯 [PhotoGrid] Scrolling to item \(closestItemIndex) in section \(sectionIndex)")
+                    collectionView.scrollToItem(at: indexPath, at: .centeredVertically, animated: true)
+                }
+            } else {
+                print("⚠️ [PhotoGrid] No exact match, finding closest section")
+                var closestSection: (index: Int, date: Date)?
+                
+                for (index, section) in sections.enumerated() {
+                    if closestSection == nil {
+                        closestSection = (index, section.date)
+                    } else if let current = closestSection {
+                        let currentDiff = abs(current.date.timeIntervalSince(date))
+                        let sectionDiff = abs(section.date.timeIntervalSince(date))
+                        if sectionDiff < currentDiff {
+                            closestSection = (index, section.date)
+                        }
+                    }
+                }
+                
+                if let closest = closestSection {
+                    print("✅ [PhotoGrid] Found closest section at index \(closest.index) with date \(closest.date)")
+                    let indexPath = IndexPath(item: 0, section: closest.index)
+                    
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        print("🎯 [PhotoGrid] Scrolling to closest section \(closest.index)")
+                        collectionView.scrollToItem(at: indexPath, at: .top, animated: true)
+                    }
+                } else {
+                    print("❌ [PhotoGrid] Could not find any section to scroll to")
+                }
+            }
         }
         
         func cleanup() {
             imageManager.stopCachingImagesForAllAssets()
-        }
-        
-        @objc func handlePinch(_ gesture: UIPinchGestureRecognizer) {
-            guard let collectionView = collectionView,
-                  let layout = collectionView.collectionViewLayout as? PinchableGridLayout else {
-                return
-            }
-            
-            switch gesture.state {
-            case .began:
-                startZoomScale = layout.zoomScale
-                previousItemSize = layout.itemSize
-                previousContentOffset = collectionView.contentOffset
-                pinchLocation = gesture.location(in: collectionView)
-                collectionView.isScrollEnabled = false
-                isZooming = true
-                
-            case .changed:
-                let cumulativeScale = gesture.scale * startZoomScale
-                let clampedScale = max(0.2, min(4.0, cumulativeScale))
-                
-                guard abs(clampedScale - layout.zoomScale) > 0.001 else { return }
-                
-                let contentPointBefore = CGPoint(
-                    x: previousContentOffset.x + pinchLocation.x,
-                    y: previousContentOffset.y + pinchLocation.y
-                )
-                
-                layout.zoomScale = clampedScale
-                
-                CATransaction.begin()
-                CATransaction.setDisableActions(true)
-                collectionView.layoutIfNeeded()
-                CATransaction.commit()
-                
-                let newItemSize = layout.itemSize
-                
-                let scaleX = previousItemSize.width > 0 ? newItemSize.width / previousItemSize.width : 1.0
-                let scaleY = previousItemSize.height > 0 ? newItemSize.height / previousItemSize.height : 1.0
-                
-                let contentPointAfter = CGPoint(
-                    x: contentPointBefore.x * scaleX,
-                    y: contentPointBefore.y * scaleY
-                )
-                
-                var newOffset = CGPoint(
-                    x: contentPointAfter.x - pinchLocation.x,
-                    y: contentPointAfter.y - pinchLocation.y
-                )
-                
-                let maxOffsetX = max(0, collectionView.contentSize.width - collectionView.bounds.width)
-                let maxOffsetY = max(0, collectionView.contentSize.height - collectionView.bounds.height)
-                
-                newOffset.x = max(0, min(newOffset.x, maxOffsetX))
-                newOffset.y = max(0, min(newOffset.y, maxOffsetY))
-                
-                collectionView.contentOffset = newOffset
-                
-                previousItemSize = newItemSize
-                previousContentOffset = newOffset
-                
-            case .ended, .cancelled, .failed:
-                collectionView.isScrollEnabled = true
-                isZooming = false
-                
-            @unknown default:
-                break
-            }
-        }
-        
-        func photoCell(_ cell: PhotoCell, didPinch gesture: UIPinchGestureRecognizer) {
-            guard let collectionView = collectionView,
-                  let containerView = containerView else { return }
-            
-            if gesture.state == .ended {
-                if gesture.scale > 1.5 {
-                    presentDetailView(for: cell)
-                }
-            }
-        }
-        
-        private func presentDetailView(for cell: PhotoCell) {
-            guard let collectionView = collectionView,
-                  let containerView = containerView,
-                  let indexPath = collectionView.indexPath(for: cell),
-                  indexPath.section < sections.count else { return }
-            
-            let section = sections[indexPath.section]
-            guard let snapshot = dataSource?.snapshot() else { return }
-            let items = snapshot.itemIdentifiers(inSection: section)
-            guard indexPath.item < items.count else { return }
-            
-            let identifier = items[indexPath.item]
-            guard let asset = assetsByID[identifier] else { return }
-            
-            transitionOriginFrame = cell.convert(cell.bounds, to: containerView)
-            transitionOriginImage = cell.contentView.subviews.compactMap { ($0 as? UIImageView)?.image }.first
-            
-            let options = PHImageRequestOptions()
-            options.deliveryMode = .highQualityFormat
-            options.isNetworkAccessAllowed = true
-            
-            imageManager.requestImage(
-                for: asset,
-                targetSize: PHImageManagerMaximumSize,
-                contentMode: .aspectFit,
-                options: options
-            ) { [weak self] image, _ in
-                guard let self = self, let image = image else { return }
-                
-                DispatchQueue.main.async { [weak self] in
-                    guard let self = self else { return }
-                    let detailVC = PhotoDetailViewController(image: image, date: asset.creationDate)
-                    self.presentedDetailVC = detailVC
-                    
-                    let animator = PhotoZoomTransitionAnimator(
-                        isPresenting: true,
-                        originFrame: self.transitionOriginFrame,
-                        originImage: self.transitionOriginImage
-                    )
-                    
-                    let transitionDelegate = TransitionDelegateWrapper(
-                        presentAnimator: animator,
-                        dismissAnimator: PhotoZoomTransitionAnimator(
-                            isPresenting: false,
-                            originFrame: self.transitionOriginFrame,
-                            originImage: self.transitionOriginImage
-                        )
-                    )
-                    
-                    detailVC.transitioningDelegate = transitionDelegate
-                    detailVC.modalPresentationStyle = .fullScreen
-                    
-                    objc_setAssociatedObject(detailVC, "transitionDelegate", transitionDelegate, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
-                    
-                    if let windowScene = containerView.window?.windowScene,
-                       let window = windowScene.windows.first,
-                       let rootVC = window.rootViewController {
-                        rootVC.present(detailVC, animated: true)
-                    }
-                }
-            }
-        }
-        
-        func gestureRecognizer(
-            _ gestureRecognizer: UIGestureRecognizer,
-            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
-        ) -> Bool {
-            return true
-        }
-        
-        func scrollViewDidScroll(_ scrollView: UIScrollView) {
-            updateFloatingHeader()
         }
         
         private func updateFloatingHeader() {
@@ -360,112 +410,6 @@ struct PhotoGridView: UIViewRepresentable {
             } else {
                 floatingHeader.alpha = 0.0
             }
-        }
-        
-        func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
-            let globalIndex = globalIndexForIndexPath(indexPath)
-            notifyAppear(at: globalIndex)
-        }
-        
-        func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
-            guard indexPath.section < sections.count else { return }
-            let section = sections[indexPath.section]
-            
-            guard let snapshot = dataSource?.snapshot() else { return }
-            let items = snapshot.itemIdentifiers(inSection: section)
-            guard indexPath.item < items.count else { return }
-            
-            let identifier = items[indexPath.item]
-            guard let asset = assetsByID[identifier] else { return }
-            
-            requestFullImage(for: asset)
-        }
-        
-        func collectionView(_ collectionView: UICollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
-            let limitedPaths = Array(indexPaths.prefix(50))
-            
-            let cellSize = (collectionView.collectionViewLayout as? PinchableGridLayout)?.itemSize.width ?? 240
-            let targetSize = optimalTargetSize(for: cellSize)
-            
-            let assetsToCache = limitedPaths.compactMap { indexPath -> PHAsset? in
-                guard indexPath.section < sections.count else { return nil }
-                let section = sections[indexPath.section]
-                
-                guard let snapshot = dataSource?.snapshot() else { return nil }
-                let items = snapshot.itemIdentifiers(inSection: section)
-                guard indexPath.item < items.count else { return nil }
-                
-                let id = items[indexPath.item]
-                guard let asset = assetsByID[id] else { return nil }
-                
-                let cacheKey = CacheKeyGenerator.key(for: asset, size: targetSize)
-                if imageCache.image(for: cacheKey) != nil {
-                    return nil
-                }
-                
-                return asset
-            }
-            
-            guard !assetsToCache.isEmpty else { return }
-            
-            imageManager.startCachingImages(
-                for: assetsToCache,
-                targetSize: targetSize,
-                contentMode: .aspectFill,
-                options: nil
-            )
-        }
-        
-        func collectionView(_ collectionView: UICollectionView, cancelPrefetchingForItemsAt indexPaths: [IndexPath]) {
-            let cellSize = (collectionView.collectionViewLayout as? PinchableGridLayout)?.itemSize.width ?? 240
-            let targetSize = optimalTargetSize(for: cellSize)
-            
-            let assetsToStop = indexPaths.compactMap { indexPath -> PHAsset? in
-                guard indexPath.section < sections.count else { return nil }
-                let section = sections[indexPath.section]
-                
-                guard let snapshot = dataSource?.snapshot() else { return nil }
-                let items = snapshot.itemIdentifiers(inSection: section)
-                guard indexPath.item < items.count else { return nil }
-                
-                let id = items[indexPath.item]
-                return assetsByID[id]
-            }
-            
-            guard !assetsToStop.isEmpty else { return }
-            
-            imageManager.stopCachingImages(
-                for: assetsToStop,
-                targetSize: targetSize,
-                contentMode: .aspectFill,
-                options: nil
-            )
-        }
-        
-        @MainActor
-        private func notifyAppear(at index: Int) {
-            onAppearAtIndex(index)
-        }
-        
-        private func requestFullImage(for asset: PHAsset) {
-            let options = PHImageRequestOptions()
-            options.deliveryMode = .highQualityFormat
-            options.isNetworkAccessAllowed = true
-            
-            imageManager.requestImage(
-                for: asset,
-                targetSize: PHImageManagerMaximumSize,
-                contentMode: .aspectFit,
-                options: options
-            ) { [weak self] image, _ in
-                guard let self = self, let image = image else { return }
-                self.notifyPick(image: image, date: asset.creationDate)
-            }
-        }
-        
-        @MainActor
-        private func notifyPick(image: UIImage, date: Date?) {
-            onPick(image, date)
         }
         
         private func optimalTargetSize(for cellSize: CGFloat) -> CGSize {
@@ -504,10 +448,407 @@ struct PhotoGridView: UIViewRepresentable {
             }
             return count
         }
+        
+        // MARK: - Pinch-to-zoom installation
+        
+        func installPinchGesture(on collectionView: UICollectionView) {
+            let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
+            pinch.cancelsTouchesInView = false
+            collectionView.addGestureRecognizer(pinch)
+        }
+        
+        private func nearestIndexPath(to pointInCV: CGPoint) -> (IndexPath, UICollectionViewLayoutAttributes)? {
+            guard let collectionView = collectionView else { return nil }
+            let visible = collectionView.indexPathsForVisibleItems
+            guard !visible.isEmpty else { return nil }
+            var best: (IndexPath, UICollectionViewLayoutAttributes, CGFloat)?
+            for ip in visible {
+                if let attrs = collectionView.layoutAttributesForItem(at: ip) {
+                    let center = CGPoint(x: attrs.frame.midX, y: attrs.frame.midY)
+                    let dx = center.x - pointInCV.x
+                    let dy = center.y - pointInCV.y
+                    let d2 = dx*dx + dy*dy
+                    if best == nil || d2 < best!.2 {
+                        best = (ip, attrs, d2)
+                    }
+                }
+            }
+            if let b = best {
+                return (b.0, b.1)
+            }
+            return nil
+        }
+        
+        private func clampedOffset(for desired: CGPoint, contentSize: CGSize, inset: UIEdgeInsets, bounds: CGSize) -> CGPoint {
+            let maxOffsetX = max(-inset.left, contentSize.width + inset.right - bounds.width)
+            let maxOffsetY = max(-inset.top, contentSize.height + inset.bottom - bounds.height)
+            let clampedX = min(max(desired.x, -inset.left), maxOffsetX)
+            let clampedY = min(max(desired.y, -inset.top), maxOffsetY)
+            return CGPoint(x: clampedX, y: clampedY)
+        }
+        
+        @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+            guard let collectionView = collectionView else { return }
+            
+            switch gesture.state {
+            case .began:
+                pinchStartZoomScale = zoomScale
+                pinchStartOffset = collectionView.contentOffset
+                pinchStartLocationInCV = gesture.location(in: collectionView)
+                pinchStartContentSize = collectionView.collectionViewLayout.collectionViewContentSize
+                pinchStartCellSide = currentCellSide()
+                pinchStartInset = collectionView.contentInset
+                
+                collectionView.layoutIfNeeded()
+                if let ip = collectionView.indexPathForItem(at: pinchStartLocationInCV),
+                   let attrs = collectionView.layoutAttributesForItem(at: ip) {
+                    pinchStartIndexPath = ip
+                    let contentPoint = CGPoint(x: pinchStartLocationInCV.x + pinchStartOffset.x,
+                                               y: pinchStartLocationInCV.y + pinchStartOffset.y)
+                    pinchStartOffsetInCell = CGPoint(x: contentPoint.x - attrs.frame.origin.x,
+                                                     y: contentPoint.y - attrs.frame.origin.y)
+                } else if let nearest = nearestIndexPath(to: pinchStartLocationInCV) {
+                    pinchStartIndexPath = nearest.0
+                    let contentPoint = CGPoint(x: pinchStartLocationInCV.x + pinchStartOffset.x,
+                                               y: pinchStartLocationInCV.y + pinchStartOffset.y)
+                    pinchStartOffsetInCell = CGPoint(x: contentPoint.x - nearest.1.frame.origin.x,
+                                                     y: contentPoint.y - nearest.1.frame.origin.y)
+                } else {
+                    pinchStartIndexPath = nil
+                    pinchStartOffsetInCell = .zero
+                }
+                
+            case .changed:
+                let scaledAroundOne = 1 + zoomGain * (gesture.scale - 1)
+                var newZoom = pinchStartZoomScale * scaledAroundOne
+                newZoom = max(minZoomScale, min(newZoom, maxZoomScale))
+                
+                if newZoom != zoomScale {
+                    zoomScale = newZoom
+                    compositionalLayout?.invalidateLayout()
+                    collectionView.collectionViewLayout.invalidateLayout()
+                    collectionView.layoutIfNeeded()
+                }
+                
+                let newContentSize = collectionView.collectionViewLayout.collectionViewContentSize
+                let desiredOffset: CGPoint
+                
+                if let ip = pinchStartIndexPath,
+                   let newAttrs = collectionView.layoutAttributesForItem(at: ip) {
+                    let targetContentPoint = CGPoint(x: newAttrs.frame.origin.x + pinchStartOffsetInCell.x,
+                                                     y: newAttrs.frame.origin.y + pinchStartOffsetInCell.y)
+                    desiredOffset = CGPoint(x: targetContentPoint.x - pinchStartLocationInCV.x,
+                                            y: targetContentPoint.y - pinchStartLocationInCV.y)
+                } else {
+                    let newCellSide = currentCellSide()
+                    let ratio = pinchStartCellSide > 0 ? (newCellSide / pinchStartCellSide) : 1
+                    let startContentPoint = CGPoint(x: pinchStartLocationInCV.x + pinchStartOffset.x,
+                                                    y: pinchStartLocationInCV.y + pinchStartOffset.y)
+                    let scaledPoint = CGPoint(x: startContentPoint.x * ratio,
+                                              y: startContentPoint.y * ratio)
+                    desiredOffset = CGPoint(x: scaledPoint.x - pinchStartLocationInCV.x,
+                                            y: scaledPoint.y - pinchStartLocationInCV.y)
+                }
+                
+                let clamped = clampedOffset(for: desiredOffset,
+                                            contentSize: newContentSize,
+                                            inset: collectionView.contentInset,
+                                            bounds: collectionView.bounds.size)
+                collectionView.contentOffset = clamped
+                
+            case .ended, .cancelled, .failed:
+                let oldInset = collectionView.contentInset
+                let newInset = computeCenteredInset(for: collectionView)
+                if newInset != oldInset {
+                    collectionView.contentInset = newInset
+                    let deltaX = newInset.left - oldInset.left
+                    let deltaY = newInset.top - oldInset.top
+                    let adjusted = CGPoint(x: collectionView.contentOffset.x + deltaX,
+                                           y: collectionView.contentOffset.y + deltaY)
+                    let contentSize = collectionView.collectionViewLayout.collectionViewContentSize
+                    let clamped = clampedOffset(for: adjusted,
+                                                contentSize: contentSize,
+                                                inset: newInset,
+                                                bounds: collectionView.bounds.size)
+                    collectionView.contentOffset = clamped
+                }
+            default:
+                break
+            }
+        }
+        
+        private func computeCenteredInset(for collectionView: UICollectionView) -> UIEdgeInsets {
+            let contentSize = collectionView.collectionViewLayout.collectionViewContentSize
+            let bounds = collectionView.bounds.size
+            let insetX = max((bounds.width - contentSize.width) / 2, 0)
+            let insetY = max((bounds.height - contentSize.height) / 2, 0)
+            return UIEdgeInsets(top: insetY, left: insetX, bottom: insetY, right: insetX)
+        }
     }
 }
 
-// MARK: - Month Section
+// MARK: - UICollectionViewDelegate
+
+extension PhotoGridView.Coordinator: UICollectionViewDelegate {
+    func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
+        let globalIndex = globalIndexForIndexPath(indexPath)
+        Task { @MainActor in
+            onAppearAtIndex(globalIndex)
+        }
+    }
+    
+    func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+        print("🔵 [PhotoGrid] didSelectItemAt - Section: \(indexPath.section), Item: \(indexPath.item)")
+        
+        // Prevent multiple simultaneous loads
+        guard !isLoadingDetail else {
+            print("⚠️ [PhotoGrid] Already loading a photo, ignoring tap")
+            return
+        }
+        
+        guard indexPath.section < sections.count else {
+            print("❌ [PhotoGrid] Section index out of bounds - sections.count: \(sections.count)")
+            return
+        }
+        let section = sections[indexPath.section]
+        print("✅ [PhotoGrid] Section found: \(section.date)")
+        
+        guard let snapshot = dataSource?.snapshot() else {
+            print("❌ [PhotoGrid] No snapshot available")
+            return
+        }
+        let items = snapshot.itemIdentifiers(inSection: section)
+        print("✅ [PhotoGrid] Items in section: \(items.count)")
+        
+        guard indexPath.item < items.count else {
+            print("❌ [PhotoGrid] Item index out of bounds - items.count: \(items.count)")
+            return
+        }
+        
+        let identifier = items[indexPath.item]
+        print("✅ [PhotoGrid] Asset identifier: \(identifier)")
+        
+        guard let asset = assetsByID[identifier] else {
+            print("❌ [PhotoGrid] Asset not found in dictionary")
+            return
+        }
+        print("✅ [PhotoGrid] Asset found - creationDate: \(asset.creationDate?.description ?? "nil")")
+        
+        // Mark as loading
+        isLoadingDetail = true
+        
+        guard let cell = collectionView.cellForItem(at: indexPath) as? PhotoCell,
+              let cellFrame = cell.superview?.convert(cell.frame, to: nil) else {
+            print("⚠️ [PhotoGrid] No cell or frame available, requesting full image directly")
+            requestFullImage(for: asset)
+            return
+        }
+        
+        let cellImage = cell.imageView.image
+        print("✅ [PhotoGrid] Cell found with image: \(cellImage != nil)")
+        print("🎯 [PhotoGrid] Presenting detail view for asset")
+        
+        presentPhotoDetail(for: asset, originFrame: cellFrame, originImage: cellImage)
+    }
+    
+    private func presentPhotoDetail(for asset: PHAsset, originFrame: CGRect, originImage: UIImage?) {
+        print("🔵 [PhotoGrid] presentPhotoDetail called")
+        
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .highQualityFormat
+        options.isNetworkAccessAllowed = true
+        options.progressHandler = { progress, error, stop, info in
+            print("📊 [PhotoGrid] Image loading progress: \(Int(progress * 100))%")
+        }
+        
+        print("🔄 [PhotoGrid] Requesting full image for asset")
+        let requestID = imageManager.requestImage(
+            for: asset,
+            targetSize: PHImageManagerMaximumSize,
+            contentMode: .aspectFit,
+            options: options
+        ) { [weak self] image, info in
+            guard let self = self else {
+                print("❌ [PhotoGrid] Self deallocated during image request")
+                return
+            }
+            
+            let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+            let isCancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
+            let error = info?[PHImageErrorKey] as? Error
+            
+            print("📸 [PhotoGrid] Image request callback - isDegraded: \(isDegraded), isCancelled: \(isCancelled), error: \(error?.localizedDescription ?? "none"), hasImage: \(image != nil)")
+            
+            if isCancelled {
+                print("⚠️ [PhotoGrid] Image request was cancelled")
+                self.isLoadingDetail = false
+                self.currentDetailRequestID = nil
+                return
+            }
+            
+            if let error = error {
+                print("❌ [PhotoGrid] Image request error: \(error.localizedDescription)")
+                self.isLoadingDetail = false
+                self.currentDetailRequestID = nil
+                return
+            }
+            
+            guard let image = image else {
+                print("❌ [PhotoGrid] No image returned from request")
+                self.isLoadingDetail = false
+                self.currentDetailRequestID = nil
+                return
+            }
+            
+            if isDegraded {
+                print("⏳ [PhotoGrid] Received degraded image, waiting for full quality")
+                return
+            }
+            
+            print("✅ [PhotoGrid] Full quality image received - size: \(image.size)")
+            
+            Task { @MainActor in
+                print("🎬 [PhotoGrid] Calling onPhotoDetail callback")
+                let detail = PhotosDayPickerView.PhotoDetail(
+                    image: image,
+                    date: asset.creationDate,
+                    originFrame: originFrame,
+                    originImage: originImage
+                )
+                self.onPhotoDetail(detail)
+                self.isLoadingDetail = false
+                self.currentDetailRequestID = nil
+            }
+        }
+        
+        currentDetailRequestID = requestID
+        print("📝 [PhotoGrid] Image request ID: \(requestID)")
+    }
+    
+    private func requestFullImage(for asset: PHAsset) {
+        print("🔵 [PhotoGrid] requestFullImage (fallback path)")
+        
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .highQualityFormat
+        options.isNetworkAccessAllowed = true
+        
+        let requestID = imageManager.requestImage(
+            for: asset,
+            targetSize: PHImageManagerMaximumSize,
+            contentMode: .aspectFit,
+            options: options
+        ) { [weak self] image, info in
+            guard let self = self else {
+                print("❌ [PhotoGrid] Self deallocated during fallback request")
+                return
+            }
+            
+            let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+            let isCancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
+            
+            print("📸 [PhotoGrid] Fallback image request - isDegraded: \(isDegraded), isCancelled: \(isCancelled), hasImage: \(image != nil)")
+            
+            guard !isDegraded, !isCancelled, let image = image else {
+                self.isLoadingDetail = false
+                self.currentDetailRequestID = nil
+                return
+            }
+            
+            print("✅ [PhotoGrid] Fallback image received")
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                // Call the detail callback with fallback data
+                let detail = PhotosDayPickerView.PhotoDetail(
+                    image: image,
+                    date: asset.creationDate,
+                    originFrame: .zero,
+                    originImage: nil
+                )
+                self.onPhotoDetail(detail)
+                self.isLoadingDetail = false
+                self.currentDetailRequestID = nil
+            }
+        }
+        
+        currentDetailRequestID = requestID
+        print("📝 [PhotoGrid] Fallback request ID: \(requestID)")
+    }
+}
+
+// MARK: - UICollectionViewDataSourcePrefetching
+
+extension PhotoGridView.Coordinator: UICollectionViewDataSourcePrefetching {
+    func collectionView(_ collectionView: UICollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
+        let cellSize = currentCellSide()
+        let targetSize = optimalTargetSize(for: cellSize)
+        
+        let limitedPaths = Array(indexPaths.prefix(50))
+        
+        let assetsToCache = limitedPaths.compactMap { indexPath -> PHAsset? in
+            guard indexPath.section < sections.count else { return nil }
+            let section = sections[indexPath.section]
+            
+            guard let snapshot = dataSource?.snapshot() else { return nil }
+            let items = snapshot.itemIdentifiers(inSection: section)
+            guard indexPath.item < items.count else { return nil }
+            
+            let id = items[indexPath.item]
+            guard let asset = assetsByID[id] else { return nil }
+            
+            let cacheKey = CacheKeyGenerator.key(for: asset, size: targetSize)
+            if imageCache.image(for: cacheKey) != nil {
+                return nil
+            }
+            
+            return asset
+        }
+        
+        guard !assetsToCache.isEmpty else { return }
+        
+        imageManager.startCachingImages(
+            for: assetsToCache,
+            targetSize: targetSize,
+            contentMode: .aspectFill,
+            options: nil
+        )
+    }
+    
+    func collectionView(_ collectionView: UICollectionView, cancelPrefetchingForItemsAt indexPaths: [IndexPath]) {
+        let cellSize = currentCellSide()
+        let targetSize = optimalTargetSize(for: cellSize)
+        
+        let assetsToStop = indexPaths.compactMap { indexPath -> PHAsset? in
+            guard indexPath.section < sections.count else { return nil }
+            let section = sections[indexPath.section]
+            
+            guard let snapshot = dataSource?.snapshot() else { return nil }
+            let items = snapshot.itemIdentifiers(inSection: section)
+            guard indexPath.item < items.count else { return nil }
+            
+            let id = items[indexPath.item]
+            return assetsByID[id]
+        }
+        
+        guard !assetsToStop.isEmpty else { return }
+        
+        imageManager.stopCachingImages(
+            for: assetsToStop,
+            targetSize: targetSize,
+            contentMode: .aspectFill,
+            options: nil
+        )
+    }
+}
+
+// MARK: - UIScrollViewDelegate
+
+extension PhotoGridView.Coordinator: UIScrollViewDelegate {
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        updateFloatingHeader()
+    }
+}
+
+// MARK: - MonthSection
 
 struct MonthSection: Hashable {
     let date: Date
@@ -558,56 +899,19 @@ final class MonthHeaderView: UIView {
     }
 }
 
-// MARK: - Pinchable Grid Layout
-
-final class PinchableGridLayout: UICollectionViewFlowLayout {
-    var zoomScale: CGFloat = 1.0 {
-        didSet {
-            guard oldValue != zoomScale else { return }
-            invalidateLayout()
-        }
-    }
-    
-    override func prepare() {
-        super.prepare()
-        
-        guard let collectionView = collectionView else { return }
-        
-        let availableWidth = collectionView.bounds.width - sectionInset.left - sectionInset.right
-        
-        let baseColumns: CGFloat = 3.0
-        let columns = max(2, min(20, baseColumns / zoomScale))
-        let actualColumns = round(columns)
-        
-        let totalSpacing = minimumInteritemSpacing * (actualColumns - 1)
-        let itemWidth = max(40, (availableWidth - totalSpacing) / actualColumns)
-        
-        itemSize = CGSize(width: itemWidth, height: itemWidth)
-    }
-    
-    override func shouldInvalidateLayout(forBoundsChange newBounds: CGRect) -> Bool {
-        guard let collectionView = collectionView else { return false }
-        return newBounds.width != collectionView.bounds.width
-    }
-}
-
 // MARK: - Photo Cell
 
 final class PhotoCell: UICollectionViewCell {
     static let reuseIdentifier = "PhotoCell"
     
-    private let imageView = UIImageView()
+    let imageView = UIImageView()
     private var currentRequestID: PHImageRequestID?
     private var representedAssetIdentifier: String?
     private var currentCacheKey: String?
     
-    weak var pinchDelegate: PhotoCellPinchDelegate?
-    private var pinchGestureRecognizer: UIPinchGestureRecognizer!
-    
     override init(frame: CGRect) {
         super.init(frame: frame)
         setupViews()
-        setupGesture()
     }
     
     required init?(coder: NSCoder) {
@@ -630,16 +934,6 @@ final class PhotoCell: UICollectionViewCell {
         contentView.backgroundColor = UIColor.secondarySystemGroupedBackground
     }
     
-    private func setupGesture() {
-        pinchGestureRecognizer = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
-        pinchGestureRecognizer.delegate = self
-        contentView.addGestureRecognizer(pinchGestureRecognizer)
-    }
-    
-    @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
-        pinchDelegate?.photoCell(self, didPinch: gesture)
-    }
-    
     override func prepareForReuse() {
         super.prepareForReuse()
         
@@ -650,7 +944,6 @@ final class PhotoCell: UICollectionViewCell {
         
         representedAssetIdentifier = nil
         currentCacheKey = nil
-        pinchDelegate = nil
     }
     
     func configure(with asset: PHAsset, imageManager: PHCachingImageManager, cache: ImageCacheService, targetSize: CGSize) {
@@ -700,51 +993,23 @@ final class PhotoCell: UICollectionViewCell {
     }
 }
 
-extension PhotoCell: UIGestureRecognizerDelegate {
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        return false
-    }
-}
+// MARK: - Transition Delegate
 
-protocol PhotoCellPinchDelegate: AnyObject {
-    func photoCell(_ cell: PhotoCell, didPinch gesture: UIPinchGestureRecognizer)
-}
-
-extension PhotoGridView.Coordinator {
-    func animationController(forPresented presented: UIViewController, presenting: UIViewController, source: UIViewController) -> UIViewControllerAnimatedTransitioning? {
-        return PhotoZoomTransitionAnimator(
-            isPresenting: true,
-            originFrame: transitionOriginFrame,
-            originImage: transitionOriginImage
-        )
-    }
+final class PhotoZoomTransitionDelegate: NSObject, UIViewControllerTransitioningDelegate {
+    private let originFrame: CGRect
+    private let originImage: UIImage?
     
-    func animationController(forDismissed dismissed: UIViewController) -> UIViewControllerAnimatedTransitioning? {
-        return PhotoZoomTransitionAnimator(
-            isPresenting: false,
-            originFrame: transitionOriginFrame,
-            originImage: transitionOriginImage
-        )
-    }
-}
-
-// MARK: - Transition Delegate Wrapper
-
-private final class TransitionDelegateWrapper: NSObject, UIViewControllerTransitioningDelegate {
-    let presentAnimator: PhotoZoomTransitionAnimator
-    let dismissAnimator: PhotoZoomTransitionAnimator
-    
-    init(presentAnimator: PhotoZoomTransitionAnimator, dismissAnimator: PhotoZoomTransitionAnimator) {
-        self.presentAnimator = presentAnimator
-        self.dismissAnimator = dismissAnimator
+    init(originFrame: CGRect, originImage: UIImage?) {
+        self.originFrame = originFrame
+        self.originImage = originImage
         super.init()
     }
     
     func animationController(forPresented presented: UIViewController, presenting: UIViewController, source: UIViewController) -> UIViewControllerAnimatedTransitioning? {
-        return presentAnimator
+        return PhotoZoomTransitionAnimator(isPresenting: true, originFrame: originFrame, originImage: originImage)
     }
     
     func animationController(forDismissed dismissed: UIViewController) -> UIViewControllerAnimatedTransitioning? {
-        return dismissAnimator
+        return PhotoZoomTransitionAnimator(isPresenting: false, originFrame: originFrame, originImage: originImage)
     }
 }
