@@ -8,6 +8,7 @@
 import SwiftUI
 import SwiftData
 import UIKit
+import os
 
 enum AppTab: Hashable {
     case people
@@ -19,6 +20,8 @@ struct Names_3App: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @State private var tabSelection: AppTab = .people
     
+    private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Names3", category: "SwiftData")
+
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             Contact.self,
@@ -26,7 +29,8 @@ struct Names_3App: App {
             Tag.self,
             QuickNote.self,
         ])
-        let modelConfiguration = ModelConfiguration(
+
+        let cloudConfig = ModelConfiguration(
             "default",
             schema: schema,
             isStoredInMemoryOnly: false,
@@ -34,9 +38,20 @@ struct Names_3App: App {
         )
 
         do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
+            Names_3App.logger.info("Initializing SwiftData container with CloudKit")
+            return try ModelContainer(for: schema, configurations: [cloudConfig])
         } catch {
-            fatalError("Could not create ModelContainer: \(error)")
+            Names_3App.logger.error("CloudKit ModelContainer init failed: \(error, privacy: .public). Falling back to local store.")
+            let localConfig = ModelConfiguration(
+                "local-fallback",
+                schema: schema,
+                isStoredInMemoryOnly: false
+            )
+            do {
+                return try ModelContainer(for: schema, configurations: [localConfig])
+            } catch {
+                fatalError("Could not create local fallback ModelContainer: \(error)")
+            }
         }
     }()
 

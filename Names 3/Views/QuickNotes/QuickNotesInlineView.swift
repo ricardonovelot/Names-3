@@ -45,6 +45,8 @@ struct QuickNotesInlineView: View {
                     }
                 }
                 .listStyle(.insetGrouped)
+                .scrollContentBackground(.hidden)
+                .background(Color(UIColor.systemGroupedBackground))
             }
         }
     }
@@ -52,7 +54,6 @@ struct QuickNotesInlineView: View {
 
 private struct InlineQuickNoteRow: View {
     @Bindable var quickNote: QuickNote
-    @State private var showDatePicker = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -69,34 +70,22 @@ private struct InlineQuickNoteRow: View {
 
                 Spacer()
 
-                Group {
-                    if quickNote.isLongAgo {
-                        Text("Long time ago")
-                    } else {
-                        Text(quickNote.date, style: .date)
+                NavigationLink {
+                    QuickNoteDetailView(quickNote: quickNote)
+                } label: {
+                    Group {
+                        if quickNote.isLongAgo {
+                            Text("Long time ago")
+                        } else {
+                            Text(quickNote.date, style: .date)
+                        }
                     }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .onTapGesture {
-                    showDatePicker = true
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
             }
         }
         .padding(.vertical, 6)
         .contentShape(Rectangle())
-        .sheet(isPresented: $showDatePicker) {
-            NavigationStack {
-                Form {
-                    Toggle("Long ago", isOn: $quickNote.isLongAgo)
-                    DatePicker("Exact Date", selection: $quickNote.date, in: ...Date(), displayedComponents: .date)
-                        .disabled(quickNote.isLongAgo)
-                }
-                .navigationTitle("Quick Note Date")
-                .navigationBarTitleDisplayMode(.inline)
-            }
-            .presentationDetents([.large])
-            .presentationDragIndicator(.visible)
-        }
     }
 }

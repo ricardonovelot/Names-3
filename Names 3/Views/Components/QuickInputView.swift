@@ -13,40 +13,41 @@ struct QuickInputView: View {
     // Mode and hooks
     let mode: QuickInputMode
     @Binding var parsedContacts: [Contact]
+    @Binding var isQuickNotesActive: Bool
+    @Binding var selectedContact: Contact?
     var onCameraTap: (() -> Void)? = nil
     var onQuickNoteAdded: (() -> Void)? = nil
     var onQuickNoteDetected: (() -> Void)? = nil
     var onQuickNoteCleared: (() -> Void)? = nil
 
+    // Optional quick note to link created entities to, and flag to allow/deny quick note creation
+    var linkedQuickNote: QuickNote? = nil
+    var allowQuickNoteCreation: Bool = true
+
     // People suggestions and selection
     @Query(filter: #Predicate<Contact> { $0.isArchived == false })
     private var contacts: [Contact]
 
-    // UI State
+    // Unified input state
     @State private var text: String = ""
     @FocusState private var fieldIsFocused: Bool
     @State private var bottomInputHeight: CGFloat = 0
+    @State private var suggestionsHeight: CGFloat = 0
     @State private var isLoading = false
 
     // People-mode state
-    @State private var selectedExistingContact: Contact?
-    @State private var noteTextForExisting: String = ""
     @State private var filterString: String = ""
     @State private var suggestedContacts: [Contact] = []
     @State private var parseDebounceWork: DispatchWorkItem?
     @State private var quickNoteActive: Bool = false
     @State private var suppressNextClear: Bool = false
 
-    private var quickNoteKeywords: [String] { ["quick note", "quick", "qn"] }
-
     private func isQuickNoteCommand(_ input: String) -> Bool {
         let s = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        // prefix forms for "quick" / "quick note"
         let prefixPattern = #"^(quick\s*note|quick)\b[\s:]*"#
         if s.range(of: prefixPattern, options: [.regularExpression, .caseInsensitive]) != nil {
             return true
         }
-        // anywhere standalone token "qn" (optionally followed by colon)
         let anywhereQN = #"(?i)\bqn\b"#
         return s.range(of: anywhereQN, options: .regularExpression) != nil
     }
@@ -57,10 +58,8 @@ struct QuickInputView: View {
         if let r = s.range(of: prefixPattern, options: .regularExpression) {
             s = String(s[r.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        // Remove any standalone "qn" tokens (case-insensitive), optional spaces and trailing punctuation like ":" or ",".
         let qnPattern = #"(?i)\bqn\b\s*[:;,]?"#
         s = s.replacingOccurrences(of: qnPattern, with: "", options: .regularExpression)
-        // Collapse multiple spaces and trim again
         s = s.replacingOccurrences(of: #"\s{2,}"#, with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return s
@@ -69,17 +68,20 @@ struct QuickInputView: View {
     var body: some View {
         VStack {
             HStack(spacing: 6) {
-                Group {
-                    if mode == .people, let token = selectedExistingContact {
-                        HStack(spacing: 8) {
+                InputBubble {
+                    HStack(spacing: 8) {
+                        if mode == .people, let token = selectedContact {
                             HStack(spacing: 6) {
                                 Text(token.name ?? "Unnamed")
                                     .font(.subheadline)
                                     .foregroundStyle(.blue)
                                 Button {
-                                    selectedExistingContact = nil
-                                    noteTextForExisting = ""
-                                    fieldIsFocused = true
+                                    selectedContact = nil
+                                    text = ""
+                                    Task { @MainActor in
+                                        try? await Task.sleep(for: .milliseconds(30))
+                                        fieldIsFocused = true
+                                    }
                                 } label: {
                                     Image(systemName: "xmark.circle.fill")
                                         .font(.caption)
@@ -89,27 +91,42 @@ struct QuickInputView: View {
                             }
                             .padding(.horizontal, 10)
                             .padding(.vertical, 6)
-                            .background(Color.blue.opacity(0.15))
+                            .background(.ultraThinMaterial, in: Capsule())
+                            .overlay {
+                                Capsule()
+                                    .fill(Color.blue.opacity(0.15))
+                            }
                             .clipShape(Capsule())
+                        }
 
-                            TextField("Add a note…", text: $noteTextForExisting, axis: .vertical)
-                                .onChange(of: noteTextForExisting) { oldValue, newValue in
-                                    if let last = newValue.last, last == "\n" {
-                                        noteTextForExisting.removeLast()
+                        ZStack(alignment: .topLeading) {
+                            GrowingTextView(
+                                text: $text,
+                                isFirstResponder: Binding(
+                                    get: { fieldIsFocused },
+                                    set: { fieldIsFocused = $0 }
+                                ),
+                                minHeight: 22,
+                                maxHeight: 140,
+                                onDeleteWhenEmpty: {
+                                    if text.isEmpty, selectedContact != nil {
+                                        selectedContact = nil
+                                        Task { @MainActor in
+                                            try? await Task.sleep(for: .milliseconds(30))
+                                            fieldIsFocused = true
+                                        }
+                                    }
+                                },
+                                onReturn: {
+                                    if mode == .people && !suggestedContacts.isEmpty {
+                                        selectExistingContact(suggestedContacts[0])
+                                    } else {
                                         save()
                                     }
                                 }
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .focused($fieldIsFocused)
-                        .submitLabel(.send)
-                    } else {
-                        TextField("", text: $text, axis: .vertical)
-                            .padding(.horizontal, 32)
-                            .padding(.vertical, 8)
-                            .focused($fieldIsFocused)
-                            .submitLabel(.send)
+                            )
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
                             .onChange(of: text) { oldValue, newValue in
                                 if let last = newValue.last, last == "\n" {
                                     text.removeLast()
@@ -118,7 +135,7 @@ struct QuickInputView: View {
                                     if mode == .people {
                                         parseDebounceWork?.cancel()
                                         let s = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                                        if isQuickNoteCommand(s) {
+                                        if isQuickNoteCommand(s) && selectedContact == nil {
                                             parsePeopleInput()
                                         } else {
                                             let work = DispatchWorkItem {
@@ -130,61 +147,130 @@ struct QuickInputView: View {
                                     }
                                 }
                             }
+
+                            if text.isEmpty {
+                                Text(mode == .people && selectedContact != nil ? "Add a note…" : "")
+                                    .foregroundStyle(.secondary)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+
+                        if mode == .people {
+                            Button {
+                                onCameraTap?()
+                            } label: {
+                                Image(systemName: "camera")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                 }
-                .liquidGlass(in: Capsule())
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
                 if mode == .people {
                     Button {
-                        onCameraTap?()
+                        if isQuickNotesActive {
+                            isQuickNotesActive = false
+                            onQuickNoteCleared?()
+                        } else {
+                            isQuickNotesActive = true
+                            onQuickNoteDetected?()
+                        }
                     } label: {
-                        Image(systemName: "camera")
+                        Image(systemName: isQuickNotesActive ? "person" : "note.text" )
                             .fontWeight(.medium)
                             .padding(10)
-                            .liquidGlass(in: Capsule())
+                            .glassBackground(Circle())
                             .clipShape(Circle())
                     }
+                    .accessibilityLabel(isQuickNotesActive ? "Switch to People" : "Switch to Quick Notes")
                 }
             }
         }
         .padding(.horizontal)
         .padding(.bottom, 16)
-        .background(
-            GeometryReader { proxy in
-                Color.clear
-                    .preference(key: BottomInputHeightKey.self, value: proxy.size.height)
-            }
-        )
         .overlay(alignment: .bottom) {
-            if mode == .people, selectedExistingContact == nil && !filterString.isEmpty && !suggestedContacts.isEmpty {
+            if mode == .people, selectedContact == nil && !filterString.isEmpty && !suggestedContacts.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(suggestedContacts) { contact in
                             Button {
                                 selectExistingContact(contact)
                             } label: {
-                                Text(contact.name ?? "Unnamed")
-                                    .font(.subheadline)
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 6)
-                                    .background(Color.accentColor.opacity(0.12))
-                                    .foregroundStyle(.primary)
-                                    .clipShape(Capsule())
+                                HStack(spacing: 6) {
+                                    if !contact.photo.isEmpty, let uiImage = UIImage(data: contact.photo) {
+                                        Image(uiImage: uiImage)
+                                            .resizable()
+                                            .scaledToFill()
+                                            .frame(width: 24, height: 24)
+                                            .clipShape(Circle())
+                                    } else {
+                                        Circle()
+                                            .fill(Color.gray.opacity(0.3))
+                                            .frame(width: 24, height: 24)
+                                            .overlay {
+                                                Image(systemName: "person.fill")
+                                                    .font(.system(size: 10))
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                    }
+                                    
+                                    Text(contact.name ?? "Unnamed")
+                                        .font(.subheadline)
+                                }
+                                .padding(.leading, 6)
+                                .padding(.trailing, 12)
+                                .padding(.vertical, 6)
+                                .background(
+                                    Color.blue.gradient.quinary
+                                )
+                                .background(.ultraThinMaterial)
+                                .foregroundStyle(.primary)
+                                
+                                .clipShape(Capsule())
                             }
                             .buttonStyle(.plain)
+                            .transition(.asymmetric(
+                                insertion: .scale(scale: 0.8).combined(with: .opacity),
+                                removal: .scale(scale: 0.9).combined(with: .opacity)
+                            ))
                         }
                     }
+                    .animation(.spring(response: 0.3, dampingFraction: 0.8), value: suggestedContacts.map(\.id))
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
+                    .frame(minHeight: 44, maxHeight: 60, alignment: .center)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
-                .background(.ultraThinMaterial, in: Capsule())
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear
+                            .preference(key: SuggestionsHeightKey.self, value: proxy.size.height)
+                    }
+                )
                 .padding(.horizontal)
-                .padding(.bottom, bottomInputHeight + 8)
+                .offset(y: -(suggestionsHeight + 8))
                 .transition(.opacity.combined(with: .move(edge: .bottom)))
+                .animation(.spring(response: 0.35, dampingFraction: 0.85), value: !suggestedContacts.isEmpty)
             }
         }
-        .onPreferenceChange(BottomInputHeightKey.self) { bottomInputHeight = $0 }
+        .background(
+            GeometryReader { proxy in
+                Color.clear
+                    .preference(key: BottomInputHeightKey.self, value: proxy.size.height)
+            }
+        )
+        .onPreferenceChange(BottomInputHeightKey.self) { height in
+            DispatchQueue.main.async {
+                bottomInputHeight = height
+            }
+        }
+        .onPreferenceChange(SuggestionsHeightKey.self) { height in
+            withAnimation(.spring(response: 0.25, dampingFraction: 1.0)) {
+                suggestionsHeight = height
+            }
+        }
+        .preference(key: TotalQuickInputHeightKey.self, value: bottomInputHeight + suggestionsHeight + 8)
     }
 
     private func save() {
@@ -193,19 +279,24 @@ struct QuickInputView: View {
 
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if let existing = selectedExistingContact, mode == .people {
-            if let note = buildNoteFromText(for: existing, text: noteTextForExisting) {
+        if let existing = selectedContact, mode == .people {
+            if let note = buildNoteFromText(for: existing, text: trimmed) {
                 if existing.notes == nil { existing.notes = [] }
                 existing.notes?.append(note)
+                if let qn = linkedQuickNote {
+                    note.quickNote = qn
+                    if qn.linkedNotes == nil { qn.linkedNotes = [] }
+                    qn.linkedNotes?.append(note)
+                }
                 do { try modelContext.save() } catch { print("Save failed: \(error)") }
             }
-            noteTextForExisting = ""
-            selectedExistingContact = nil
+            text = ""
+            selectedContact = nil
             resetTextAndPreview()
             return
         }
 
-        if isQuickNoteCommand(trimmed) || mode == .quickNotes {
+        if ((isQuickNoteCommand(trimmed) && allowQuickNoteCreation) || mode == .quickNotes) {
             if let qn = buildQuickNoteFromText(trimmed) {
                 modelContext.insert(qn)
                 do { try modelContext.save() } catch { print("Save failed: \(error)") }
@@ -222,6 +313,17 @@ struct QuickInputView: View {
         if mode == .people {
             for contact in parsedContacts {
                 modelContext.insert(contact)
+            }
+            if let qn = linkedQuickNote {
+                if qn.linkedContacts == nil { qn.linkedContacts = [] }
+                if qn.linkedNotes == nil { qn.linkedNotes = [] }
+                for contact in parsedContacts {
+                    qn.linkedContacts?.append(contact)
+                    for n in contact.notes ?? [] {
+                        n.quickNote = qn
+                        qn.linkedNotes?.append(n)
+                    }
+                }
             }
             do { try modelContext.save() } catch { print("Save failed: \(error)") }
             resetTextAndPreview()
@@ -250,25 +352,42 @@ struct QuickInputView: View {
                     onQuickNoteCleared?()
                 }
             }
-            parsedContacts = []
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
+                parsedContacts = []
+            }
             filterString = ""
             suggestedContacts = []
             return
         }
 
         let detected = isQuickNoteCommand(trimmed)
-        if detected {
-            if !quickNoteActive {
-                quickNoteActive = true
-                onQuickNoteDetected?()
+        if detected && selectedContact == nil {
+            if allowQuickNoteCreation {
+                if !quickNoteActive {
+                    quickNoteActive = true
+                    onQuickNoteDetected?()
+                }
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
+                    parsedContacts = []
+                }
+                filterString = ""
+                suggestedContacts = []
+                return
+            } else {
+                let sanitized = stripQuickNoteMarkers(from: workingInput)
+                workingInput = sanitized
+                text = sanitized
+                trimmed = sanitized.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
+                        parsedContacts = []
+                    }
+                    filterString = ""
+                    suggestedContacts = []
+                    return
+                }
             }
-            parsedContacts = []
-            filterString = ""
-            suggestedContacts = []
-            return
         } else if quickNoteActive {
-            // Lost quick-note detection (e.g. "Maria Qn" -> "Maria Q"):
-            // Exit quick-notes mode, strip markers, keep remaining text, then continue parsing People.
             quickNoteActive = false
             onQuickNoteCleared?()
             let sanitized = stripQuickNoteMarkers(from: workingInput)
@@ -276,14 +395,15 @@ struct QuickInputView: View {
             text = sanitized
             trimmed = sanitized.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty {
-                parsedContacts = []
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
+                    parsedContacts = []
+                }
                 filterString = ""
                 suggestedContacts = []
                 return
             }
         }
 
-        // From here on, parse People input using workingInput
         let dateDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.date.rawValue)
         var detectedDate: Date? = nil
         var cleanedInput = workingInput
@@ -393,27 +513,34 @@ struct QuickInputView: View {
 
     private func filterContacts() {
         if filterString.isEmpty {
-            suggestedContacts = contacts
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                suggestedContacts = []
+            }
         } else {
             let q = filterString.trimmingCharacters(in: .whitespacesAndNewlines)
-            suggestedContacts = contacts.filter { contact in
+            let filtered = contacts.filter { contact in
                 guard let name = contact.name, !q.isEmpty else { return false }
                 if name.localizedStandardContains(q) { return true }
                 return name.lowercased().hasPrefix(q.lowercased())
+            }
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                suggestedContacts = filtered
             }
         }
     }
 
     private func selectExistingContact(_ contact: Contact) {
-        selectedExistingContact = contact
-        noteTextForExisting = ""
+        selectedContact = contact
         text = ""
         filterString = ""
         suggestedContacts = []
         withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
             parsedContacts = []
         }
-        fieldIsFocused = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(50))
+            fieldIsFocused = true
+        }
     }
 
     private func buildNoteFromText(for contact: Contact, text: String) -> Note? {
@@ -531,14 +658,10 @@ struct QuickInputView: View {
 
     private func stripQuickNoteMarkers(from input: String) -> String {
         var s = input.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        // Remove prefix "quick note" or "quick"
         let prefixPattern = #"(?i)^(quick\s*note|quick)\b[\s:]*"#
         if let r = s.range(of: prefixPattern, options: .regularExpression) {
             s = String(s[r.upperBound...])
         }
-
-        // Tokenize and remove standalone q/qa/qn variants (case-insensitive) with trailing punctuation
         let separators = CharacterSet.whitespacesAndNewlines
         let punct = CharacterSet.punctuationCharacters
         let filteredTokens: [String] = s.components(separatedBy: separators).compactMap { raw in
@@ -561,5 +684,45 @@ private struct BottomInputHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
+    }
+}
+
+private struct SuggestionsHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+struct TotalQuickInputHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func glassBackground<S: Shape>(_ shape: S) -> some View {
+        if #available(iOS 15.0, *) {
+            self.background(.ultraThinMaterial, in: shape)
+        } else {
+            self.background(Color.secondary.opacity(0.12), in: shape)
+        }
+    }
+}
+
+private struct InputBubble<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+    var body: some View {
+        HStack(spacing: 8) {
+            content()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.thinMaterial)
+        .clipShape(.rect(cornerRadius: 24))
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(minHeight: 44, alignment: .center)
     }
 }

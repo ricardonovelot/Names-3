@@ -10,6 +10,8 @@ struct QuickNotesFeedView: View {
     private var quickNotes: [QuickNote]
 
     @State private var parsedContacts: [Contact] = []
+    @State private var isQuickNotesActive: Bool = true
+    @State private var selectedContact: Contact?
 
     var body: some View {
         NavigationStack {
@@ -50,11 +52,18 @@ struct QuickNotesFeedView: View {
                         }
                     }
                     .listStyle(.insetGrouped)
+                    .scrollContentBackground(.hidden)
+                    .background(Color(UIColor.systemGroupedBackground))
                 }
             }
             .navigationTitle("Quick Notes")
             .safeAreaInset(edge: .bottom) {
-                QuickInputView(mode: .quickNotes, parsedContacts: $parsedContacts)
+                QuickInputView(mode: .quickNotes, parsedContacts: $parsedContacts, isQuickNotesActive: $isQuickNotesActive, selectedContact: $selectedContact)
+                    .padding(.top, 8)
+                    .background(Color(UIColor.systemGroupedBackground))
+            }
+            .navigationDestination(for: QuickNote.self) { qn in
+                QuickNoteDetailView(quickNote: qn)
             }
         }
     }
@@ -62,7 +71,6 @@ struct QuickNotesFeedView: View {
 
 private struct QuickNoteEditableRow: View {
     @Bindable var quickNote: QuickNote
-    @State private var showDatePicker = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -79,34 +87,20 @@ private struct QuickNoteEditableRow: View {
 
                 Spacer()
 
-                Group {
-                    if quickNote.isLongAgo {
-                        Text("Long time ago")
-                    } else {
-                        Text(quickNote.date, style: .date)
+                NavigationLink(value: quickNote) {
+                    Group {
+                        if quickNote.isLongAgo {
+                            Text("Long time ago")
+                        } else {
+                            Text(quickNote.date, style: .date)
+                        }
                     }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .onTapGesture {
-                    showDatePicker = true
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
             }
         }
         .padding(.vertical, 6)
         .contentShape(Rectangle())
-        .sheet(isPresented: $showDatePicker) {
-            NavigationStack {
-                Form {
-                    Toggle("Long ago", isOn: $quickNote.isLongAgo)
-                    DatePicker("Exact Date", selection: $quickNote.date, in: ...Date(), displayedComponents: .date)
-                        .disabled(quickNote.isLongAgo)
-                }
-                .navigationTitle("Quick Note Date")
-                .navigationBarTitleDisplayMode(.inline)
-            }
-            .presentationDetents([.large])
-            .presentationDragIndicator(.visible)
-        }
     }
 }

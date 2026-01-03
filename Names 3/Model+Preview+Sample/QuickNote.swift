@@ -8,6 +8,9 @@ final class QuickNote {
     var isLongAgo: Bool = false
     var isProcessed: Bool = false
 
+    var linkedContacts: [Contact]? = []
+    var linkedNotes: [Note]? = []
+
     init(content: String = "", date: Date = Date(), isLongAgo: Bool = false, isProcessed: Bool = false) {
         self.content = content
         self.date = date

@@ -10,6 +10,7 @@ import SwiftData
 import PhotosUI
 import Vision
 import SmoothGradient
+import UIKit
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
@@ -18,10 +19,11 @@ struct ContentView: View {
     @Query(filter: #Predicate<Contact> { $0.isArchived == false })
     private var contacts: [Contact]
     @State private var parsedContacts: [Contact] = []
+    @State private var selectedContact: Contact?
     
     @State private var selectedItem: PhotosPickerItem?
     
-    @State private var isAtBottom = false
+    @State private var isAtBottom = true
     private let dragThreshold: CGFloat = 100
     
     @State private var date = Date()
@@ -51,6 +53,7 @@ struct ContentView: View {
     @State private var quickInputResetID = 0
     @State private var showAllGroupTagDates = false
     @State private var contactForDateEdit: Contact?
+    @State private var bottomInputHeight: CGFloat = 0
     
     private struct PhotosSheetPayload: Identifiable, Hashable {
         let id = UUID()
@@ -118,78 +121,65 @@ struct ContentView: View {
     private var listContent: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                ForEach(groups) { group in
-                    GroupSectionView(
-                        group: group,
-                        isLast: group.id == groups.last?.id,
-                        onImport: {
-                            guard !group.isLongAgo else { return }
-                            photosSheet = PhotosSheetPayload(scope: .day(group.date))
-                        },
-                        onEditDate: {
-                            guard !group.isLongAgo else { return }
-                            groupForDateEdit = group
-                            Task {
-                                try? await Task.sleep(for: .milliseconds(150))
-                                tempGroupDate = group.date
-                                showGroupDatePicker = true
+                VStack(spacing: 0) {
+                    ForEach(groups) { group in
+                        GroupSectionView(
+                            group: group,
+                            isLast: group.id == groups.last?.id,
+                            onImport: {
+                                guard !group.isLongAgo else { return }
+                                photosSheet = PhotosSheetPayload(scope: .day(group.date))
+                            },
+                            onEditDate: {
+                                guard !group.isLongAgo else { return }
+                                groupForDateEdit = group
+                                Task {
+                                    try? await Task.sleep(for: .milliseconds(150))
+                                    tempGroupDate = group.date
+                                    showGroupDatePicker = true
+                                }
+                            },
+                            onEditTag: {
+                                guard !group.isLongAgo else { return }
+                                groupForTagEdit = group
+                                Task {
+                                    try? await Task.sleep(for: .milliseconds(150))
+                                    showGroupTagPicker = true
+                                }
+                            },
+                            onRenameTag: {
+                                guard !group.isLongAgo else { return }
+                                Task {
+                                    try? await Task.sleep(for: .milliseconds(150))
+                                    showManageTags = true
+                                }
+                            },
+                            onDeleteAll: {
+                                guard !group.isLongAgo else { return }
+                                deleteAllEntries(in: group)
+                            },
+                            onChangeDateForContact: { contact in
+                                contactForDateEdit = contact
+                            },
+                            onTapHeader: {
+                                guard !group.isLongAgo else { return }
+                                photosSheet = PhotosSheetPayload(scope: .day(group.date))
                             }
-                        },
-                        onEditTag: {
-                            guard !group.isLongAgo else { return }
-                            groupForTagEdit = group
-                            Task {
-                                try? await Task.sleep(for: .milliseconds(150))
-                                showGroupTagPicker = true
-                            }
-                        },
-                        onRenameTag: {
-                            guard !group.isLongAgo else { return }
-                            Task {
-                                try? await Task.sleep(for: .milliseconds(150))
-                                showManageTags = true
-                            }
-                        },
-                        onDeleteAll: {
-                            guard !group.isLongAgo else { return }
-                            deleteAllEntries(in: group)
-                        },
-                        onChangeDateForContact: { contact in
-                            contactForDateEdit = contact
-                        },
-                        onTapHeader: {
-                            guard !group.isLongAgo else { return }
-                            photosSheet = PhotosSheetPayload(scope: .day(group.date))
-                        }
-                    )
+                        )
+                    }
                 }
             }
             .scrollIndicators(.hidden)
             .scrollDismissesKeyboard(.interactively)
-            .onAppear {
+            .defaultScrollAnchor(.bottom)
+            .background(Color(UIColor.systemGroupedBackground))
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
                 Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(50))
-                    scrollToBottom(proxy)
-                }
-            }
-            .onChange(of: contacts) { oldValue, newValue in
-                if !showInlineQuickNotes {
-                    Task { @MainActor in
-                        scrollToBottom(proxy)
-                    }
-                }
-            }
-            .onChange(of: parsedContacts) { oldValue, newValue in
-                if !showInlineQuickNotes {
-                    Task { @MainActor in
-                        scrollToBottom(proxy)
-                    }
-                }
-            }
-            .onChange(of: showInlineQuickNotes) { oldValue, newValue in
-                if newValue == false {
-                    Task { @MainActor in
-                        scrollToBottom(proxy)
+                    try? await Task.sleep(for: .milliseconds(100))
+                    if let id = bottomMostID() {
+                        withAnimation(.easeOut(duration: 0.25)) {
+                            proxy.scrollTo(id, anchor: .bottom)
+                        }
                     }
                 }
             }
@@ -199,22 +189,41 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                listContent
-                    .opacity(showInlineQuickNotes ? 0 : 1)
-                    .offset(y: showInlineQuickNotes ? -16 : 0)
-                    .allowsHitTesting(!showInlineQuickNotes)
-                    .zIndex(0)
-                    .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showInlineQuickNotes)
+                if let contact = selectedContact {
+                    ContactDetailsView(contact: contact)
+                        .transition(.move(edge: .trailing))
+                        .zIndex(2)
+                } else {
+                    listContent
+                        .opacity(showInlineQuickNotes ? 0 : 1)
+                        .offset(y: showInlineQuickNotes ? -16 : 0)
+                        .allowsHitTesting(!showInlineQuickNotes)
+                        .zIndex(0)
+                        .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showInlineQuickNotes)
 
-                QuickNotesInlineView()
-                    .opacity(showInlineQuickNotes ? 1 : 0)
-                    .offset(y: showInlineQuickNotes ? 0 : 28)
-                    .allowsHitTesting(showInlineQuickNotes)
-                    .zIndex(1)
-                    .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showInlineQuickNotes)
+                    QuickNotesInlineView()
+                        .opacity(showInlineQuickNotes ? 1 : 0)
+                        .offset(y: showInlineQuickNotes ? 0 : 28)
+                        .allowsHitTesting(showInlineQuickNotes)
+                        .zIndex(1)
+                        .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showInlineQuickNotes)
+                }
+            }
+            .animation(.spring(response: 0.35, dampingFraction: 0.9), value: selectedContact != nil)
+            // Ensure background fills under keyboard and safe areas—no white seams
+            .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
+            .onPreferenceChange(TotalQuickInputHeightKey.self) { height in
+                withAnimation(.spring(response: 0.25, dampingFraction: 1.0)) {
+                    bottomInputHeight = height
+                }
             }
             .safeAreaInset(edge: .bottom) {
-                QuickInputView(mode: .people, parsedContacts: $parsedContacts) {
+                QuickInputView(
+                    mode: .people,
+                    parsedContacts: $parsedContacts,
+                    isQuickNotesActive: $showInlineQuickNotes,
+                    selectedContact: $selectedContact
+                ) {
                     photosSheet = PhotosSheetPayload(scope: .all)
                 } onQuickNoteAdded: {
                     hasPendingQuickNoteInput = false
@@ -230,12 +239,6 @@ struct ContentView: View {
                     }
                 }
                 .id(quickInputResetID)
-                .background(
-                    GeometryReader { proxy in
-                        Color.clear
-                            .preference(key: BottomInsetHeightPreferenceKey.self, value: proxy.size.height)
-                    }
-                )
             }
             .background(Color(uiColor: .systemGroupedBackground))
             .overlay {
@@ -244,22 +247,6 @@ struct ContentView: View {
                 }
             }
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    if showInlineQuickNotes {
-                        Button("People", systemImage: "chevron.left") {
-                            if hasPendingQuickNoteInput {
-                                // First tap clears pending input
-                                quickInputResetID &+= 1
-                                hasPendingQuickNoteInput = false
-                            } else {
-                                // Second tap exits quick view
-                                withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-                                    showInlineQuickNotes = false
-                                }
-                            }
-                        }
-                    }
-                }
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
                     Menu {
                         Button(action: {
@@ -496,24 +483,18 @@ private struct GroupSectionView: View {
                         onChangeDateForContact(contact)
                     })
                 }
-                .transaction { t in
-                    t.animation = nil
-                }
 
                 ForEach(group.parsedContacts) { contact in
                     ParsedContactTile(contact: contact)
                         .transition(.asymmetric(
                             insertion: .move(edge: .bottom).combined(with: .opacity),
-                            removal: .opacity.combined(with: .scale(scale: 0.98))
+                            removal: AnyTransition.opacity.combined(with: AnyTransition.scale(scale: 0.98))
                         ))
                 }
-                .transaction { t in
-                    t.animation = nil
-                }
+                .animation(.spring(response: 0.35, dampingFraction: 0.9), value: group.parsedContacts.count)
             }
             .padding(.horizontal)
             .padding(.bottom, isLast ? 0 : 16)
-            .scrollTargetLayout()
         }
     }
 

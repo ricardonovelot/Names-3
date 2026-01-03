@@ -19,6 +19,9 @@ class Contact {
     var notes: [Note]?
     var tags: [Tag]?
 
+    @Relationship(inverse: \QuickNote.linkedContacts)
+    var quickNotes: [QuickNote]? = []
+
     var timestamp: Date = Date()
     var photo: Data = Data()
     var group: String = ""
@@ -39,7 +42,8 @@ class Contact {
         group: String = "",
         cropOffsetX: Float = 0.0,
         cropOffsetY: Float = 0.0,
-        cropScale: Float = 1.0
+        cropScale: Float = 1.0,
+        quickNotes: [QuickNote]? = nil
     ) {
         self.name = name
         self.summary = summary
@@ -54,6 +58,7 @@ class Contact {
         self.cropOffsetX = cropOffsetX
         self.cropOffsetY = cropOffsetY
         self.cropScale = cropScale
+        self.quickNotes = quickNotes
     }
 }
 
@@ -146,13 +151,17 @@ final class Note {
     @Relationship(inverse: \Contact.notes)
     var contact: Contact?
 
+    @Relationship(inverse: \QuickNote.linkedNotes)
+    var quickNote: QuickNote?
+
     init(
         content: String = "",
         creationDate: Date = Date(),
         isLongAgo: Bool = false,
         isArchived: Bool = false,
         archivedDate: Date? = nil,
-        contact: Contact? = nil
+        contact: Contact? = nil,
+        quickNote: QuickNote? = nil
     ) {
         self.content = content
         self.creationDate = creationDate
@@ -160,6 +169,7 @@ final class Note {
         self.isArchived = isArchived
         self.archivedDate = archivedDate
         self.contact = contact
+        self.quickNote = quickNote
     }
 }
 

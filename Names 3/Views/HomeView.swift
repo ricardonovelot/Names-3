@@ -38,13 +38,13 @@ struct HomeView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
 
-                    UnprocessedQuickNotesSectionView(
-                        quickNotes: recentUnprocessedQuickNotes
-                    )
-
                     QuizCardsSectionView(
                         onFacesQuiz: { showQuizView = true },
                         onNotesQuiz: { showNotesQuiz = true }
+                    )
+
+                    UnprocessedQuickNotesSectionView(
+                        quickNotes: recentUnprocessedQuickNotes
                     )
 
                     RecentNotesSectionView(
@@ -77,6 +77,10 @@ struct HomeView: View {
         .sheet(isPresented: $showGroupPhotos) {
             GroupPhotosListView(contactsContext: modelContext)
                 .modelContainer(BatchModelContainer.shared)
+        }
+        .background {
+            Color(uiColor: .systemGroupedBackground)
+                .ignoresSafeArea()
         }
     }
 
@@ -154,7 +158,7 @@ private struct RecentNotesSectionView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Notes")
+            Text("People Notes")
                 .font(.title3.bold())
 
             if notes.isEmpty {
@@ -205,11 +209,11 @@ private struct UnprocessedQuickNotesSectionView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Unprocessed Quick Notes")
+            Text("Quick Notes")
                 .font(.title3.bold())
 
             if quickNotes.isEmpty {
-                Text("No unprocessed quick notes")
+                Text("No quick notes")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             } else {
@@ -221,6 +225,9 @@ private struct UnprocessedQuickNotesSectionView: View {
                             Divider()
                         }
                     }
+
+                    Divider()
+                        .padding(.vertical, 8)
 
                     NavigationLink {
                         QuickNotesFeedView()
@@ -254,19 +261,23 @@ private struct QuickNoteRow: View {
             Text(quickNote.content.isEmpty ? "—" : quickNote.content)
                 .font(.body)
                 .foregroundStyle(.primary)
-                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
 
             HStack {
                 Spacer()
-                Group {
-                    if quickNote.isLongAgo {
-                        Text("Long time ago")
-                    } else {
-                        Text(quickNote.date, style: .date)
+                NavigationLink {
+                    QuickNoteDetailView(quickNote: quickNote)
+                } label: {
+                    Group {
+                        if quickNote.isLongAgo {
+                            Text("Long time ago")
+                        } else {
+                            Text(quickNote.date, style: .date)
+                        }
                     }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
             }
         }
         .padding(.vertical, 2)
