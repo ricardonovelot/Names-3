@@ -68,6 +68,10 @@ final class PhotosPickerViewModel: ObservableObject {
     
     private var initialScrollDate: Date?
     
+    var isObserving: Bool {
+        return changeObserver != nil
+    }
+    
     // MARK: - Initialization
     
     init(
@@ -80,6 +84,18 @@ final class PhotosPickerViewModel: ObservableObject {
         self.initialScrollDate = initialScrollDate
         self.photoService = photoService
         self.deduplicationService = deduplicationService
+    }
+    
+    deinit {
+        print("🔵 [PhotosVM] Deinitializing")
+        // Cleanup observer synchronously without MainActor isolation
+        if let observer = changeObserver {
+            photoService.unregisterObserver(observer)
+        }
+        // Cancel any pending tasks
+        loadTask?.cancel()
+        retryTask?.cancel()
+        reloadDebounceTask?.cancel()
     }
     
     // MARK: - Public Methods
@@ -214,6 +230,12 @@ final class PhotosPickerViewModel: ObservableObject {
     func suppressReload(_ suppress: Bool) {
         isReloadingSuppressed = suppress
         print("🔵 [PhotosVM] Reload suppression: \(suppress)")
+        
+        // Cancel any pending debounced reload to avoid a post-dismiss update nuking the grid
+        if suppress {
+            reloadDebounceTask?.cancel()
+            print("🔵 [PhotosVM] Cancelled pending debounced reload")
+        }
     }
     
     // MARK: - Private Methods

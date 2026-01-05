@@ -117,6 +117,7 @@ This repository primarily uses Swift and SwiftUI. Use UIKit only when explicitly
 - When bridging, wrap UIKit in UIViewRepresentable/UIViewControllerRepresentable, or host SwiftUI in UIHostingController.
 - Keep boundaries clean: pass minimal data and callback closures. Avoid cross-layer singletons.
 - Keep UI updates on the correct actor; SwiftUI and UIKit both require main-actor isolation for UI.
+- **UIKit modals within SwiftUI sheets**: presenting a UIViewController with modalPresentationStyle = .custom from within a SwiftUI sheet can cause the sheet itself to dismiss when the UIViewController dismisses. Use SwiftUI's native .fullScreenCover or .sheet instead, or ensure the UIViewController is presented from the root window's presentedViewController, not from within the SwiftUI sheet's hosting hierarchy.
 
 ## Accessibility and internationalization
 

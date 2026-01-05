@@ -49,6 +49,7 @@ struct ContentView: View {
     @State private var newTagName: String = ""
     @State private var showDeletedView = false
     @State private var showInlineQuickNotes = false
+    @State private var showInlinePhotoPicker = false
     @State private var hasPendingQuickNoteInput = false
     @State private var quickInputResetID = 0
     @State private var showAllGroupTagDates = false
@@ -195,11 +196,12 @@ struct ContentView: View {
                         .zIndex(2)
                 } else {
                     listContent
-                        .opacity(showInlineQuickNotes ? 0 : 1)
-                        .offset(y: showInlineQuickNotes ? -16 : 0)
-                        .allowsHitTesting(!showInlineQuickNotes)
+                        .opacity(showInlineQuickNotes || showInlinePhotoPicker ? 0 : 1)
+                        .offset(y: showInlineQuickNotes || showInlinePhotoPicker ? -16 : 0)
+                        .allowsHitTesting(!showInlineQuickNotes && !showInlinePhotoPicker)
                         .zIndex(0)
                         .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showInlineQuickNotes)
+                        .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showInlinePhotoPicker)
 
                     QuickNotesInlineView()
                         .opacity(showInlineQuickNotes ? 1 : 0)
@@ -207,11 +209,31 @@ struct ContentView: View {
                         .allowsHitTesting(showInlineQuickNotes)
                         .zIndex(1)
                         .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showInlineQuickNotes)
+
+                    PhotosInlineView(contactsContext: modelContext) { image, date in
+                        print("✅ [ContentView] Photo picked from inline view")
+                        pickedImageForBatch = image
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                            showInlinePhotoPicker = false
+                        }
+                    }
+                    .opacity(showInlinePhotoPicker ? 1 : 0)
+                    .offset(y: showInlinePhotoPicker ? 0 : 28)
+                    .allowsHitTesting(showInlinePhotoPicker)
+                    .zIndex(showInlineQuickNotes ? 0 : 1)
+                    .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showInlinePhotoPicker)
                 }
             }
             .animation(.spring(response: 0.35, dampingFraction: 0.9), value: selectedContact != nil)
             // Ensure background fills under keyboard and safe areas—no white seams
             .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
+            .onChange(of: pickedImageForBatch) { oldValue, newValue in
+                if let image = newValue {
+                    showBulkAddFacesWithSeed(image: image, date: Date()) {
+                        pickedImageForBatch = nil
+                    }
+                }
+            }
             .onPreferenceChange(TotalQuickInputHeightKey.self) { height in
                 withAnimation(.spring(response: 0.25, dampingFraction: 1.0)) {
                     bottomInputHeight = height
@@ -224,11 +246,19 @@ struct ContentView: View {
                     isQuickNotesActive: $showInlineQuickNotes,
                     selectedContact: $selectedContact
                 ) {
-                    photosSheet = PhotosSheetPayload(scope: .all)
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                        if showInlineQuickNotes {
+                            showInlineQuickNotes = false
+                        }
+                        showInlinePhotoPicker.toggle()
+                    }
                 } onQuickNoteAdded: {
                     hasPendingQuickNoteInput = false
                 } onQuickNoteDetected: {
                     withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                        if showInlinePhotoPicker {
+                            showInlinePhotoPicker = false
+                        }
                         showInlineQuickNotes = true
                     }
                     hasPendingQuickNoteInput = true
@@ -312,11 +342,16 @@ struct ContentView: View {
                     }
                 )
                 .onAppear {
+                    print("🔵 [ContentView] PhotosDayPickerHost sheet appeared")
                     if let date = selectedContact?.timestamp {
                         print("🔵 [ContentView] Opening photo picker with scroll date: \(date) for contact: \(selectedContact?.name ?? "unknown")")
                     } else {
                         print("🔵 [ContentView] Opening photo picker without scroll date")
                     }
+                }
+                .onDisappear {
+                    print("⚠️ [ContentView] PhotosDayPickerHost sheet disappeared!")
+                    print("⚠️ [ContentView] photosSheet value: \(photosSheet != nil ? "still set" : "nil")")
                 }
             }
             .sheet(item: $contactForDateEdit) { contact in

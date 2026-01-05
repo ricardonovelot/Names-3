@@ -1,54 +1,88 @@
 import SwiftUI
 import SwiftData
-import UIKit
 
-struct PhotoDetailViewWrapper: UIViewControllerRepresentable {
+struct PhotoDetailViewWrapper: View {
     let image: UIImage
     let date: Date?
     let contactsContext: ModelContext
-    let originFrame: CGRect
-    let originImage: UIImage?
     let onComplete: (UIImage, Date) -> Void
     let onDismiss: () -> Void
     
-    func makeUIViewController(context: Context) -> PhotoDetailViewController {
-        let vc = PhotoDetailViewController(
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        PhotoDetailViewWrapperRepresentable(
             image: image,
             date: date,
             contactsContext: contactsContext,
-            onComplete: { image, date in
-                if let date = date {
-                    onComplete(image, date)
-                }
+            onComplete: onComplete,
+            onDismiss: {
+                dismiss()
+                onDismiss()
             }
         )
-        
-        // Set up transition
-        let delegate = PhotoZoomTransitionDelegate(
-            originFrame: originFrame,
-            originImage: originImage
+        .ignoresSafeArea()
+        .navigationBarHidden(true)
+    }
+}
+
+private struct PhotoDetailViewWrapperRepresentable: UIViewControllerRepresentable {
+    let image: UIImage
+    let date: Date?
+    let contactsContext: ModelContext
+    let onComplete: (UIImage, Date) -> Void
+    let onDismiss: () -> Void
+    
+    func makeUIViewController(context: Context) -> PhotoDetailViewControllerHost {
+        let host = PhotoDetailViewControllerHost(
+            image: image,
+            date: date,
+            contactsContext: contactsContext,
+            onComplete: onComplete,
+            onDismiss: onDismiss
         )
-        context.coordinator.transitionDelegate = delegate
-        vc.transitioningDelegate = delegate
-        vc.modalPresentationStyle = UIModalPresentationStyle.custom
-        
-        return vc
+        return host
     }
     
-    func updateUIViewController(_ uiViewController: PhotoDetailViewController, context: Context) {
+    func updateUIViewController(_ uiViewController: PhotoDetailViewControllerHost, context: Context) {
         // No updates needed
     }
+}
+
+class PhotoDetailViewControllerHost: UIViewController {
+    private let detailVC: PhotoDetailViewController
+    private let onDismiss: () -> Void
     
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onDismiss: onDismiss)
+    init(image: UIImage, date: Date?, contactsContext: ModelContext, onComplete: @escaping (UIImage, Date) -> Void, onDismiss: @escaping () -> Void) {
+        self.onDismiss = onDismiss
+        self.detailVC = PhotoDetailViewController(
+            image: image,
+            date: date,
+            contactsContext: contactsContext,
+            onComplete: { finalImage, finalDate in
+                // Convert Date? to Date by providing current date as fallback
+                onComplete(finalImage, finalDate ?? Date())
+            }
+        )
+        super.init(nibName: nil, bundle: nil)
     }
     
-    class Coordinator {
-        let onDismiss: () -> Void
-        var transitionDelegate: PhotoZoomTransitionDelegate?
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
         
-        init(onDismiss: @escaping () -> Void) {
-            self.onDismiss = onDismiss
+        addChild(detailVC)
+        view.addSubview(detailVC.view)
+        detailVC.view.frame = view.bounds
+        detailVC.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        detailVC.didMove(toParent: self)
+        
+        // Intercept back button to call onDismiss
+        detailVC.customBackAction = { [weak self] in
+            self?.onDismiss()
         }
     }
 }

@@ -32,15 +32,17 @@ struct PhotosDayPickerHost: View {
         } else {
             print("🔵 [PhotosDayPickerHost] Initialized without scroll date")
         }
+        print("🔵 [PhotosDayPickerHost] Scope: \(scope)")
     }
 
     var body: some View {
-        PhotosDayPickerView(
-            scope: .all,
+        let _ = print("🔵 [PhotosDayPickerHost] body evaluated - scope: \(scope)")
+        
+        return PhotosDayPickerView(
+            scope: scope,
             contactsContext: contactsContext,
             initialScrollDate: initialScrollDate,
             onPick: onPick
         )
-        .id(scope)
     }
 }

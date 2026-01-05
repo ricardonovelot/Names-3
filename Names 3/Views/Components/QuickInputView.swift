@@ -128,6 +128,8 @@ struct QuickInputView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .fixedSize(horizontal: false, vertical: true)
                             .onChange(of: text) { oldValue, newValue in
+                                NotificationCenter.default.post(name: .quickInputTextDidChange, object: nil, userInfo: ["text": newValue])
+
                                 if let last = newValue.last, last == "\n" {
                                     text.removeLast()
                                     save()
@@ -271,6 +273,18 @@ struct QuickInputView: View {
             }
         }
         .preference(key: TotalQuickInputHeightKey.self, value: bottomInputHeight + suggestionsHeight + 8)
+        .onReceive(NotificationCenter.default.publisher(for: .quickInputRequestFocus)) { _ in
+            print("🎯 [QuickInput] Received focus request notification")
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(50))
+                print("🎯 [QuickInput] Setting fieldIsFocused = true")
+                fieldIsFocused = true
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .quickInputResignFocus)) { _ in
+            print("🎯 [QuickInput] Received resign focus notification")
+            fieldIsFocused = false
+        }
     }
 
     private func save() {
@@ -699,6 +713,13 @@ struct TotalQuickInputHeightKey: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
     }
+}
+
+// Notification name for live text updates
+extension Notification.Name {
+    static let quickInputTextDidChange = Notification.Name("QuickInputTextDidChange")
+    static let quickInputRequestFocus = Notification.Name("QuickInputRequestFocus")
+    static let quickInputResignFocus = Notification.Name("QuickInputResignFocus")
 }
 
 private extension View {

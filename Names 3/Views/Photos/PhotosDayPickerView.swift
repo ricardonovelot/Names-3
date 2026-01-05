@@ -3,31 +3,24 @@ import Photos
 import UIKit
 import SwiftData
 
+@MainActor
 struct PhotosDayPickerView: View {
+    @Environment(\.dismiss) private var dismiss
     let scope: PhotosPickerScope
-    let contactsContext: ModelContext
-    let onPick: (UIImage, Date?) -> Void
     let initialScrollDate: Date?
+    let contactsContext: ModelContext
+    let onPick: (UIImage, Date) -> Void
     
     @StateObject private var viewModel: PhotosPickerViewModel
-    @Environment(\.dismiss) private var dismiss
+    @State private var isPresentingDetail = false
+    @State private var selectedImageForDetail: UIImage?
+    @State private var selectedDateForDetail: Date?
     
     private let imageManager = PHCachingImageManager()
     
-    @State private var selectedPhotoDetail: PhotoDetail?
-    
-    // Made public so PhotoGridView can use it
-    struct PhotoDetail: Identifiable {
-        let id = UUID()
-        let image: UIImage
-        let date: Date?
-        let originFrame: CGRect
-        let originImage: UIImage?
-    }
-    
     // MARK: - Initialization
     
-    init(scope: PhotosPickerScope, contactsContext: ModelContext, initialScrollDate: Date? = nil, onPick: @escaping (UIImage, Date?) -> Void) {
+    init(scope: PhotosPickerScope, contactsContext: ModelContext, initialScrollDate: Date? = nil, onPick: @escaping (UIImage, Date) -> Void) {
         self.scope = scope
         self.contactsContext = contactsContext
         self.initialScrollDate = initialScrollDate
@@ -39,115 +32,123 @@ struct PhotosDayPickerView: View {
         } else {
             print("🔵 [PhotosDayPickerView] Initialized without scroll date")
         }
+        print("🔵 [PhotosDayPickerView] Instance created")
     }
     
     // MARK: - Body
     
     var body: some View {
-        NavigationStack {
-            contentView
-                .navigationTitle(navigationTitle)
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button {
-                            dismiss()
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                        }
+        print("🔵 [PhotosDayPickerView] body evaluated - isPresentingDetail: \(isPresentingDetail), state: \(viewModel.state)")
+        
+        return NavigationStack {
+            ZStack {
+                switch viewModel.state {
+                case .idle:
+                    ProgressView("Preparing...")
+                case .requestingAuthorization:
+                    requestingAuthorizationView
+                case .loading:
+                    if viewModel.assets.isEmpty {
+                        loadingView
+                    } else {
+                        photosGridView
+                    }
+                case .loaded:
+                    if viewModel.assets.isEmpty {
+                        emptyStateView
+                    } else {
+                        photosGridView
+                    }
+                case .empty:
+                    emptyStateView
+                case .error(let error):
+                    errorView(message: error)
+                }
+            }
+            .navigationTitle(navigationTitle)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
                     }
                 }
-                .task {
-                    viewModel.requestAuthorizationIfNeeded()
+            }
+            .navigationDestination(item: Binding(
+                get: { selectedImageForDetail != nil ? PhotoDetailDestination(image: selectedImageForDetail!, date: selectedDateForDetail) : nil },
+                set: { newValue in
+                    if newValue == nil {
+                        selectedImageForDetail = nil
+                        selectedDateForDetail = nil
+                        isPresentingDetail = false
+                        viewModel.suppressReload(false)
+                    }
                 }
-                .task(id: scope) {
-                    viewModel.reloadForScope(scope)
-                }
-                .onAppear {
-                    viewModel.startObservingChanges()
-                }
-                .onDisappear {
-                    viewModel.stopObservingChanges()
-                }
-        }
-        .fullScreenCover(item: $selectedPhotoDetail) { detail in
-            PhotoDetailViewWrapper(
-                image: detail.image,
-                date: detail.date,
-                contactsContext: contactsContext,
-                originFrame: detail.originFrame,
-                originImage: detail.originImage,
-                onComplete: { finalImage, finalDate in
-                    print("✅ [PhotosDayPicker] Photo detail completed")
-                    onPick(finalImage, finalDate)
-                    selectedPhotoDetail = nil
-                },
-                onDismiss: {
-                    print("🔵 [PhotosDayPicker] Photo detail dismissed")
-                    selectedPhotoDetail = nil
-                }
-            )
-        }
-    }
-    
-    // MARK: - Content View
-    
-    @ViewBuilder
-    private var contentView: some View {
-        switch viewModel.authorizationStatus {
-        case .authorized, .limited:
-            authorizedContentView
-        case .denied:
-            deniedView
-        case .restricted:
-            restrictedView
-        case .notDetermined:
-            requestingAuthorizationView
-        @unknown default:
-            authorizedContentView
-        }
-    }
-    
-    @ViewBuilder
-    private var authorizedContentView: some View {
-        switch viewModel.state {
-        case .idle:
-            Color.clear
-        case .requestingAuthorization:
-            requestingAuthorizationView
-        case .loading:
-            loadingView
-        case .loaded:
-            photosGridView
-        case .empty:
-            emptyView
-        case .error(let error):
-            errorView(error)
+            )) { destination in
+                PhotoDetailViewWrapper(
+                    image: destination.image,
+                    date: destination.date,
+                    contactsContext: contactsContext,
+                    onComplete: { finalImage, finalDate in
+                        onPick(finalImage, finalDate)
+                        selectedImageForDetail = nil
+                        selectedDateForDetail = nil
+                        isPresentingDetail = false
+                        dismiss()
+                    },
+                    onDismiss: {
+                        selectedImageForDetail = nil
+                        selectedDateForDetail = nil
+                        isPresentingDetail = false
+                    }
+                )
+            }
+            .onAppear {
+                print("🔵 [PhotosDayPickerView] onAppear - start observing + unsuppress")
+                viewModel.startObservingChanges()
+                viewModel.suppressReload(false)
+                viewModel.requestAuthorizationIfNeeded()
+            }
+            .onDisappear {
+                print("🔵 [PhotosDayPickerView] onDisappear - stop observing")
+                viewModel.stopObservingChanges()
+            }
+            .onChange(of: isPresentingDetail) { oldValue, newValue in
+                print("🔵 [PhotosDayPickerView] onDetailVisibilityChanged called - visible: \(newValue), current isPresentingDetail: \(isPresentingDetail)")
+                viewModel.suppressReload(newValue)
+            }
         }
     }
     
     // MARK: - State Views
     
     private var photosGridView: some View {
-        PhotoGridView(
-            assets: viewModel.assets,
-            imageManager: imageManager,
-            contactsContext: contactsContext,
-            initialScrollDate: initialScrollDate,
-            onPhotoDetail: { detail in
-                selectedPhotoDetail = detail
-            },
-            onAppearAtIndex: { index in
-                if index < viewModel.assets.count {
-                    viewModel.handlePagination(for: viewModel.assets[index])
+        let _ = print("🔵 [PhotosDayPickerView] photosGridView body - assets count: \(viewModel.assets.count), isEmpty: \(viewModel.assets.isEmpty)")
+        
+        return ZStack {
+            PhotoGridView(
+                assets: viewModel.assets,
+                imageManager: imageManager,
+                contactsContext: contactsContext,
+                initialScrollDate: initialScrollDate,
+                onPhotoTapped: { image, date in
+                    print("✅ [PhotosDayPicker] Photo tapped callback received")
+                    selectedImageForDetail = image
+                    selectedDateForDetail = date
+                    isPresentingDetail = true
+                },
+                onAppearAtIndex: { index in
+                    if index < viewModel.assets.count {
+                        viewModel.handlePagination(for: viewModel.assets[index])
+                    }
+                },
+                onDetailVisibilityChanged: { visible in
+                    print("🔵 [PhotosDayPickerView] onDetailVisibilityChanged called - visible: \(visible), current isPresentingDetail: \(isPresentingDetail)")
+                    viewModel.suppressReload(visible)
                 }
-            }
-        )
-        .background(Color(UIColor.systemGroupedBackground))
-        .overlay {
-            if viewModel.assets.isEmpty {
-                emptyView
-            }
+            )
+            .background(Color(UIColor.systemGroupedBackground))
+            .allowsHitTesting(!isPresentingDetail)
         }
     }
     
@@ -163,7 +164,7 @@ struct PhotosDayPickerView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
     
-    private var emptyView: some View {
+    private var emptyStateView: some View {
         Group {
             if viewModel.authorizationStatus == .limited {
                 limitedAccessEmptyView
@@ -224,11 +225,11 @@ struct PhotosDayPickerView: View {
         }
     }
     
-    private func errorView(_ error: PhotosPickerError) -> some View {
+    private func errorView(message: PhotosPickerError) -> some View {
         ContentUnavailableView {
             Label("Error", systemImage: "exclamationmark.triangle")
         } description: {
-            Text(error.localizedDescription)
+            Text(message.localizedDescription)
         } actions: {
             Button("Try Again") {
                 Task {
@@ -269,5 +270,20 @@ struct PhotosDayPickerView: View {
            let rootViewController = window.rootViewController {
             PHPhotoLibrary.shared().presentLimitedLibraryPicker(from: rootViewController)
         }
+    }
+}
+
+// Navigation destination identifier
+private struct PhotoDetailDestination: Identifiable, Hashable {
+    let id = UUID()
+    let image: UIImage
+    let date: Date?
+    
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+    
+    static func == (lhs: PhotoDetailDestination, rhs: PhotoDetailDestination) -> Bool {
+        lhs.id == rhs.id
     }
 }

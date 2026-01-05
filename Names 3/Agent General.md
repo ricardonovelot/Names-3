@@ -39,6 +39,7 @@
  - When a screen's content depends on input data, use .sheet(item:) (not .sheet(isPresented:) plus separate state) to ensure atomic data flow and correct view identity on first presentation.
  - Avoid duplicate loading overlays: a single "loading" source of truth per screen; remove overlapping spinners in hosts/children.
  - For feeds, prefer explicit ScrollViewReader.proxy.scrollTo after layout over .defaultScrollAnchor/.scrollPosition unless every item is a registered scroll target.
+ - UIKit modal presentation from SwiftUI sheets: avoid presenting UIViewController with .custom modalPresentationStyle from within a SwiftUI sheet—when the UIViewController dismisses, SwiftUI may inadvertently dismiss the parent sheet. Instead, use .fullScreenCover or native SwiftUI navigation for modals within sheets.
 
  Technical guardrails (use when relevant)
  - SwiftUI + UIKit interop: lightweight views, Observation/State bindings, safe-area insets, accessibility.
