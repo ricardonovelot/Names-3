@@ -1,6 +1,8 @@
 import SwiftUI
 import SwiftData
 import SmoothGradient
+import Vision
+import UIKit
 
 enum QuickInputMode {
     case people
@@ -19,10 +21,15 @@ struct QuickInputView: View {
     var onQuickNoteAdded: (() -> Void)? = nil
     var onQuickNoteDetected: (() -> Void)? = nil
     var onQuickNoteCleared: (() -> Void)? = nil
+    var onInlinePhotosTap: (() -> Void)? = nil
+    var isInlinePhotosActive: (() -> Bool)? = nil
 
     // Optional quick note to link created entities to, and flag to allow/deny quick note creation
     var linkedQuickNote: QuickNote? = nil
     var allowQuickNoteCreation: Bool = true
+
+    // Optional override for Return key handling (e.g., commit names in PhotoDetail)
+    var onReturnOverride: (() -> Void)? = nil
 
     // People suggestions and selection
     @Query(filter: #Predicate<Contact> { $0.isArchived == false })
@@ -41,6 +48,14 @@ struct QuickInputView: View {
     @State private var parseDebounceWork: DispatchWorkItem?
     @State private var quickNoteActive: Bool = false
     @State private var suppressNextClear: Bool = false
+    @State private var showModePicker = false
+
+    // Photo processing state
+    @State private var isProcessingPhoto = false
+    @State private var lastPickedImage: UIImage?
+
+    // Photo processing callbacks
+    var onPhotoPicked: ((UIImage, Date?) -> Void)? = nil
 
     private func isQuickNoteCommand(_ input: String) -> Bool {
         let s = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -66,6 +81,7 @@ struct QuickInputView: View {
     }
 
     var body: some View {
+        let controlSize: CGFloat = 64
         VStack {
             HStack(spacing: 6) {
                 InputBubble {
@@ -75,19 +91,6 @@ struct QuickInputView: View {
                                 Text(token.name ?? "Unnamed")
                                     .font(.subheadline)
                                     .foregroundStyle(.blue)
-                                Button {
-                                    selectedContact = nil
-                                    text = ""
-                                    Task { @MainActor in
-                                        try? await Task.sleep(for: .milliseconds(30))
-                                        fieldIsFocused = true
-                                    }
-                                } label: {
-                                    Image(systemName: "xmark.circle.fill")
-                                        .font(.caption)
-                                        .foregroundStyle(.blue)
-                                }
-                                .buttonStyle(.plain)
                             }
                             .padding(.horizontal, 10)
                             .padding(.vertical, 6)
@@ -118,6 +121,11 @@ struct QuickInputView: View {
                                     }
                                 },
                                 onReturn: {
+                                    if let override = onReturnOverride {
+                                        resetTextAndPreview()
+                                        override()
+                                        return
+                                    }
                                     if mode == .people && !suggestedContacts.isEmpty {
                                         selectExistingContact(suggestedContacts[0])
                                     } else {
@@ -132,7 +140,12 @@ struct QuickInputView: View {
 
                                 if let last = newValue.last, last == "\n" {
                                     text.removeLast()
-                                    save()
+                                    if let override = onReturnOverride {
+                                        resetTextAndPreview()
+                                        override()
+                                    } else {
+                                        save()
+                                    }
                                 } else {
                                     if mode == .people {
                                         parseDebounceWork?.cancel()
@@ -153,6 +166,8 @@ struct QuickInputView: View {
                             if text.isEmpty {
                                 Text(mode == .people && selectedContact != nil ? "Add a note…" : "")
                                     .foregroundStyle(.secondary)
+                                    .padding(.leading, 3)
+                                    .padding(.top, 1)
                                     .allowsHitTesting(false)
                             }
                         }
@@ -171,21 +186,50 @@ struct QuickInputView: View {
 
                 if mode == .people {
                     Button {
-                        if isQuickNotesActive {
-                            isQuickNotesActive = false
-                            onQuickNoteCleared?()
-                        } else {
+                        let inlineSupported = (onInlinePhotosTap != nil) && (isInlinePhotosActive != nil)
+                        let inlineActive = isInlinePhotosActive?() ?? false
+
+                        if !inlineSupported {
+                            if isQuickNotesActive {
+                                isQuickNotesActive = false
+                                onQuickNoteCleared?()
+                            } else {
+                                isQuickNotesActive = true
+                                onQuickNoteDetected?()
+                            }
+                            return
+                        }
+
+                        if !isQuickNotesActive && !inlineActive {
                             isQuickNotesActive = true
                             onQuickNoteDetected?()
+                        } else if isQuickNotesActive && !inlineActive {
+                            isQuickNotesActive = false
+                            onQuickNoteCleared?()
+                            onInlinePhotosTap?()
+                        } else if inlineActive {
+                            if isQuickNotesActive {
+                                isQuickNotesActive = false
+                                onQuickNoteCleared?()
+                            }
+                            onInlinePhotosTap?()
                         }
                     } label: {
-                        Image(systemName: isQuickNotesActive ? "person" : "note.text" )
-                            .fontWeight(.medium)
-                            .padding(10)
-                            .glassBackground(Circle())
+                        let inlineActive = isInlinePhotosActive?() ?? false
+                        let inlineSupported = (onInlinePhotosTap != nil) && (isInlinePhotosActive != nil)
+                        let symbolName = inlineSupported && inlineActive
+                            ? "person"
+                            : (isQuickNotesActive
+                               ? (inlineSupported ? "photo.on.rectangle" : "person")
+                               : "note.text")
+
+                        Image(systemName: symbolName)
+                            .font(.system(size: 24, weight: .medium))
+                            .frame(width: controlSize, height: controlSize)
+                            .liquidGlass(in: Circle())
                             .clipShape(Circle())
                     }
-                    .accessibilityLabel(isQuickNotesActive ? "Switch to People" : "Switch to Quick Notes")
+                    .accessibilityLabel("Cycle input mode")
                 }
             }
         }
@@ -285,6 +329,13 @@ struct QuickInputView: View {
             print("🎯 [QuickInput] Received resign focus notification")
             fieldIsFocused = false
         }
+        .onReceive(NotificationCenter.default.publisher(for: .quickInputCameraDidPickPhoto)) { notification in
+            if let userInfo = notification.userInfo,
+               let image = userInfo["image"] as? UIImage,
+               let date = userInfo["date"] as? Date? {
+                handlePhotoPicked(image: image, date: date)
+            }
+        }
     }
 
     private func save() {
@@ -305,7 +356,6 @@ struct QuickInputView: View {
                 do { try modelContext.save() } catch { print("Save failed: \(error)") }
             }
             text = ""
-            selectedContact = nil
             resetTextAndPreview()
             return
         }
@@ -462,7 +512,7 @@ struct QuickInputView: View {
                 let trimmed = raw.trimmingCharacters(in: .punctuationCharacters)
                 let key = Tag.normalizedKey(trimmed)
                 if !trimmed.isEmpty && !globalTagKeys.contains(key) {
-                    if let tag = Tag.fetchOrCreate(named: trimmed, in: modelContext) {
+                    if let tag = Tag.fetchOrCreate(named: trimmed, in: modelContext, seedDate: finalDate) {
                         globalTags.append(tag)
                         globalTagKeys.insert(key)
                     }
@@ -516,6 +566,8 @@ struct QuickInputView: View {
                 let contact = Contact(name: name, timestamp: finalDate, notes: notes, tags: globalTags, photo: Data())
                 contact.summary = summary
                 contact.isMetLongAgo = longAgoDetected
+                // ensure fresh UUID to prevent collisions before insertion
+                contact.uuid = UUID()
                 previews.append(contact)
             }
         }
@@ -606,6 +658,9 @@ struct QuickInputView: View {
         }
         if !contactTags.isEmpty {
             contact.tags = contactTags
+            for t in contactTags {
+                t.updateRange(withSeed: detectedDate ?? Date())
+            }
         }
         working = retainedTokens.joined(separator: " ")
 
@@ -692,6 +747,83 @@ struct QuickInputView: View {
         return joined.replacingOccurrences(of: #"\s{2,}"#, with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    private func handlePhotoPicked(image: UIImage, date: Date?) {
+        // Only auto-assign if a single contact is selected
+        guard let selectedContact = selectedContact else {
+            // Pass through to normal photo picker flow if no contact selected
+            print("📸 [QuickInput] No contact selected, passing to fallback")
+            onPhotoPicked?(image, date)
+            return
+        }
+        
+        Task {
+            let success = await detectAndAssignSingleFace(to: selectedContact, image: image)
+            
+            await MainActor.run {
+                if success {
+                    print("✅ [QuickInput] Successfully auto-assigned single face to \(selectedContact.name ?? "contact")")
+                } else {
+                    print("📸 [QuickInput] Auto-assignment failed (0 or multiple faces), passing to fallback")
+                    onPhotoPicked?(image, date)
+                }
+            }
+        }
+    }
+
+    private func detectAndAssignSingleFace(to contact: Contact, image: UIImage) async -> Bool {
+        guard let cgImage = image.cgImage else { return false }
+        
+        await MainActor.run {
+            isProcessingPhoto = true
+        }
+        
+        defer {
+            Task { @MainActor in
+                isProcessingPhoto = false
+            }
+        }
+        
+        let request = VNDetectFaceRectanglesRequest()
+        let handler = VNImageRequestHandler(cgImage: cgImage)
+        
+        do {
+            try handler.perform([request])
+            
+            if let observations = request.results as? [VNFaceObservation],
+               observations.count == 1,
+               let face = observations.first {
+                
+                let imageSize = CGSize(width: CGFloat(cgImage.width), height: CGFloat(cgImage.height))
+                let rect = FaceCrop.expandedRect(for: face, imageSize: imageSize)
+                
+                if !rect.isNull && !rect.isEmpty,
+                   let cropped = cgImage.cropping(to: rect) {
+                    let faceImage = UIImage(cgImage: cropped)
+                    
+                    // Update the selected contact with this photo
+                    await MainActor.run {
+                        contact.photo = faceImage.jpegData(compressionQuality: 0.92) ?? Data()
+                    }
+                    
+                    do {
+                        try await MainActor.run {
+                            try modelContext.save()
+                        }
+                        return true
+                    } catch {
+                        print("❌ [QuickInput] Failed to save contact with new photo: \(error)")
+                    }
+                }
+            } else {
+                let count = (request.results as? [VNFaceObservation])?.count ?? 0
+                print("📸 [QuickInput] Detected \(count) faces, need exactly 1 for auto-assignment")
+            }
+        } catch {
+            print("❌ [QuickInput] Face detection failed: \(error)")
+        }
+        return false
+    }
 }
 
 private struct BottomInputHeightKey: PreferenceKey {
@@ -720,6 +852,7 @@ extension Notification.Name {
     static let quickInputTextDidChange = Notification.Name("QuickInputTextDidChange")
     static let quickInputRequestFocus = Notification.Name("QuickInputRequestFocus")
     static let quickInputResignFocus = Notification.Name("QuickInputResignFocus")
+    static let quickInputCameraDidPickPhoto = Notification.Name("QuickInputCameraDidPickPhoto")
 }
 
 private extension View {
@@ -731,7 +864,7 @@ private extension View {
             self.background(Color.secondary.opacity(0.12), in: shape)
         }
     }
-}
+} 
 
 private struct InputBubble<Content: View>: View {
     @ViewBuilder var content: () -> Content
@@ -739,11 +872,10 @@ private struct InputBubble<Content: View>: View {
         HStack(spacing: 8) {
             content()
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.thinMaterial)
-        .clipShape(.rect(cornerRadius: 24))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 16)
+        .liquidGlass(in: .rect(cornerRadius: 32))
         .fixedSize(horizontal: false, vertical: true)
-        .frame(minHeight: 44, alignment: .center)
+        .frame(minHeight: 64, alignment: .center)
     }
 }

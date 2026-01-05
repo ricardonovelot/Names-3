@@ -12,6 +12,7 @@ struct ContactDetailsView: View {
     var isCreationFlow: Bool = false
     var onSave: (() -> Void)? = nil
     var onCancel: (() -> Void)? = nil
+    var onBack: (() -> Void)? = nil
 
     @State var viewState = CGSize.zero
 
@@ -37,6 +38,9 @@ struct ContactDetailsView: View {
     @State private var CustomBackButtonAnimationValue = 40.0
 
     var image: UIImage { UIImage(data: contact.photo) ?? UIImage() }
+    
+    @State private var noteBeingEdited: Note?
+    @State private var showNoteDatePicker = false
 
     var body: some View {
         GeometryReader { g in
@@ -75,8 +79,7 @@ struct ContactDetailsView: View {
                                 .font(.system(size: 18))
                                 .padding(12)
                                 .foregroundColor(image != UIImage() ? .blue.mix(with: .white, by: 0.3) : .blue)
-                                .background( image != UIImage() ? AnyShapeStyle(.ultraThinMaterial.opacity(0.7)) : AnyShapeStyle(Color(.blue.opacity(0.08))))
-                                .background(image != UIImage() ? .black.opacity(0.2) : .clear)
+                                .liquidGlass(in: Circle())
                                 .clipShape(Circle())
                                 .onTapGesture { showPhotosPicker = true }
                                 .padding(.leading, 4)
@@ -89,15 +92,14 @@ struct ContactDetailsView: View {
                                         .padding(.vertical, 7)
                                         .padding(.bottom, 1)
                                         .padding(.horizontal, 13)
-                                        .background(image != UIImage() ? AnyShapeStyle(.ultraThinMaterial.opacity(0.6)) : AnyShapeStyle(Color(.quaternarySystemFill )))
-                                        .cornerRadius(8)
-
+                                        .liquidGlass(in: RoundedRectangle(cornerRadius: 8))
+                                        .clipShape(RoundedRectangle(cornerRadius: 8))
                                 } else {
                                     Image(systemName: "person.2")
                                         .font(.system(size: 18))
                                         .padding(12)
                                         .foregroundColor(image != UIImage() ? .purple.mix(with: .white, by: 0.3) : .purple)
-                                        .background( image != UIImage() ? AnyShapeStyle(.ultraThinMaterial.opacity(0.7)) : AnyShapeStyle(Color(.purple.opacity(0.08))))
+                                        .liquidGlass(in: Circle())
                                         .clipShape(Circle())
                                         .padding(.leading, 4)
                                 }
@@ -116,10 +118,7 @@ struct ContactDetailsView: View {
                         .lineLimit(2...)
                         .padding(10)
                         .foregroundStyle(image != UIImage() ? Color(uiColor: .lightText) : Color.primary)
-                        .background(
-                            BlurView(style: .regular)
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .liquidGlass(in: RoundedRectangle(cornerRadius: 12))
 
                         .padding(.horizontal).padding(.top, 12)
                         .onTapGesture {
@@ -133,7 +132,7 @@ struct ContactDetailsView: View {
 
                         HStack{
                             Spacer()
-                            Text(contact.timestamp, style: .date)
+                            Text("Met \(contact.timestamp.formatted(date: .abbreviated, time: .omitted))")
                                 .foregroundColor(image != UIImage() ? .white : Color(UIColor.secondaryLabel))
                                 .font(.system(size: 15))
                                 .frame(alignment: .trailing)
@@ -150,62 +149,77 @@ struct ContactDetailsView: View {
                     }
                 }
 
-                HStack{
-                    Text("Notes")
-                        .font(.body.smallCaps())
-                        .fontWeight(.light)
-                        .foregroundStyle(.secondary)
-                        .padding(.leading)
-                    Spacer()
-                }
-                Button(action: {
-                    let newNote = Note(content: "Test", creationDate: Date())
-                    if contact.notes == nil { contact.notes = [] }
-                    contact.notes?.append(newNote)
-                    do {
-                        try modelContext.save()
-                    } catch {
-                        print("Save failed: \(error)")
+                List {
+                    Section("Notes") {
+                        Button(action: {
+                            let newNote = Note(content: "", creationDate: Date())
+                            if contact.notes == nil { contact.notes = [] }
+                            contact.notes?.append(newNote)
+                            do {
+                                try modelContext.save()
+                            } catch {
+                                print("Save failed: \(error)")
+                            }
+                        }) {
+                            HStack {
+                                Image(systemName: "plus.circle.fill")
+                                Text("Add Note")
+                            }
+                            .foregroundStyle(.blue)
+                        }
+                        .buttonStyle(PlainButtonStyle())
                     }
-                }) {
-                    HStack {
-                        Image(systemName: "plus.circle.fill")
-                        Text("Add Note")
-                        Spacer()
-                    }
-                    .padding(.horizontal).padding(.vertical, 14)
-                    .background(Color(uiColor: .tertiarySystemBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .padding(.horizontal)
-                    .foregroundStyle(.blue)
-                }
-                .buttonStyle(PlainButtonStyle())
 
-                List{
                     let array = (contact.notes ?? []).filter { $0.isArchived == false }
                     ForEach(array, id: \.self) { note in
-                        Section{
-                            NoteEditableRow(note: note, showContact: false)
-                                .swipeActions(edge: .trailing) {
-                                    Button(role: .destructive) {
-                                        note.isArchived = true
-                                        note.archivedDate = Date()
-                                        do {
-                                            try modelContext.save()
-                                        } catch {
-                                            print("Save failed: \(error)")
+                        Section {
+                            VStack {
+                                TextField(
+                                    "Note Content",
+                                    text: Binding(
+                                        get: { note.content ?? "" },
+                                        set: { newValue in
+                                            note.content = newValue
+                                            do {
+                                                try modelContext.save()
+                                            } catch {
+                                                print("Save failed: \(error)")
+                                            }
                                         }
-                                    } label: {
-                                        Label("Delete", systemImage: "trash")
-                                    }
+                                    ),
+                                    axis: .vertical
+                                )
+                                .lineLimit(2...)
+
+                                HStack {
+                                    Spacer()
+                                    Text(note.creationDate, style: .date)
+                                        .font(.caption)
+                                        .foregroundColor(.gray)
                                 }
-                                .swipeActions(edge: .leading) {
-                                    Button {
-                                    } label: {
-                                        Label("Edit Date", systemImage: "calendar")
+                            }
+                            .contentShape(Rectangle())
+                            .swipeActions(edge: .trailing) {
+                                Button(role: .destructive) {
+                                    note.isArchived = true
+                                    note.archivedDate = Date()
+                                    do {
+                                        try modelContext.save()
+                                    } catch {
+                                        print("Save failed: \(error)")
                                     }
-                                    .tint(.blue)
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
                                 }
+                            }
+                            .swipeActions(edge: .leading) {
+                                Button {
+                                    showNoteDatePickerFor(note: note)
+                                } label: {
+                                    Label("Edit Date", systemImage: "calendar")
+                                }
+                                .tint(.blue)
+                            }
                         }
                     }
                 }
@@ -214,6 +228,7 @@ struct ContactDetailsView: View {
             .padding(.top, image != UIImage() ? 0 : 8 )
             .ignoresSafeArea(image != UIImage() ? .all : [])
             .background(Color(UIColor.systemGroupedBackground))
+            .scrollIndicators(.hidden)
             .toolbar {
                 if isCreationFlow {
                     ToolbarItem(placement: .topBarLeading) {
@@ -251,11 +266,14 @@ struct ContactDetailsView: View {
                                 Text("Delete")
                             }
                         } label: {
-                            Image(systemName: "ellipsis.circle")
+                            Image(systemName: "ellipsis")
+                                .padding(8)
+                                .liquidGlass(in: Capsule())
                         }
                     }
                     ToolbarItem(placement: .navigationBarLeading) {
                         Button {
+                            onBack?()
                             dismiss()
                         } label: {
                             HStack {
@@ -285,6 +303,39 @@ struct ContactDetailsView: View {
         }
         .sheet(isPresented: $showTagPicker) {
             TagPickerView(mode: .contactToggle(contact: contact))
+        }
+        .sheet(isPresented: $showNoteDatePicker) {
+            NavigationView {
+                VStack {
+                    DatePicker(
+                        "Select Date",
+                        selection: Binding(
+                            get: { noteBeingEdited?.creationDate ?? Date() },
+                            set: { newValue in
+                                if let note = noteBeingEdited {
+                                    note.creationDate = newValue
+                                    do {
+                                        try modelContext.save()
+                                    } catch {
+                                        print("Save failed: \(error)")
+                                    }
+                                }
+                            }
+                        ),
+                        displayedComponents: .date
+                    )
+                    .datePickerStyle(GraphicalDatePickerStyle())
+                    .padding()
+
+                    Spacer()
+
+                    Button("Done") {
+                        showNoteDatePicker = false
+                    }
+                    .padding()
+                }
+                .navigationBarTitle("Edit Note Date", displayMode: .inline)
+            }
         }
         .fullScreenCover(isPresented: $showCropView){
             if let image = UIImage(data: contact.photo) {
@@ -451,23 +502,13 @@ struct ContactDetailsView: View {
                 var detectedFaces: [FaceAssignmentView.DetectedFaceInfo] = []
                 
                 for face in observations {
-                    let bb = face.boundingBox
-                    let scaleFactor: CGFloat = 1.8
-                    
-                    let scaledBox = CGRect(
-                        x: bb.origin.x * imageSize.width - (bb.width * imageSize.width * (scaleFactor - 1)) / 2,
-                        y: (1 - bb.origin.y - bb.height) * imageSize.height - (bb.height * imageSize.height * (scaleFactor - 1)) / 2,
-                        width: bb.width * imageSize.width * scaleFactor,
-                        height: bb.height * imageSize.height * scaleFactor
-                    ).integral
-                    
-                    let clipped = scaledBox.intersection(fullRect)
-                    if !clipped.isNull && !clipped.isEmpty {
-                        if let cropped = cgImage.cropping(to: clipped) {
+                    let rect = FaceCrop.expandedRect(for: face, imageSize: imageSize)
+                    if !rect.isNull && !rect.isEmpty {
+                        if let cropped = cgImage.cropping(to: rect) {
                             let faceImage = UIImage(cgImage: cropped)
                             detectedFaces.append(FaceAssignmentView.DetectedFaceInfo(
                                 image: faceImage,
-                                boundingBox: clipped
+                                boundingBox: rect
                             ))
                         }
                     }
@@ -480,5 +521,10 @@ struct ContactDetailsView: View {
         }
         
         return []
+    }
+
+    private func showNoteDatePickerFor(note: Note) {
+        noteBeingEdited = note
+        showNoteDatePicker = true
     }
 }

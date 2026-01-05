@@ -20,12 +20,14 @@ struct PhotosDayPickerHost: View {
     let contactsContext: ModelContext
     let onPick: (UIImage, Date?) -> Void
     let initialScrollDate: Date?
+    let attemptQuickAssign: ((UIImage, Date?) async -> Bool)?
 
-    init(scope: PhotosPickerScope, contactsContext: ModelContext, initialScrollDate: Date? = nil, onPick: @escaping (UIImage, Date?) -> Void) {
+    init(scope: PhotosPickerScope, contactsContext: ModelContext, initialScrollDate: Date? = nil, onPick: @escaping (UIImage, Date?) -> Void, attemptQuickAssign: ((UIImage, Date?) async -> Bool)? = nil) {
         self.scope = scope
         self.contactsContext = contactsContext
         self.initialScrollDate = initialScrollDate ?? scope.initialScrollDate
         self.onPick = onPick
+        self.attemptQuickAssign = attemptQuickAssign
         
         if let scrollDate = self.initialScrollDate {
             print("🔵 [PhotosDayPickerHost] Initialized with scroll date: \(scrollDate)")
@@ -42,7 +44,8 @@ struct PhotosDayPickerHost: View {
             scope: scope,
             contactsContext: contactsContext,
             initialScrollDate: initialScrollDate,
-            onPick: onPick
+            onPick: onPick,
+            attemptQuickAssign: attemptQuickAssign
         )
     }
 }

@@ -39,7 +39,9 @@ struct Names_3App: App {
 
         do {
             Names_3App.logger.info("Initializing SwiftData container with CloudKit")
-            return try ModelContainer(for: schema, configurations: [cloudConfig])
+            let container = try ModelContainer(for: schema, configurations: [cloudConfig])
+            Self.ensureUniqueUUIDs(in: container)
+            return container
         } catch {
             Names_3App.logger.error("CloudKit ModelContainer init failed: \(error, privacy: .public). Falling back to local store.")
             let localConfig = ModelConfiguration(
@@ -48,28 +50,152 @@ struct Names_3App: App {
                 isStoredInMemoryOnly: false
             )
             do {
-                return try ModelContainer(for: schema, configurations: [localConfig])
+                let container = try ModelContainer(for: schema, configurations: [localConfig])
+                Self.ensureUniqueUUIDs(in: container)
+                return container
             } catch {
                 fatalError("Could not create local fallback ModelContainer: \(error)")
             }
         }
     }()
 
+    // Synchronous uniqueness migration (preserves data) without generic/keyPath
+    @MainActor
+    private static func ensureUniqueUUIDs(in container: ModelContainer) {
+        let context = ModelContext(container)
+        let zeroUUIDString = "00000000-0000-0000-0000-000000000000"
+        let defaultsKey = "Names3.didFixUUIDs.v1"
+        if UserDefaults.standard.bool(forKey: defaultsKey) {
+            return
+        }
+
+        var anyFixed = false
+
+        func fixContacts() {
+            do {
+                let all = try context.fetch(FetchDescriptor<Contact>())
+                var seen = Set<UUID>()
+                var fixed = 0
+                for c in all {
+                    var u = c.uuid
+                    if u.uuidString == zeroUUIDString || seen.contains(u) {
+                        var newU = UUID()
+                        while seen.contains(newU) {
+                            newU = UUID()
+                        }
+                        c.uuid = newU
+                        u = newU
+                        fixed += 1
+                    }
+                    seen.insert(u)
+                }
+                if fixed > 0 {
+                    try context.save()
+                    anyFixed = true
+                    logger.info("🔧 Fixed \(fixed) duplicate/zero UUIDs in Contact")
+                }
+            } catch {
+                logger.error("❌ Failed UUID fix for Contact: \(error, privacy: .public)")
+            }
+        }
+
+        func fixNotes() {
+            do {
+                let all = try context.fetch(FetchDescriptor<Note>())
+                var seen = Set<UUID>()
+                var fixed = 0
+                for n in all {
+                    var u = n.uuid
+                    if u.uuidString == zeroUUIDString || seen.contains(u) {
+                        var newU = UUID()
+                        while seen.contains(newU) {
+                            newU = UUID()
+                        }
+                        n.uuid = newU
+                        u = newU
+                        fixed += 1
+                    }
+                    seen.insert(u)
+                }
+                if fixed > 0 {
+                    try context.save()
+                    anyFixed = true
+                    logger.info("🔧 Fixed \(fixed) duplicate/zero UUIDs in Note")
+                }
+            } catch {
+                logger.error("❌ Failed UUID fix for Note: \(error, privacy: .public)")
+            }
+        }
+
+        func fixTags() {
+            do {
+                let all = try context.fetch(FetchDescriptor<Tag>())
+                var seen = Set<UUID>()
+                var fixed = 0
+                for t in all {
+                    var u = t.uuid
+                    if u.uuidString == zeroUUIDString || seen.contains(u) {
+                        var newU = UUID()
+                        while seen.contains(newU) {
+                            newU = UUID()
+                        }
+                        t.uuid = newU
+                        u = newU
+                        fixed += 1
+                    }
+                    seen.insert(u)
+                }
+                if fixed > 0 {
+                    try context.save()
+                    anyFixed = true
+                    logger.info("🔧 Fixed \(fixed) duplicate/zero UUIDs in Tag")
+                }
+            } catch {
+                logger.error("❌ Failed UUID fix for Tag: \(error, privacy: .public)")
+            }
+        }
+
+        func fixQuickNotes() {
+            do {
+                let all = try context.fetch(FetchDescriptor<QuickNote>())
+                var seen = Set<UUID>()
+                var fixed = 0
+                for q in all {
+                    var u = q.uuid
+                    if u.uuidString == zeroUUIDString || seen.contains(u) {
+                        var newU = UUID()
+                        while seen.contains(newU) {
+                            newU = UUID()
+                        }
+                        q.uuid = newU
+                        u = newU
+                        fixed += 1
+                    }
+                    seen.insert(u)
+                }
+                if fixed > 0 {
+                    try context.save()
+                    anyFixed = true
+                    logger.info("🔧 Fixed \(fixed) duplicate/zero UUIDs in QuickNote")
+                }
+            } catch {
+                logger.error("❌ Failed UUID fix for QuickNote: \(error, privacy: .public)")
+            }
+        }
+
+        fixContacts()
+        fixNotes()
+        fixTags()
+        fixQuickNotes()
+
+        if anyFixed {
+            UserDefaults.standard.set(true, forKey: defaultsKey)
+        }
+    }
+
     var body: some Scene {
         WindowGroup {
-            TabView(selection: $tabSelection) {
-                ContentView()
-                    .tabItem {
-                        Label("People", systemImage: "person.3")
-                    }
-                    .tag(AppTab.people)
-                
-                HomeView(tabSelection: $tabSelection)
-                    .tabItem {
-                        Label("Recent", systemImage: "house")
-                    }
-                    .tag(AppTab.home)
-            }
+            ContentView()
         }
         .modelContainer(sharedModelContainer)
     }

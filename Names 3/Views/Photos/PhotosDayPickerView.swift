@@ -10,7 +10,8 @@ struct PhotosDayPickerView: View {
     let initialScrollDate: Date?
     let contactsContext: ModelContext
     let onPick: (UIImage, Date) -> Void
-    
+    let attemptQuickAssign: ((UIImage, Date?) async -> Bool)?
+
     @StateObject private var viewModel: PhotosPickerViewModel
     @State private var isPresentingDetail = false
     @State private var selectedImageForDetail: UIImage?
@@ -20,11 +21,12 @@ struct PhotosDayPickerView: View {
     
     // MARK: - Initialization
     
-    init(scope: PhotosPickerScope, contactsContext: ModelContext, initialScrollDate: Date? = nil, onPick: @escaping (UIImage, Date) -> Void) {
+    init(scope: PhotosPickerScope, contactsContext: ModelContext, initialScrollDate: Date? = nil, onPick: @escaping (UIImage, Date) -> Void, attemptQuickAssign: ((UIImage, Date?) async -> Bool)? = nil) {
         self.scope = scope
         self.contactsContext = contactsContext
         self.initialScrollDate = initialScrollDate
         self.onPick = onPick
+        self.attemptQuickAssign = attemptQuickAssign
         self._viewModel = StateObject(wrappedValue: PhotosPickerViewModel(scope: scope, initialScrollDate: initialScrollDate))
         
         if let scrollDate = initialScrollDate {
@@ -133,9 +135,25 @@ struct PhotosDayPickerView: View {
                 initialScrollDate: initialScrollDate,
                 onPhotoTapped: { image, date in
                     print("✅ [PhotosDayPicker] Photo tapped callback received")
-                    selectedImageForDetail = image
-                    selectedDateForDetail = date
-                    isPresentingDetail = true
+                    if let attempt = attemptQuickAssign {
+                        Task {
+                            let handled = try await attempt(image, date)
+                            await MainActor.run {
+                                if handled {
+                                    print("✅ [PhotosDayPicker] Quick-assign handled. Skipping detail.")
+                                    viewModel.suppressReload(false)
+                                } else {
+                                    selectedImageForDetail = image
+                                    selectedDateForDetail = date
+                                    isPresentingDetail = true
+                                }
+                            }
+                        }
+                    } else {
+                        selectedImageForDetail = image
+                        selectedDateForDetail = date
+                        isPresentingDetail = true
+                    }
                 },
                 onAppearAtIndex: { index in
                     if index < viewModel.assets.count {

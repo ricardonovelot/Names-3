@@ -117,8 +117,21 @@ struct PhotoDetailView: View {
                 }
             
             if !viewModel.faces.isEmpty {
-                FaceCarouselView(viewModel: viewModel)
-                    .padding(.bottom, 20)
+                FaceCarouselView(
+                    viewModel: viewModel,
+                    onFaceTap: selectedContact != nil ? { index in
+                        if let faceImage = viewModel.faces[safe: index]?.image, let contact = selectedContact {
+                            contact.photo = faceImage.jpegData(compressionQuality: 0.92) ?? Data()
+                            do {
+                                try modelContext.save()
+                            } catch {
+                                print("❌ Save failed: \(error)")
+                            }
+                            dismiss()
+                        }
+                    } : nil
+                )
+                .padding(.bottom, 20)
             }
         }
         .frame(height: 400)
@@ -126,10 +139,25 @@ struct PhotoDetailView: View {
     
     private func mapRawTextToFaces(_ raw: String) {
         var newFaces = viewModel.faces
-        let parts = raw.split(separator: ",", omittingEmptySubsequences: false)
-        for (i, part) in parts.enumerated() where i < newFaces.count {
-            let name = part.trimmingCharacters(in: .whitespacesAndNewlines)
-            newFaces[i].name = name.isEmpty ? nil : name
+        let parts = raw
+            .split(separator: ",", omittingEmptySubsequences: false)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+        
+        // Apply mapping only across unlocked faces, preserving locked names
+        let unlocked = newFaces.indices.filter { !newFaces[$0].isLocked }
+        var u = 0
+        for part in parts {
+            guard u < unlocked.count else { break }
+            let idx = unlocked[u]
+            let name = part
+            newFaces[idx].name = name.isEmpty ? nil : name
+            u += 1
+        }
+        // Clear remaining previews for unlocked faces beyond provided parts
+        while u < unlocked.count {
+            let idx = unlocked[u]
+            newFaces[idx].name = nil
+            u += 1
         }
         viewModel.faces = newFaces
     }
@@ -214,14 +242,15 @@ struct PhotoDetailView: View {
     }
     
     private var readyToAddFaces: [FaceDetectionViewModel.DetectedFace] {
-        viewModel.faces.filter { !($0.name ?? "").isEmpty }
+        // Only unsaved, named faces
+        viewModel.faces.filter { !($0.name ?? "").isEmpty && !$0.isLocked }
     }
     
     private func saveAll() {
         guard !readyToAddFaces.isEmpty else { return }
         
         let trimmed = globalGroupText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let tag: Tag? = trimmed.isEmpty ? nil : Tag.fetchOrCreate(named: trimmed, in: modelContext)
+        let tag: Tag? = trimmed.isEmpty ? nil : Tag.fetchOrCreate(named: trimmed, in: modelContext, seedDate: detectedDate)
         
         for face in readyToAddFaces {
             let name = face.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -257,6 +286,7 @@ struct PhotoDetailView: View {
 struct FaceCarouselView: View {
     @ObservedObject var viewModel: FaceDetectionViewModel
     @State private var selectedIndex: Int?
+    var onFaceTap: ((Int) -> Void)? = nil
     
     private var faces: [FaceDetectionViewModel.DetectedFace] { viewModel.faces }
     
@@ -300,9 +330,13 @@ struct FaceCarouselView: View {
                                 .frame(width: 80)
                         }
                         .onTapGesture {
-                            selectedIndex = index
-                            withAnimation {
-                                proxy.scrollTo(index, anchor: .center)
+                            if let onFaceTap {
+                                onFaceTap(index)
+                            } else {
+                                selectedIndex = index
+                                withAnimation {
+                                    proxy.scrollTo(index, anchor: .center)
+                                }
                             }
                         }
                         .id(index)
@@ -328,11 +362,18 @@ struct FaceCarouselView: View {
     }
 }
 
+private extension Array {
+    subscript(safe index: Index) -> Element? {
+        indices.contains(index) ? self[index] : nil
+    }
+}
+
 final class FaceDetectionViewModel: ObservableObject {
     struct DetectedFace: Identifiable {
         let id = UUID()
         let image: UIImage
-        var name: String?
+        var name: String? = nil
+        var isLocked: Bool = false
     }
     
     @Published var faces: [DetectedFace] = []
@@ -360,21 +401,11 @@ final class FaceDetectionViewModel: ObservableObject {
                 let fullRect = CGRect(origin: .zero, size: imageSize)
                 
                 for face in observations {
-                    let bb = face.boundingBox
-                    let scaleFactor: CGFloat = 1.8
-                    
-                    let scaledBox = CGRect(
-                        x: bb.origin.x * imageSize.width - (bb.width * imageSize.width * (scaleFactor - 1)) / 2,
-                        y: (1 - bb.origin.y - bb.height) * imageSize.height - (bb.height * imageSize.height * (scaleFactor - 1)) / 2,
-                        width: bb.width * imageSize.width * scaleFactor,
-                        height: bb.height * imageSize.height * scaleFactor
-                    ).integral
-                    
-                    let clipped = scaledBox.intersection(fullRect)
-                    if !clipped.isNull && !clipped.isEmpty {
-                        if let cropped = cgImage.cropping(to: clipped) {
+                    let rect = FaceCrop.expandedRect(for: face, imageSize: imageSize)
+                    if !rect.isNull && !rect.isEmpty {
+                        if let cropped = cgImage.cropping(to: rect) {
                             let faceImage = UIImage(cgImage: cropped)
-                            faces.append(DetectedFace(image: faceImage, name: nil))
+                            faces.append(DetectedFace(image: faceImage))
                         }
                     }
                 }

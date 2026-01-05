@@ -430,7 +430,7 @@ struct BulkAddFacesView: View {
         }
 
         let trimmed = b.groupName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? globalGroupText.trimmingCharacters(in: .whitespacesAndNewlines) : b.groupName
-        let tagToApply: Tag? = trimmed.isEmpty ? nil : Tag.fetchOrCreate(named: trimmed, in: contactsContext)
+        let tagToApply: Tag? = trimmed.isEmpty ? nil : Tag.fetchOrCreate(named: trimmed, in: contactsContext, seedDate: b.date)
 
         let faces = b.faces ?? []
         for (idx, f) in faces.enumerated() {

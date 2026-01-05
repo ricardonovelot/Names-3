@@ -10,6 +10,7 @@ import SwiftData
 
 @Model
 class Contact {
+    var uuid: UUID = UUID()
     var name: String? = ""
     var summary: String? = ""
     var isMetLongAgo: Bool = false
@@ -30,6 +31,7 @@ class Contact {
     var cropScale: Float = 1.0
 
     init(
+        uuid: UUID = UUID(),
         name: String = "",
         summary: String = "",
         isMetLongAgo: Bool = false,
@@ -45,6 +47,7 @@ class Contact {
         cropScale: Float = 1.0,
         quickNotes: [QuickNote]? = nil
     ) {
+        self.uuid = uuid
         self.name = name
         self.summary = summary
         self.isMetLongAgo = isMetLongAgo
@@ -142,6 +145,7 @@ struct contactsGroup: Identifiable, Hashable {
 
 @Model
 final class Note {
+    var uuid: UUID = UUID()
     var content: String = ""
     var creationDate: Date = Date()
     var isLongAgo: Bool = false
@@ -155,6 +159,7 @@ final class Note {
     var quickNote: QuickNote?
 
     init(
+        uuid: UUID = UUID(),
         content: String = "",
         creationDate: Date = Date(),
         isLongAgo: Bool = false,
@@ -163,6 +168,7 @@ final class Note {
         contact: Contact? = nil,
         quickNote: QuickNote? = nil
     ) {
+        self.uuid = uuid
         self.content = content
         self.creationDate = creationDate
         self.isLongAgo = isLongAgo
@@ -175,18 +181,24 @@ final class Note {
 
 @Model
 final class Tag {
+    var uuid: UUID = UUID()
     var name: String = ""
     var isArchived: Bool = false
     var archivedDate: Date? = nil
+    var rangeStart: Date? = nil
+    var rangeEnd: Date? = nil
 
     @Relationship(inverse: \Contact.tags)
     var contacts: [Contact]? = []
 
-    init(name: String = "", isArchived: Bool = false, archivedDate: Date? = nil, contacts: [Contact]? = []) {
+    init(uuid: UUID = UUID(), name: String = "", isArchived: Bool = false, archivedDate: Date? = nil, contacts: [Contact]? = [], rangeStart: Date? = nil, rangeEnd: Date? = nil) {
+        self.uuid = uuid
         self.name = name
         self.isArchived = isArchived
         self.archivedDate = archivedDate
         self.contacts = contacts
+        self.rangeStart = rangeStart
+        self.rangeEnd = rangeEnd
     }
 }
 
@@ -225,5 +237,36 @@ extension Tag {
         let tag = Tag(name: trimmed)
         context.insert(tag)
         return tag
+    }
+
+    @MainActor
+    static func fetchOrCreate(named name: String, in context: ModelContext, seedDate: Date) -> Tag? {
+        guard let tag = fetchOrCreate(named: name, in: context) else { return nil }
+        tag.updateRange(withSeed: seedDate)
+        return tag
+    }
+
+    func updateRange(withSeed date: Date) {
+        guard date != .distantPast && date <= Date() else { return }
+        let (start, end) = Tag.defaultRange(for: date)
+        if let rs = rangeStart {
+            rangeStart = min(rs, start)
+        } else {
+            rangeStart = start
+        }
+        if let re = rangeEnd {
+            rangeEnd = max(re, end)
+        } else {
+            rangeEnd = end
+        }
+    }
+
+    static func defaultRange(for date: Date) -> (Date, Date) {
+        let cal = Calendar.current
+        let centerDay = cal.startOfDay(for: date)
+        let start = cal.date(byAdding: .day, value: -3, to: centerDay) ?? centerDay
+        let endStart = cal.date(byAdding: .day, value: 4, to: centerDay) ?? centerDay
+        // end is exclusive upper bound like Photos predicates; keep as start of next day
+        return (start, endStart)
     }
 }

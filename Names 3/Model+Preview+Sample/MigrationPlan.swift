@@ -17,23 +17,9 @@ enum Names3SchemaMigrationPlan: SchemaMigrationPlan {
         [migrateV1toV2]
     }
     
-    static let migrateV1toV2 = MigrationStage.custom(
+    static let migrateV1toV2 = MigrationStage.lightweight(
         fromVersion: SchemaV1.self,
-        toVersion: SchemaV2.self,
-        willMigrate: { context in
-            print("🔄 [Migration] Starting V1 → V2 migration (adding UUIDs)")
-        },
-        didMigrate: { context in
-            // SwiftData automatically handles adding new properties with default values
-            // The UUID() default initializer will generate unique IDs for existing records
-            print("✅ [Migration] V1 → V2 migration complete")
-            
-            // Verify migration
-            let contactDescriptor = FetchDescriptor<SchemaV2.Contact>()
-            if let contacts = try? context.fetch(contactDescriptor) {
-                print("   Migrated \(contacts.count) contacts with UUIDs")
-            }
-        }
+        toVersion: SchemaV2.self
     )
 }
 
@@ -127,14 +113,18 @@ enum SchemaV1: VersionedSchema {
         var date: Date = Date()
         var isLongAgo: Bool = false
         var isProcessed: Bool = false
+        @Relationship(deleteRule: .nullify)
         var linkedContacts: [Contact]? = []
+        @Relationship(deleteRule: .nullify)
         var linkedNotes: [Note]? = []
         
-        init(content: String = "", date: Date = Date(), isLongAgo: Bool = false, isProcessed: Bool = false) {
+        init(content: String = "", date: Date = Date(), isLongAgo: Bool = false, isProcessed: Bool = false, linkedContacts: [Contact]? = [], linkedNotes: [Note]? = []) {
             self.content = content
             self.date = date
             self.isLongAgo = isLongAgo
             self.isProcessed = isProcessed
+            self.linkedContacts = linkedContacts
+            self.linkedNotes = linkedNotes
         }
     }
 }
@@ -150,7 +140,7 @@ enum SchemaV2: VersionedSchema {
     
     @Model
     final class Contact {
-        @Attribute(.unique) var uuid: UUID = UUID()
+        var uuid: UUID = UUID()
         var name: String? = ""
         var summary: String? = ""
         var isMetLongAgo: Bool = false
@@ -188,7 +178,7 @@ enum SchemaV2: VersionedSchema {
     
     @Model
     final class Note {
-        @Attribute(.unique) var uuid: UUID = UUID()
+        var uuid: UUID = UUID()
         var content: String = ""
         var creationDate: Date = Date()
         var isLongAgo: Bool = false
@@ -213,7 +203,7 @@ enum SchemaV2: VersionedSchema {
     
     @Model
     final class Tag {
-        @Attribute(.unique) var uuid: UUID = UUID()
+        var uuid: UUID = UUID()
         var name: String = ""
         var isArchived: Bool = false
         var archivedDate: Date? = nil
@@ -231,20 +221,24 @@ enum SchemaV2: VersionedSchema {
     
     @Model
     final class QuickNote {
-        @Attribute(.unique) var uuid: UUID = UUID()
+        var uuid: UUID = UUID()
         var content: String = ""
         var date: Date = Date()
         var isLongAgo: Bool = false
         var isProcessed: Bool = false
+        @Relationship(deleteRule: .nullify)
         var linkedContacts: [Contact]? = []
+        @Relationship(deleteRule: .nullify)
         var linkedNotes: [Note]? = []
         
-        init(uuid: UUID = UUID(), content: String = "", date: Date = Date(), isLongAgo: Bool = false, isProcessed: Bool = false) {
+        init(uuid: UUID = UUID(), content: String = "", date: Date = Date(), isLongAgo: Bool = false, isProcessed: Bool = false, linkedContacts: [Contact]? = [], linkedNotes: [Note]? = []) {
             self.uuid = uuid
             self.content = content
             self.date = date
             self.isLongAgo = isLongAgo
             self.isProcessed = isProcessed
+            self.linkedContacts = linkedContacts
+            self.linkedNotes = linkedNotes
         }
     }
 }

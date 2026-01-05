@@ -13,6 +13,10 @@ final class PhotoDetailViewController: UIViewController {
     private let contentContainerView = UIView()
     private let quickInputContainerView = UIView()
     
+    private var saveButtons: [UIButton] = []
+    
+    private var saveButton: UIButton?
+    
     private let image: UIImage
     private let date: Date?
     private let contactsContext: ModelContext
@@ -21,9 +25,10 @@ final class PhotoDetailViewController: UIViewController {
     var customBackAction: (() -> Void)?
     
     private var hostingController: UIHostingController<PhotoDetailContentView>?
-    private var carouselHostingController: UIHostingController<FaceCarouselView>?
+    private var carouselHostingController: UIHostingController<PhotoFaceCarouselView>?
     private var quickInputHostingController: UIHostingController<AnyView>?
     private let navigationBar = UINavigationBar()
+    private var singleAssignHostingController: UIHostingController<AssignFaceToContactView>?
     
     private var viewModel = FaceDetectionViewModel()
     private var faceObservations: [VNFaceObservation] = []
@@ -34,6 +39,12 @@ final class PhotoDetailViewController: UIViewController {
     }
     
     private var quickInputBottomConstraint: NSLayoutConstraint!
+    private var selectedContact: Contact? {
+        didSet {
+            print("🔵 [PhotoDetailVC] selectedContact didSet -> \(selectedContact?.name ?? "nil")")
+            updateUIForSelectedContact()
+        }
+    }
     
     init(image: UIImage, date: Date?, contactsContext: ModelContext, onComplete: ((UIImage, Date?) -> Void)? = nil) {
         self.image = image
@@ -69,18 +80,15 @@ final class PhotoDetailViewController: UIViewController {
         navigationBar.isTranslucent = true
         
         let navItem = UINavigationItem(title: "")
-        navItem.leftBarButtonItem = UIBarButtonItem(
+        let backItem = UIBarButtonItem(
             image: UIImage(systemName: "chevron.left"),
             style: .plain,
             target: self,
             action: #selector(backButtonTapped)
         )
-        navItem.rightBarButtonItem = UIBarButtonItem(
-            title: "Done",
-            style: .done,
-            target: self,
-            action: #selector(doneButtonTapped)
-        )
+        navItem.leftBarButtonItems = [backItem, makeGlassSaveBarButton()]
+        navItem.rightBarButtonItem = makeGlassSaveBarButton()
+        navItem.rightBarButtonItem?.isEnabled = false
         navigationBar.setItems([navItem], animated: false)
         
         let appearance = UINavigationBarAppearance()
@@ -117,7 +125,7 @@ final class PhotoDetailViewController: UIViewController {
         imageContainerView.addGestureRecognizer(tapToDismiss)
         
         contentContainerView.translatesAutoresizingMaskIntoConstraints = false
-        contentContainerView.backgroundColor = .clear
+        contentContainerView.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.12)
         view.addSubview(contentContainerView)
         
         carouselContainerView.translatesAutoresizingMaskIntoConstraints = false
@@ -168,22 +176,23 @@ final class PhotoDetailViewController: UIViewController {
             onDismiss: { [weak self] in
                 self?.dismissView()
             },
-            onComplete: { [weak self] finalImage, finalDate in
+            onComplete: { [weak self] (finalImage: UIImage, finalDate: Date) in
                 self?.onComplete?(finalImage, finalDate)
                 self?.dismissView()
             },
-            onReadyStateChanged: { [weak self] hasReadyFaces in
+            onReadyStateChanged: { [weak self] (hasReadyFaces: Bool) in
                 if let navItem = self?.navigationBar.topItem {
                     navItem.rightBarButtonItem?.isEnabled = hasReadyFaces
                 }
+                self?.setSaveButtonEnabled(hasReadyFaces)
             },
-            onFacesDetected: { [weak self] observations, faces in
+            onFacesDetected: { [weak self] (observations: [VNFaceObservation], faces: [FaceDetectionViewModel.DetectedFace]) in
                 self?.handleFacesDetected(observations, faces: faces)
             },
-            onFaceNamed: { [weak self] _, _ in
+            onFaceNamed: { [weak self] (_ index: Int, _ named: Bool) in
                 self?.carouselHostingController?.rootView.updateFaceNames()
             },
-            onFaceSelected: { [weak self] index in
+            onFaceSelected: { [weak self] (index: Int) in
                 self?.selectedFaceIndex = index
             }
         )
@@ -216,18 +225,23 @@ final class PhotoDetailViewController: UIViewController {
             get: { false },
             set: { _ in }
         )
-        let selectedContact = Binding<Contact?>(
-            get: { nil },
-            set: { _ in }
+        let selectedContactBinding = Binding<Contact?>(
+            get: { [weak self] in self?.selectedContact },
+            set: { [weak self] newValue in
+                self?.selectedContact = newValue
+            }
         )
         
         let quickInputView = QuickInputView(
             mode: .people,
             parsedContacts: parsedContacts,
             isQuickNotesActive: isQuickNotesActive,
-            selectedContact: selectedContact,
+            selectedContact: selectedContactBinding,
             onCameraTap: nil,
-            allowQuickNoteCreation: false
+            allowQuickNoteCreation: false,
+            onReturnOverride: {
+                NotificationCenter.default.post(name: .photoDetailCommitRequested, object: nil)
+            }
         )
         
         let wrappedView = AnyView(
@@ -255,6 +269,52 @@ final class PhotoDetailViewController: UIViewController {
         self.quickInputHostingController = hosting
     }
     
+    private func makeGlassSaveBarButton() -> UIBarButtonItem {
+        let button = UIButton(type: .system)
+        var config = UIButton.Configuration.plain()
+        config.title = "Save"
+        config.baseForegroundColor = .label
+        config.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12)
+        button.configuration = config
+        button.addTarget(self, action: #selector(doneButtonTapped), for: .touchUpInside)
+        
+        let container = UIView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+        
+        let blur = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterial))
+        blur.translatesAutoresizingMaskIntoConstraints = false
+        blur.clipsToBounds = true
+        blur.layer.cornerRadius = 16
+        
+        container.addSubview(blur)
+        blur.contentView.addSubview(button)
+        
+        NSLayoutConstraint.activate([
+            blur.topAnchor.constraint(equalTo: container.topAnchor),
+            blur.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            blur.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            blur.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            
+            button.topAnchor.constraint(equalTo: blur.contentView.topAnchor),
+            button.leadingAnchor.constraint(equalTo: blur.contentView.leadingAnchor),
+            button.trailingAnchor.constraint(equalTo: blur.contentView.trailingAnchor),
+            button.bottomAnchor.constraint(equalTo: blur.contentView.bottomAnchor)
+        ])
+        
+        // Track for enabled/disabled sync
+        saveButtons.append(button)
+        setSaveButtonEnabled(false)
+        
+        return UIBarButtonItem(customView: container)
+    }
+    
+    private func setSaveButtonEnabled(_ enabled: Bool) {
+        for btn in saveButtons {
+            btn.isEnabled = enabled
+            btn.alpha = enabled ? 1.0 : 0.5
+        }
+    }
+    
     private func updateQuickInputOffset(_ totalHeight: CGFloat) {
         let baseHeight: CGFloat = 70
         let additionalHeight = max(0, totalHeight - baseHeight)
@@ -270,10 +330,22 @@ final class PhotoDetailViewController: UIViewController {
         carouselHostingController?.view.removeFromSuperview()
         carouselHostingController?.removeFromParent()
         
-        let carouselView = FaceCarouselView(
+        let carouselView = PhotoFaceCarouselView(
             viewModel: viewModel,
             onFaceSelected: { [weak self] index in
-                self?.selectedFaceIndex = index
+                guard let self = self else { return }
+                if let contact = self.selectedContact, index >= 0, index < self.viewModel.faces.count {
+                    let faceImage = self.viewModel.faces[index].image
+                    contact.photo = faceImage.jpegData(compressionQuality: 0.92) ?? Data()
+                    do {
+                        try self.contactsContext.save()
+                    } catch {
+                        print("❌ Save failed: \(error)")
+                    }
+                    self.dismissView()
+                } else {
+                    self.selectedFaceIndex = index
+                }
             }
         )
         
@@ -327,13 +399,80 @@ final class PhotoDetailViewController: UIViewController {
             dismiss(animated: true)
         }
     }
+    
+    private func updateUIForSelectedContact() {
+        print("🔵 [PhotoDetailVC] updateUIForSelectedContact() contact: \(selectedContact?.name ?? "nil")")
+        if let contact = selectedContact {
+            presentSingleAssignView(with: contact)
+        } else {
+            dismissSingleAssignView()
+        }
+    }
+    
+    private func presentSingleAssignView(with contact: Contact) {
+        print("🔵 [PhotoDetailVC] presentSingleAssignView for contact: \(contact.name)")
+        hostingController?.view.isHidden = true
+        carouselContainerView.isHidden = true
+        quickInputContainerView.isHidden = true
+        
+        singleAssignHostingController?.view.removeFromSuperview()
+        singleAssignHostingController?.removeFromParent()
+        
+        let assignView = AssignFaceToContactView(
+            viewModel: viewModel,
+            contact: contact,
+            onSelectFace: { [weak self] index in
+                guard let self = self else { return }
+                guard index >= 0, index < self.viewModel.faces.count else { return }
+                let faceImage = self.viewModel.faces[index].image
+                contact.photo = faceImage.jpegData(compressionQuality: 0.92) ?? Data()
+                do {
+                    try self.contactsContext.save()
+                } catch {
+                    print("❌ Save failed: \(error)")
+                }
+                self.dismissView()
+            },
+            onCancel: { [weak self] in
+                self?.selectedContact = nil
+            }
+        )
+        
+        let hosting = UIHostingController(rootView: assignView)
+        hosting.view.translatesAutoresizingMaskIntoConstraints = false
+        hosting.view.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.2)
+        
+        addChild(hosting)
+        contentContainerView.addSubview(hosting.view)
+        hosting.didMove(toParent: self)
+        
+        NSLayoutConstraint.activate([
+            hosting.view.topAnchor.constraint(equalTo: contentContainerView.topAnchor),
+            hosting.view.leadingAnchor.constraint(equalTo: contentContainerView.leadingAnchor),
+            hosting.view.trailingAnchor.constraint(equalTo: contentContainerView.trailingAnchor),
+            hosting.view.bottomAnchor.constraint(equalTo: contentContainerView.bottomAnchor)
+        ])
+        
+        singleAssignHostingController = hosting
+    }
+    
+    private func dismissSingleAssignView() {
+        singleAssignHostingController?.view.removeFromSuperview()
+        singleAssignHostingController?.removeFromParent()
+        singleAssignHostingController = nil
+        
+        hostingController?.view.isHidden = false
+        carouselContainerView.isHidden = false
+        quickInputContainerView.isHidden = false
+    }
 }
 
 extension Notification.Name {
     static let photoDetailSaveRequested = Notification.Name("photoDetailSaveRequested")
+    static let photoDetailCommitRequested = Notification.Name("photoDetailCommitRequested")
 }
 
-struct FaceCarouselView: View {
+struct PhotoFaceCarouselView: View {
     @ObservedObject var viewModel: FaceDetectionViewModel
     @State private var selectedIndex: Int?
     let onFaceSelected: (Int) -> Void
@@ -489,6 +628,9 @@ struct PhotoDetailContentView: View {
                 mapRawTextToFaces(text)
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .photoDetailCommitRequested)) { _ in
+            commitReadyFacesWithoutDismissing()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .photoDetailSaveRequested)) { _ in
             saveAll()
         }
@@ -506,22 +648,72 @@ struct PhotoDetailContentView: View {
         }
     }
     
+    private func commitReadyFacesWithoutDismissing() {
+        let trimmed = globalGroupText.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        let tag: Tag? = trimmed.isEmpty ? nil : Tag.fetchOrCreate(named: trimmed, in: contactsContext, seedDate: detectedDate)
+        
+        var anySaved = false
+        for i in viewModel.faces.indices {
+            guard !viewModel.faces[i].isLocked else { continue }
+            let name = viewModel.faces[i].name?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines) ?? ""
+            guard !name.isEmpty else { continue }
+            let data = viewModel.faces[i].image.jpegData(compressionQuality: 0.92) ?? Data()
+            let contact = Contact(
+                name: name,
+                summary: "",
+                isMetLongAgo: false,
+                timestamp: detectedDate,
+                notes: [],
+                tags: tag == nil ? [] : [tag!],
+                photo: data,
+                group: "",
+                cropOffsetX: 0,
+                cropOffsetY: 0,
+                cropScale: 1.0
+            )
+            contactsContext.insert(contact)
+            viewModel.faces[i].isLocked = true
+            anySaved = true
+        }
+        
+        guard anySaved else { return }
+        
+        do {
+            try contactsContext.save()
+        } catch {
+            print("❌ Save failed: \(error)")
+        }
+        
+        // Keep names visible. Request focus so the user can continue typing for remaining faces.
+        NotificationCenter.default.post(name: .quickInputRequestFocus, object: nil)
+    }
+    
     private func mapRawTextToFaces(_ raw: String) {
         var newFaces = viewModel.faces
-        let parts = raw.split(separator: ",", omittingEmptySubsequences: false)
-        for (i, part) in parts.enumerated() where i < newFaces.count {
-            let name = part.trimmingCharacters(in: .whitespacesAndNewlines)
-            if name.isEmpty {
-                if newFaces[i].name != nil {
-                    newFaces[i].name = nil
-                    onFaceNamed(i, false)
-                }
-            } else {
-                if newFaces[i].name != name {
-                    newFaces[i].name = name
-                    onFaceNamed(i, true)
-                }
+        let parts = raw
+            .split(separator: ",", omittingEmptySubsequences: false)
+            .map { String($0).trimmingCharacters(in: CharacterSet.whitespacesAndNewlines) }
+        
+        let unlocked = newFaces.indices.filter { !newFaces[$0].isLocked }
+        var u = 0
+        for part in parts {
+            guard u < unlocked.count else { break }
+            let idx = unlocked[u]
+            let name = part
+            let newName: String? = name.isEmpty ? nil : name
+            if newFaces[idx].name != newName {
+                newFaces[idx].name = newName
+                onFaceNamed(idx, !(newName ?? "").isEmpty)
             }
+            u += 1
+        }
+        while u < unlocked.count {
+            let idx = unlocked[u]
+            if newFaces[idx].name != nil {
+                newFaces[idx].name = nil
+                onFaceNamed(idx, false)
+            }
+            u += 1
         }
         viewModel.faces = newFaces
     }
@@ -606,20 +798,21 @@ struct PhotoDetailContentView: View {
     }
     
     private var readyToAddFaces: [FaceDetectionViewModel.DetectedFace] {
-        viewModel.faces.filter { !($0.name ?? "").isEmpty }
+        viewModel.faces.filter { !($0.name ?? "").isEmpty && !$0.isLocked }
     }
     
     private func saveAll() {
         guard !readyToAddFaces.isEmpty else { return }
         
-        let trimmed = globalGroupText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let tag: Tag? = trimmed.isEmpty ? nil : Tag.fetchOrCreate(named: trimmed, in: contactsContext)
+        let trimmed = globalGroupText.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        let tag: Tag? = trimmed.isEmpty ? nil : Tag.fetchOrCreate(named: trimmed, in: contactsContext, seedDate: detectedDate)
         
-        for face in readyToAddFaces {
-            let name = face.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        for i in viewModel.faces.indices {
+            guard !viewModel.faces[i].isLocked else { continue }
+            let name = viewModel.faces[i].name?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines) ?? ""
             guard !name.isEmpty else { continue }
             
-            let data = face.image.jpegData(compressionQuality: 0.92) ?? Data()
+            let data = viewModel.faces[i].image.jpegData(compressionQuality: 0.92) ?? Data()
             let contact = Contact(
                 name: name,
                 summary: "",
@@ -646,61 +839,106 @@ struct PhotoDetailContentView: View {
     }
 }
 
-final class FaceDetectionViewModel: ObservableObject {
-    struct DetectedFace: Identifiable {
-        let id = UUID()
-        let image: UIImage
-        var name: String?
+struct AssignFaceToContactView: View {
+    @ObservedObject var viewModel: FaceDetectionViewModel
+    let contact: Contact
+    let onSelectFace: (Int) -> Void
+    let onCancel: () -> Void
+    @State private var selectedIndex: Int?
+    
+    private var faces: [FaceDetectionViewModel.DetectedFace] { viewModel.faces }
+    
+    var body: some View {
+        VStack(spacing: 16) {
+            header
+            
+            if viewModel.isDetecting {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .padding()
+            } else if faces.isEmpty {
+                noFacesView
+            } else {
+                facesGrid
+            }
+            
+            Spacer(minLength: 0)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Color.blue.opacity(0.15))
     }
     
-    @Published var faces: [DetectedFace] = []
-    @Published var isDetecting = false
-    var faceObservations: [VNFaceObservation] = []
+    private var header: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Assign a face")
+                    .font(.title2).bold()
+                Text(contact.name ?? "")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Cancel", systemImage: "xmark") {
+                onCancel()
+            }
+            .buttonStyle(.bordered)
+        }
+    }
     
-    @MainActor
-    func detectFaces(in image: UIImage) async {
-        guard let cgImage = image.cgImage else { return }
-        
-        isDetecting = true
-        faces.removeAll()
-        faceObservations.removeAll()
-        
-        let request = VNDetectFaceRectanglesRequest()
-        let handler = VNImageRequestHandler(cgImage: cgImage)
-        
-        do {
-            try handler.perform([request])
-            
-            if let observations = request.results as? [VNFaceObservation] {
-                faceObservations = observations
-                
-                let imageSize = CGSize(width: CGFloat(cgImage.width), height: CGFloat(cgImage.height))
-                let fullRect = CGRect(origin: .zero, size: imageSize)
-                
-                for face in observations {
-                    let bb = face.boundingBox
-                    let scaleFactor: CGFloat = 1.8
-                    
-                    let scaledBox = CGRect(
-                        x: bb.origin.x * imageSize.width - (bb.width * imageSize.width * (scaleFactor - 1)) / 2,
-                        y: (1 - bb.origin.y - bb.height) * imageSize.height - (bb.height * imageSize.height * (scaleFactor - 1)) / 2,
-                        width: bb.width * imageSize.width * scaleFactor,
-                        height: bb.height * imageSize.height * scaleFactor
-                    ).integral
-                    
-                    let clipped = scaledBox.intersection(fullRect)
-                    if !clipped.isNull && !clipped.isEmpty {
-                        if let cropped = cgImage.cropping(to: clipped) {
-                            let faceImage = UIImage(cgImage: cropped)
-                            faces.append(DetectedFace(image: faceImage, name: nil))
+    private var noFacesView: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "person.crop.circle.badge.questionmark")
+                .font(.largeTitle)
+                .foregroundStyle(.secondary)
+            Text("No faces detected")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+            Text("Try cropping the image to focus on faces, then try again.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding()
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+    
+    private var facesGrid: some View {
+        ScrollView {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 16)], spacing: 16) {
+                ForEach(faces.indices, id: \.self) { index in
+                    let face = faces[index]
+                    Button {
+                        selectedIndex = index
+                        onSelectFace(index)
+                    } label: {
+                        VStack(spacing: 8) {
+                            Image(uiImage: face.image)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 96, height: 96)
+                                .clipShape(Circle())
+                                .overlay {
+                                    Circle()
+                                        .strokeBorder(
+                                            selectedIndex == index ? Color.accentColor : Color.gray.opacity(0.3),
+                                            lineWidth: selectedIndex == index ? 4 : 2
+                                        )
+                                }
+                            Text(face.name ?? "Face \(index + 1)")
+                                .font(.caption)
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                                .frame(maxWidth: 120)
                         }
                     }
+                    .buttonStyle(.plain)
                 }
             }
-        } catch {
-            print("Face detection failed: \(error)")
+            .padding(.vertical, 4)
         }
-        
-        isDetecting = false
+        .scrollIndicators(.hidden)
     }
 }

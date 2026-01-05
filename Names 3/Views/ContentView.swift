@@ -11,6 +11,30 @@ import PhotosUI
 import Vision
 import SmoothGradient
 import UIKit
+import UniformTypeIdentifiers
+import Photos
+
+// MARK: - Drag & Drop Support
+
+struct ContactDragRecord: Codable, Transferable, Hashable {
+    let uuid: UUID
+
+    init(uuid: UUID) {
+        self.uuid = uuid
+    }
+
+    init(contact: Contact) {
+        self.uuid = contact.uuid
+    }
+
+    static var transferRepresentation: some TransferRepresentation {
+        CodableRepresentation(contentType: .contactDragRecord)
+    }
+}
+
+extension UTType {
+    static let contactDragRecord = UTType(exportedAs: "com.ricardo.names3.contactdrag")
+}
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
@@ -55,6 +79,8 @@ struct ContentView: View {
     @State private var showAllGroupTagDates = false
     @State private var contactForDateEdit: Contact?
     @State private var bottomInputHeight: CGFloat = 0
+    @State private var showHomeView = false
+    @State private var homeTabSelection: AppTab = .home
     
     private struct PhotosSheetPayload: Identifiable, Hashable {
         let id = UUID()
@@ -165,6 +191,9 @@ struct ContentView: View {
                             onTapHeader: {
                                 guard !group.isLongAgo else { return }
                                 photosSheet = PhotosSheetPayload(scope: .day(group.date))
+                            },
+                            onDropRecords: { records in
+                                handleDrop(records, to: group)
                             }
                         )
                     }
@@ -191,7 +220,11 @@ struct ContentView: View {
         NavigationStack {
             ZStack {
                 if let contact = selectedContact {
-                    ContactDetailsView(contact: contact)
+                    ContactDetailsView(contact: contact, onBack: {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                            selectedContact = nil
+                        }
+                    })
                         .transition(.move(edge: .trailing))
                         .zIndex(2)
                 } else {
@@ -210,7 +243,7 @@ struct ContentView: View {
                         .zIndex(1)
                         .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showInlineQuickNotes)
 
-                    PhotosInlineView(contactsContext: modelContext) { image, date in
+                    PhotosInlineView(contactsContext: modelContext, isVisible: showInlinePhotoPicker) { image, date in
                         print("✅ [ContentView] Photo picked from inline view")
                         pickedImageForBatch = image
                         withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
@@ -244,30 +277,42 @@ struct ContentView: View {
                     mode: .people,
                     parsedContacts: $parsedContacts,
                     isQuickNotesActive: $showInlineQuickNotes,
-                    selectedContact: $selectedContact
-                ) {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-                        if showInlineQuickNotes {
+                    selectedContact: $selectedContact,
+                    onCameraTap: {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                            if showInlineQuickNotes { showInlineQuickNotes = false }
+                            if showInlinePhotoPicker { showInlinePhotoPicker = false }
+                        }
+                        photosSheet = PhotosSheetPayload(scope: .all)
+                    },
+                    onQuickNoteAdded: {
+                        hasPendingQuickNoteInput = false
+                    },
+                    onQuickNoteDetected: {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                            if showInlinePhotoPicker { showInlinePhotoPicker = false }
+                            showInlineQuickNotes = true
+                        }
+                        hasPendingQuickNoteInput = true
+                    },
+                    onQuickNoteCleared: {
+                        hasPendingQuickNoteInput = false
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
                             showInlineQuickNotes = false
                         }
-                        showInlinePhotoPicker.toggle()
-                    }
-                } onQuickNoteAdded: {
-                    hasPendingQuickNoteInput = false
-                } onQuickNoteDetected: {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-                        if showInlinePhotoPicker {
-                            showInlinePhotoPicker = false
+                    },
+                    onInlinePhotosTap: {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                            if showInlineQuickNotes { showInlineQuickNotes = false }
+                            showInlinePhotoPicker.toggle()
                         }
-                        showInlineQuickNotes = true
+                    },
+                    isInlinePhotosActive: { showInlinePhotoPicker },
+                    onPhotoPicked: { image, date in
+                        print("📸 [ContentView] Photo fallback - opening bulk face view")
+                        pickedImageForBatch = image
                     }
-                    hasPendingQuickNoteInput = true
-                } onQuickNoteCleared: {
-                    hasPendingQuickNoteInput = false
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-                        showInlineQuickNotes = false
-                    }
-                }
+                )
                 .id(quickInputResetID)
             }
             .background(Color(uiColor: .systemGroupedBackground))
@@ -303,6 +348,22 @@ struct ContentView: View {
                         } label: {
                             Label("Instructions", systemImage: "info.circle")
                         }
+
+                        Divider()
+
+                        Button {
+                            showHomeView = true
+                        } label: {
+                            Label("Recent", systemImage: "house")
+                        }
+
+                        if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited {
+                            Button {
+                                presentLimitedLibraryPicker()
+                            } label: {
+                                Label("Manage Photos Selection", systemImage: "plus.circle")
+                            }
+                        }
                     } label: {
                         Image(systemName: "ellipsis")
                             .fontWeight(.medium)
@@ -336,9 +397,66 @@ struct ContentView: View {
                     contactsContext: modelContext,
                     initialScrollDate: selectedContact?.timestamp,
                     onPick: { image, date in
-                        print("✅ [ContentView] onPick called - dismissing photos sheet")
+                        print("✅ [ContentView] onPick called from PhotosDayPicker (Detail completed)")
                         pickedImageForBatch = image
                         photosSheet = nil
+                    },
+                    attemptQuickAssign: { image, _ in
+                        guard let contact = selectedContact else {
+                            return false
+                        }
+                        guard let cgImage = image.cgImage else {
+                            return false
+                        }
+
+                        // Perform face detection off-main
+                        let observations: [VNFaceObservation]
+                        do {
+                            let request = VNDetectFaceRectanglesRequest()
+                            let handler = VNImageRequestHandler(cgImage: cgImage)
+                            try handler.perform([request])
+                            observations = (request.results as? [VNFaceObservation]) ?? []
+                        } catch {
+                            print("❌ [ContentView] Face detection failed: \(error)")
+                            return false
+                        }
+
+                        guard observations.count == 1, let face = observations.first else {
+                            print("📸 [ContentView] Auto-assign not applicable. Faces: \(observations.count)")
+                            return false
+                        }
+
+                        // Crop around the single face
+                        let imageSize = CGSize(width: CGFloat(cgImage.width), height: CGFloat(cgImage.height))
+                        let fullRect = CGRect(origin: .zero, size: imageSize)
+                        let scaleFactor: CGFloat = 1.8
+                        let bb = face.boundingBox
+                        let scaledBox = CGRect(
+                            x: bb.origin.x * imageSize.width - (bb.width * imageSize.width * (scaleFactor - 1)) / 2,
+                            y: (1 - bb.origin.y - bb.height) * imageSize.height - (bb.height * imageSize.height * (scaleFactor - 1)) / 2,
+                            width: bb.width * imageSize.width * scaleFactor,
+                            height: bb.height * imageSize.height * scaleFactor
+                        ).integral
+                        let clipped = scaledBox.intersection(fullRect)
+                        guard !clipped.isNull && !clipped.isEmpty, let cropped = cgImage.cropping(to: clipped) else {
+                            print("📸 [ContentView] Crop failed")
+                            return false
+                        }
+                        let faceImage = UIImage(cgImage: cropped)
+
+                        // Save on main actor
+                        await MainActor.run {
+                            contact.photo = faceImage.jpegData(compressionQuality: 0.92) ?? Data()
+                            do {
+                                try modelContext.save()
+                                print("✅ [ContentView] Auto-assigned single face to \(contact.name ?? "contact")")
+                                photosSheet = nil
+                            } catch {
+                                print("❌ [ContentView] Save failed: \(error)")
+                            }
+                        }
+
+                        return true
                     }
                 )
                 .onAppear {
@@ -364,6 +482,9 @@ struct ContentView: View {
             }
             .sheet(isPresented: $showManageTags) {
                 TagPickerView(mode: .manage)
+            }
+            .sheet(isPresented: $showHomeView) {
+                HomeView(tabSelection: $homeTabSelection)
             }
         }
         
@@ -476,6 +597,57 @@ struct ContentView: View {
             print("Save failed: \(error)")
         }
     }
+
+    private func handleDrop(_ records: [ContactDragRecord], to group: contactsGroup) {
+        var didChangePersisted = false
+        var parsedContactsChanged = false
+
+        let destTagNames = (group.contacts + group.parsedContacts)
+            .flatMap { ($0.tags ?? []).compactMap { $0.name } }
+        let uniqueDestTags = Array(Set(destTagNames)).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        let chosenTagName = uniqueDestTags.count == 1 ? uniqueDestTags.first : nil
+        let chosenTag = chosenTagName.flatMap { Tag.fetchOrCreate(named: $0, in: modelContext) }
+
+        for record in records {
+            if let persisted = contacts.first(where: { $0.uuid == record.uuid }) {
+                if group.isLongAgo {
+                    persisted.isMetLongAgo = true
+                } else {
+                    persisted.isMetLongAgo = false
+                    persisted.timestamp = combine(date: group.date, withTimeFrom: persisted.timestamp)
+                }
+                if let tag = chosenTag {
+                    persisted.tags = [tag]
+                }
+                didChangePersisted = true
+                continue
+            }
+
+            if let parsed = parsedContacts.first(where: { $0.uuid == record.uuid }) {
+                if group.isLongAgo {
+                    parsed.isMetLongAgo = true
+                } else {
+                    parsed.isMetLongAgo = false
+                    parsed.timestamp = combine(date: group.date, withTimeFrom: parsed.timestamp)
+                }
+                if let tag = chosenTag {
+                    parsed.tags = [tag]
+                }
+                parsedContactsChanged = true
+                continue
+            }
+        }
+
+        if didChangePersisted {
+            try? modelContext.save()
+        }
+        
+        if parsedContactsChanged {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
+                parsedContacts = parsedContacts
+            }
+        }
+    }
 }
 
 private extension ContentView {
@@ -495,6 +667,20 @@ private extension ContentView {
             completion?()
         }
     }
+
+    func openSettings() {
+        if let url = URL(string: UIApplication.openSettingsURLString) {
+            UIApplication.shared.open(url)
+        }
+    }
+
+    func presentLimitedLibraryPicker() {
+        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let window = scene.windows.first,
+           let rootViewController = window.rootViewController {
+            PHPhotoLibrary.shared().presentLimitedLibraryPicker(from: rootViewController)
+        }
+    }
 }
 
 // MARK: - Extracted Views to reduce type-checking complexity
@@ -509,28 +695,51 @@ private struct GroupSectionView: View {
     let onDeleteAll: () -> Void
     let onChangeDateForContact: (Contact) -> Void
     let onTapHeader: () -> Void
+    let onDropRecords: ([ContactDragRecord]) -> Void
+
+    @State private var isTargeted = false
     
     var body: some View {
         Section {
-            header
-            LazyVGrid(columns: Array(repeating: GridItem(spacing: 10), count: 4), spacing: 10) {
-                ForEach(group.contacts) { contact in
-                    ContactTile(contact: contact, onChangeDate: {
-                        onChangeDateForContact(contact)
-                    })
-                }
+            VStack(spacing: 0) {
+                header
+                LazyVGrid(columns: Array(repeating: GridItem(spacing: 10), count: 4), spacing: 10) {
+                    ForEach(group.contacts) { contact in
+                        ContactTile(contact: contact, onChangeDate: {
+                            onChangeDateForContact(contact)
+                        })
+                    }
 
-                ForEach(group.parsedContacts) { contact in
-                    ParsedContactTile(contact: contact)
-                        .transition(.asymmetric(
-                            insertion: .move(edge: .bottom).combined(with: .opacity),
-                            removal: AnyTransition.opacity.combined(with: AnyTransition.scale(scale: 0.98))
-                        ))
+                    ForEach(group.parsedContacts) { contact in
+                        ParsedContactTile(contact: contact)
+                            .transition(.asymmetric(
+                                insertion: .move(edge: .bottom).combined(with: .opacity),
+                                removal: AnyTransition(.opacity).combined(with: AnyTransition.scale(scale: 0.98))
+                            ))
+                    }
+                    .animation(.spring(response: 0.35, dampingFraction: 0.9), value: group.parsedContacts.count)
                 }
-                .animation(.spring(response: 0.35, dampingFraction: 0.9), value: group.parsedContacts.count)
+                .padding(.horizontal)
+                .padding(.bottom, isLast ? 0 : 16)
             }
-            .padding(.horizontal)
-            .padding(.bottom, isLast ? 0 : 16)
+            .contentShape(.rect)
+            .dropDestination(for: ContactDragRecord.self) { items, _ in
+                guard !items.isEmpty else { return false }
+                onDropRecords(items)
+                return true
+            } isTargeted: { hovering in
+                withAnimation(.easeInOut(duration: 0.12)) {
+                    isTargeted = hovering
+                }
+            }
+            .overlay {
+                if isTargeted {
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.accentColor.opacity(0.35), lineWidth: 3)
+                        .padding(.horizontal)
+                        .padding(.bottom, isLast ? 0 : 16)
+                }
+            }
         }
     }
 
@@ -637,6 +846,12 @@ private struct ContactTile: View {
                     .scaleEffect(phase.isIdentity ? 1 : 0.9)
             }
         }
+        .draggable(ContactDragRecord(uuid: contact.uuid)) {
+            Text(contact.name ?? "Contact")
+                .padding(6)
+                .background(.ultraThinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
         .contextMenu {
             Button {
                 onChangeDate?()
@@ -690,6 +905,15 @@ private struct ParsedContactTile: View {
         .frame(height: 88)
         .contentShape(.rect)
         .clipShape(RoundedRectangle(cornerRadius: 10))
+        .draggable(ContactDragRecord(uuid: contact.uuid)) {
+            Text(contact.name ?? "Contact")
+                .padding(6)
+                .background(.ultraThinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .onAppear {
+            print("📋 [ParsedContactTile] Showing: \(contact.name ?? "unnamed") with UUID: \(contact.uuid)")
+        }
     }
 }
 

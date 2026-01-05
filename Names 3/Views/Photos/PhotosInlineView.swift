@@ -7,11 +7,13 @@ struct PhotosInlineView: View {
     @Environment(\.modelContext) private var modelContext
     let contactsContext: ModelContext
     let onPhotoPicked: (UIImage, Date?) -> Void
+    let isVisible: Bool
     
     @StateObject private var viewModel = PhotosInlineViewModel()
     
-    init(contactsContext: ModelContext, onPhotoPicked: @escaping (UIImage, Date?) -> Void) {
+    init(contactsContext: ModelContext, isVisible: Bool = true, onPhotoPicked: @escaping (UIImage, Date?) -> Void) {
         self.contactsContext = contactsContext
+        self.isVisible = isVisible
         self.onPhotoPicked = onPhotoPicked
     }
     
@@ -34,8 +36,17 @@ struct PhotosInlineView: View {
         }
         .background(Color(UIColor.systemGroupedBackground))
         .onAppear {
-            Task {
-                await viewModel.loadPhotos()
+            if isVisible {
+                Task {
+                    await viewModel.loadPhotos()
+                }
+            }
+        }
+        .onChange(of: isVisible) { _, newValue in
+            if newValue && viewModel.state == PhotosInlineViewModel.State.idle {
+                Task {
+                    await viewModel.loadPhotos()
+                }
             }
         }
     }
@@ -218,12 +229,23 @@ private struct PhotoThumbnailView: View {
 
 @MainActor
 class PhotosInlineViewModel: ObservableObject {
-    enum State {
+    enum State: Equatable {
         case idle
         case loading
         case loaded
         case empty
         case error(String)
+        
+        static func == (lhs: State, rhs: State) -> Bool {
+            switch (lhs, rhs) {
+            case (.idle, .idle), (.loading, .loading), (.loaded, .loaded), (.empty, .empty):
+                return true
+            case (.error(let lhsMessage), .error(let rhsMessage)):
+                return lhsMessage == rhsMessage
+            default:
+                return false
+            }
+        }
     }
     
     @Published var state: State = .idle
@@ -338,7 +360,7 @@ class PhotosInlineViewModel: ObservableObject {
         var dayGroups: [(date: Date, assets: [PHAsset])] = groupedByDay.map { ($0.key, $0.value) }
             .sorted { $0.date > $1.date }
         
-        let locationThreshold: CLLocationDistance = 10000 // 10 kilometers for camping/hiking trips
+        let locationThreshold: CLLocationDistance = 20000 // 20 kilometers for camping/hiking trips
         let maxDayGap: Int = 7 // Allow up to 7 days for multi-day trips
         
         var processed = Set<Date>()
@@ -407,7 +429,7 @@ class PhotosInlineViewModel: ObservableObject {
             let avgLocation = locations.isEmpty ? nil : averageLocation(locations)
             
             if avgLocation != nil {
-                print("📍 [PhotosInline] Group has location, geocoding...")
+                print("📍 [PhotosInline] Group has location data")
             } else {
                 print("📍 [PhotosInline] Group has NO location data (\(groupAssets.count) photos)")
             }
@@ -432,12 +454,7 @@ class PhotosInlineViewModel: ObservableObject {
         let representative = selectRepresentativePhotos(from: assets, count: 3)
         
         let date = assets.first?.creationDate ?? Date()
-        var locationName: String? = nil
-        
-        if let location = location {
-            // Try to get location name with timeout
-            locationName = await resolveLocationName(location)
-        }
+        let locationName: String? = nil
         
         return PhotoGroup(
             assets: assets,
@@ -447,55 +464,6 @@ class PhotosInlineViewModel: ObservableObject {
             locationName: locationName
         )
     }
-    
-    private func resolveLocationName(_ location: CLLocation) async -> String? {
-        let geocoder = CLGeocoder()
-        
-        do {
-            let placemarks = try await withTimeout(seconds: 3) {
-                try await geocoder.reverseGeocodeLocation(location)
-            }
-            
-            if let placemark = placemarks.first {
-                // Try to get the most meaningful name
-                // Priority: locality (city) > subLocality > administrativeArea (state) > name
-                if let locality = placemark.locality {
-                    return locality
-                } else if let subLocality = placemark.subLocality {
-                    return subLocality
-                } else if let area = placemark.administrativeArea {
-                    return area
-                } else if let name = placemark.name {
-                    return name
-                } else if let country = placemark.country {
-                    return country
-                }
-            }
-        } catch {
-            print("Failed to reverse geocode location: \(error.localizedDescription)")
-        }
-        
-        return nil
-    }
-    
-    private func withTimeout<T>(seconds: TimeInterval, operation: @escaping () async throws -> T) async throws -> T {
-        try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask {
-                try await operation()
-            }
-            
-            group.addTask {
-                try await Task.sleep(for: .seconds(seconds))
-                throw TimeoutError()
-            }
-            
-            let result = try await group.next()!
-            group.cancelAll()
-            return result
-        }
-    }
-    
-    private struct TimeoutError: Error {}
     
     private func selectRepresentativePhotos(from assets: [PHAsset], count: Int) -> [PHAsset] {
         var scored: [(asset: PHAsset, score: Double)] = []
@@ -551,10 +519,6 @@ struct PhotoGroup: Identifiable, Hashable {
     let locationName: String?
     
     var title: String {
-        if let locationName = locationName {
-            return locationName
-        }
-        
         let formatter = DateFormatter()
         formatter.locale = Locale.current
         formatter.dateFormat = "MMM dd"
