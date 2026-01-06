@@ -1,19 +1,29 @@
 import Foundation
 import Photos
 import CoreLocation
+import os.log
+
+private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Names", category: "PhotoGrouping")
 
 actor PhotoGroupingService {
-    private let locationThreshold: CLLocationDistance = 20_000 // meters
+    private let locationThreshold: CLLocationDistance = 20_000
     private let maxDayGap: Int = 7
     
     func groupAssets(_ assets: [PHAsset]) async -> [PhotoGroup] {
         guard !assets.isEmpty else { return [] }
+        
+        logger.info("groupAssets started with \(assets.count) assets")
+        print("🔄 Grouping \(assets.count) assets...")
+        let startTime = CFAbsoluteTimeGetCurrent()
         
         let calendar = Calendar.current
         let groupedByDay = Dictionary(grouping: assets) { asset -> Date in
             guard let date = asset.creationDate else { return Date.distantPast }
             return calendar.startOfDay(for: date)
         }
+        
+        logger.debug("Grouped into \(groupedByDay.count) days")
+        print("📅 Initial grouping: \(groupedByDay.count) days")
         
         var dayGroups: [(date: Date, assets: [PHAsset])] = groupedByDay.map { ($0.key, $0.value) }
             .sorted { $0.date > $1.date }
@@ -60,15 +70,41 @@ actor PhotoGroupingService {
             mergedGroups.append(groupToMerge)
         }
         
+        logger.debug("Merged into \(mergedGroups.count) groups")
+        print("🔗 After merging: \(mergedGroups.count) groups")
+        
         var groups: [PhotoGroup] = []
         groups.reserveCapacity(mergedGroups.count)
         
-        for groupAssets in mergedGroups {
+        for (index, groupAssets) in mergedGroups.enumerated() {
             let locations = groupAssets.compactMap { $0.location }
             let avgLocation = locations.isEmpty ? nil : averageLocation(locations)
-            let group = await createPhotoGroup(from: groupAssets, location: avgLocation)
+            let date = groupAssets.first?.creationDate ?? Date()
+            let representative = selectRepresentativePhotos(from: groupAssets, count: 3)
+            let id = PhotoGroup.makeID(date: date, location: avgLocation)
+            let group = PhotoGroup(
+                id: id,
+                assets: groupAssets,
+                representativeAssets: representative,
+                date: date,
+                location: avgLocation,
+                locationName: nil
+            )
             groups.append(group)
+            
+            if index < 3 || index >= mergedGroups.count - 3 {
+                let formatter = DateFormatter()
+                formatter.dateFormat = "MMM dd, yyyy"
+                print("  Group \(index): \(formatter.string(from: date)) - \(groupAssets.count) assets")
+            } else if index == 3 {
+                print("  ... (\(mergedGroups.count - 6) more groups) ...")
+            }
         }
+        
+        let duration = CFAbsoluteTimeGetCurrent() - startTime
+        logger.info("groupAssets completed: \(groups.count) groups in \(String(format: "%.3f", duration))s")
+        print("✅ Grouping done: \(groups.count) groups in \(String(format: "%.3f", duration))s")
+        print("📅 Date range: \(groups.last?.title ?? "?") (oldest) → \(groups.first?.title ?? "?") (newest)")
         
         return groups
     }
@@ -80,18 +116,6 @@ actor PhotoGroupingService {
         return CLLocation(latitude: avgLat, longitude: avgLon)
     }
     
-    private func createPhotoGroup(from assets: [PHAsset], location: CLLocation?) async -> PhotoGroup {
-        let representative = selectRepresentativePhotos(from: assets, count: 3)
-        let date = assets.first?.creationDate ?? Date()
-        return PhotoGroup(
-            assets: assets,
-            representativeAssets: representative,
-            date: date,
-            location: location,
-            locationName: nil
-        )
-    }
-    
     private func selectRepresentativePhotos(from assets: [PHAsset], count: Int) -> [PHAsset] {
         var scored: [(asset: PHAsset, score: Double)] = []
         scored.reserveCapacity(assets.count)
@@ -99,16 +123,13 @@ actor PhotoGroupingService {
         for asset in assets {
             var score: Double = 0
             
-            // Avoid screenshots
             if asset.mediaSubtypes.contains(.photoScreenshot) { score -= 1000 }
-            
             if asset.isFavorite { score += 10 }
             
             let mediaSubtypes = asset.mediaSubtypes
             if mediaSubtypes.contains(.photoLive) { score += 2 }
             if mediaSubtypes.contains(.photoHDR) { score += 1 }
             if mediaSubtypes.contains(.photoPanorama) { score += 3 }
-            
             if asset.location != nil { score += 3 }
             
             scored.append((asset, score))

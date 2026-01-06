@@ -29,10 +29,18 @@ final class PhotosGridViewController: UIViewController {
         }
     }
     
+    private enum LoadState {
+        case idle
+        case loading
+        case loaded
+        case error(String)
+    }
+    
     // MARK: - Properties
     
     private var collectionView: UICollectionView!
     private var dataSource: UICollectionViewDiffableDataSource<Section, Item>!
+    private var loadingView: LoadingStateView!
     
     private let imageManager = PHCachingImageManager()
     private let cache = ImageCacheService.shared
@@ -41,16 +49,19 @@ final class PhotosGridViewController: UIViewController {
     private var photoGroups: [PhotoGroup] = []
     private var itemsBySection: [Section: [Item]] = [:]
     
-    private let itemsPerRow: CGFloat = 3
-    private let sectionInset = UIEdgeInsets(top: 0, left: 16, bottom: 16, right: 16)
-    private let minimumInteritemSpacing: CGFloat = 10
-    private let minimumLineSpacing: CGFloat = 10
+    private let itemSize: CGFloat = 160
+    private let itemSpacing: CGFloat = 12
+    private let sectionInset = NSDirectionalEdgeInsets(top: 0, leading: 16, bottom: 24, trailing: 16)
     
     private var thumbnailSize: CGSize = .zero
     private let scale = UIScreen.main.scale
     
     private var loadTask: Task<Void, Never>?
+    private var expandTask: Task<Void, Never>?
     private var changeObserver: PHPhotoLibraryChangeObserver?
+    private var isInitialLoad = true
+    private var hasScrolledToBottom = false
+    private var loadState: LoadState = .idle
     
     var onPhotoPicked: PhotoPickedHandler?
     
@@ -59,56 +70,75 @@ final class PhotosGridViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         logger.info("PhotosGridViewController viewDidLoad")
+        print("🎬 PhotosGridViewController viewDidLoad")
+        NSLog("🎬 PhotosGridViewController viewDidLoad")
         
         view.backgroundColor = .systemGroupedBackground
         
         computeThumbnailSize()
+        setupLoadingView()
         setupCollectionView()
         setupDataSource()
         registerForPhotoLibraryChanges()
         
+        // Show loading state immediately
+        setLoadState(.loading)
+        
         loadPhotos()
+    }
+    
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        print("🎬 viewDidAppear")
+        NSLog("🎬 viewDidAppear")
     }
     
     deinit {
         logger.info("PhotosGridViewController deinit")
+        print("🎬 PhotosGridViewController deinit")
         if let observer = changeObserver {
             PHPhotoLibrary.shared().unregisterChangeObserver(observer)
         }
         loadTask?.cancel()
+        expandTask?.cancel()
     }
     
     // MARK: - Setup
     
     private func computeThumbnailSize() {
-        let availableWidth = view.bounds.width - sectionInset.left - sectionInset.right
-        let totalSpacing = minimumInteritemSpacing * (itemsPerRow - 1)
-        let itemWidth = (availableWidth - totalSpacing) / itemsPerRow
-        let dimension = floor(itemWidth * scale)
+        let dimension = floor(itemSize * scale)
         thumbnailSize = CGSize(width: dimension, height: dimension)
         logger.debug("Computed thumbnail size: \(dimension)x\(dimension) @\(self.scale)x")
+        print("📐 Thumbnail size: \(dimension)x\(dimension) @\(scale)x")
+        NSLog("📐 Thumbnail size: %.0fx%.0f @%.0fx", dimension, dimension, scale)
+    }
+    
+    private func setupLoadingView() {
+        loadingView = LoadingStateView()
+        loadingView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(loadingView)
+        
+        NSLayoutConstraint.activate([
+            loadingView.topAnchor.constraint(equalTo: view.topAnchor),
+            loadingView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            loadingView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            loadingView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+        
+        loadingView.isHidden = true
+        print("✅ Loading view configured")
     }
     
     private func setupCollectionView() {
-        let layout = UICollectionViewFlowLayout()
-        layout.scrollDirection = .vertical
-        layout.sectionInset = sectionInset
-        layout.minimumInteritemSpacing = minimumInteritemSpacing
-        layout.minimumLineSpacing = minimumLineSpacing
-        
-        let availableWidth = view.bounds.width - sectionInset.left - sectionInset.right
-        let totalSpacing = minimumInteritemSpacing * (itemsPerRow - 1)
-        let itemWidth = (availableWidth - totalSpacing) / itemsPerRow
-        layout.itemSize = CGSize(width: itemWidth, height: itemWidth)
-        layout.headerReferenceSize = CGSize(width: view.bounds.width, height: 60)
-        
-        logger.debug("UICollectionViewFlowLayout itemSize: \(itemWidth)x\(itemWidth)")
+        let layout = createCompositionalLayout()
         
         collectionView = UICollectionView(frame: view.bounds, collectionViewLayout: layout)
         collectionView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         collectionView.backgroundColor = .systemGroupedBackground
         collectionView.delegate = self
         collectionView.prefetchDataSource = self
+        collectionView.showsVerticalScrollIndicator = false
+        collectionView.contentInsetAdjustmentBehavior = .always
         collectionView.register(PhotoGridCell.self, forCellWithReuseIdentifier: PhotoGridCell.reuseIdentifier)
         collectionView.register(
             PhotoGroupHeaderView.self,
@@ -116,8 +146,47 @@ final class PhotosGridViewController: UIViewController {
             withReuseIdentifier: PhotoGroupHeaderView.reuseIdentifier
         )
         
-        view.addSubview(collectionView)
-        logger.info("UICollectionView configured and added to hierarchy")
+        view.insertSubview(collectionView, belowSubview: loadingView)
+        logger.info("UICollectionView configured with compositional layout")
+        print("✅ UICollectionView configured")
+        NSLog("✅ UICollectionView configured")
+    }
+    
+    private func createCompositionalLayout() -> UICollectionViewLayout {
+        let layout = UICollectionViewCompositionalLayout { sectionIndex, environment in
+            let itemSize = NSCollectionLayoutSize(
+                widthDimension: .absolute(self.itemSize),
+                heightDimension: .absolute(self.itemSize)
+            )
+            let item = NSCollectionLayoutItem(layoutSize: itemSize)
+            
+            let groupSize = NSCollectionLayoutSize(
+                widthDimension: .absolute(self.itemSize),
+                heightDimension: .absolute(self.itemSize)
+            )
+            let group = NSCollectionLayoutGroup.horizontal(layoutSize: groupSize, subitems: [item])
+            
+            let section = NSCollectionLayoutSection(group: group)
+            section.orthogonalScrollingBehavior = .continuous
+            section.interGroupSpacing = self.itemSpacing
+            section.contentInsets = self.sectionInset
+            
+            let headerSize = NSCollectionLayoutSize(
+                widthDimension: .fractionalWidth(1.0),
+                heightDimension: .estimated(60)
+            )
+            let header = NSCollectionLayoutBoundarySupplementaryItem(
+                layoutSize: headerSize,
+                elementKind: UICollectionView.elementKindSectionHeader,
+                alignment: .top
+            )
+            section.boundarySupplementaryItems = [header]
+            
+            return section
+        }
+        
+        print("📐 Compositional layout created")
+        return layout
     }
     
     private func setupDataSource() {
@@ -139,28 +208,66 @@ final class PhotosGridViewController: UIViewController {
             guard let self else { return nil }
             guard kind == UICollectionView.elementKindSectionHeader else { return nil }
             
+            guard indexPath.section < self.photoGroups.count else {
+                print("⚠️ Header requested for section \(indexPath.section) but only \(self.photoGroups.count) groups exist")
+                return nil
+            }
+            
             let header = collectionView.dequeueReusableSupplementaryView(
                 ofKind: kind,
                 withReuseIdentifier: PhotoGroupHeaderView.reuseIdentifier,
                 for: indexPath
             ) as! PhotoGroupHeaderView
             
-            let section = self.dataSource.snapshot().sectionIdentifiers[indexPath.section]
             let group = self.photoGroups[indexPath.section]
             header.configure(title: group.title, subtitle: group.subtitle)
             return header
         }
         
         logger.info("UICollectionViewDiffableDataSource configured")
+        print("✅ DataSource configured")
+        NSLog("✅ DataSource configured")
     }
     
     private func registerForPhotoLibraryChanges() {
         changeObserver = PhotoLibraryService.shared.observeChanges { [weak self] in
             guard let self else { return }
             logger.info("PHPhotoLibrary change detected, reloading")
+            print("📸 Photo library changed, reloading")
             Task { @MainActor in
                 self.loadPhotos()
             }
+        }
+    }
+    
+    // MARK: - State Management
+    
+    private func setLoadState(_ state: LoadState) {
+        loadState = state
+        
+        switch state {
+        case .idle:
+            loadingView.isHidden = true
+            collectionView.isHidden = true
+            
+        case .loading:
+            loadingView.isHidden = false
+            loadingView.showLoading(message: "Loading photos...")
+            collectionView.isHidden = true
+            print("⏳ Showing loading state")
+            NSLog("⏳ Loading state visible")
+            
+        case .loaded:
+            loadingView.isHidden = true
+            collectionView.isHidden = false
+            print("✅ Showing content")
+            NSLog("✅ Content visible")
+            
+        case .error(let message):
+            loadingView.isHidden = false
+            loadingView.showError(message: message)
+            collectionView.isHidden = true
+            print("❌ Error state: \(message)")
         }
     }
     
@@ -168,60 +275,137 @@ final class PhotosGridViewController: UIViewController {
     
     private func loadPhotos() {
         loadTask?.cancel()
+        expandTask?.cancel()
+        
         logger.info("loadPhotos() started")
+        print("🔄 loadPhotos() started")
+        NSLog("🔄 loadPhotos() started")
+        
+        setLoadState(.loading)
         
         loadTask = Task { [weak self] in
             guard let self else { return }
             
-            let startTime = CFAbsoluteTimeGetCurrent()
+            let overallStart = CFAbsoluteTimeGetCurrent()
             
             let status = await PhotoLibraryService.shared.requestAuthorization()
             guard status == .authorized || status == .limited else {
                 logger.error("Photo library authorization denied: \(String(describing: status))")
+                print("❌ Authorization denied: \(status)")
+                NSLog("❌ Authorization denied: %@", String(describing: status))
+                await MainActor.run {
+                    self.setLoadState(.error("Photos access is required"))
+                }
                 return
             }
             logger.info("Photo library authorized: \(String(describing: status))")
+            print("✅ Authorization: \(status)")
+            NSLog("✅ Authorization: %@", String(describing: status))
             
-            let fetchStart = CFAbsoluteTimeGetCurrent()
-            let assets = self.fetchAssets(excludingScreenshots: true, fetchLimit: 1000)
-            let fetchDuration = CFAbsoluteTimeGetCurrent() - fetchStart
-            logger.info("Fetched \(assets.count) assets in \(String(format: "%.3f", fetchDuration))s")
+            // PHASE 1: Quick initial load with recent photos only
+            let initialStart = CFAbsoluteTimeGetCurrent()
+            let initialLimit = 300
+            print("⚡️ Phase 1: Loading \(initialLimit) most recent photos")
+            NSLog("⚡️ Phase 1: %d photos", initialLimit)
             
-            guard !assets.isEmpty else {
+            let initialAssets = self.fetchAssets(excludingScreenshots: true, fetchLimit: initialLimit)
+            let initialFetchDuration = CFAbsoluteTimeGetCurrent() - initialStart
+            print("📥 Phase 1 fetch: \(initialAssets.count) assets in \(String(format: "%.3f", initialFetchDuration))s")
+            NSLog("📥 Phase 1: %d assets in %.3fs", initialAssets.count, initialFetchDuration)
+            
+            guard !initialAssets.isEmpty else {
                 logger.warning("No assets found")
+                print("⚠️ No assets found")
+                NSLog("⚠️ No assets")
                 await MainActor.run {
-                    self.photoGroups = []
-                    self.applySnapshot(groups: [])
+                    self.setLoadState(.error("No photos found"))
                 }
                 return
             }
             
             let groupStart = CFAbsoluteTimeGetCurrent()
-            let groups = await self.grouper.groupAssets(assets)
+            let initialGroups = await self.grouper.groupAssets(initialAssets)
             let groupDuration = CFAbsoluteTimeGetCurrent() - groupStart
-            logger.info("Grouped into \(groups.count) groups in \(String(format: "%.3f", groupDuration))s")
+            print("📊 Phase 1 grouping: \(initialGroups.count) groups in \(String(format: "%.3f", groupDuration))s")
+            NSLog("📊 Phase 1: %d groups in %.3fs", initialGroups.count, groupDuration)
             
             if Task.isCancelled {
-                logger.info("Load task cancelled before applying snapshot")
+                print("⚠️ Load cancelled")
                 return
             }
             
-            await MainAactor.run {
-                self.photoGroups = groups
-                self.applySnapshot(groups: groups)
-                
-                let totalDuration = CFAbsoluteTimeGetCurrent() - startTime
-                logger.info("Total load completed in \(String(format: "%.3f", totalDuration))s")
+            let phase1Duration = CFAbsoluteTimeGetCurrent() - overallStart
+            print("⏱ Phase 1 total: \(String(format: "%.3f", phase1Duration))s")
+            NSLog("⏱ Phase 1: %.3fs", phase1Duration)
+            
+            // Show initial content immediately
+            await MainActor.run {
+                self.photoGroups = []
+                self.applySnapshot(groups: initialGroups, isInitial: true)
+                self.setLoadState(.loaded)
+                print("✅ Initial content visible after \(String(format: "%.3f", phase1Duration))s")
+                NSLog("✅ Visible: %.3fs", phase1Duration)
             }
             
-            self.preheatInitialAssets()
+            self.preheatInitialAssets(from: initialGroups)
+            
+            // PHASE 2: Load remaining photos in background
+            self.loadRemainingPhotos(alreadyLoaded: initialAssets.count, initialLimit: initialLimit)
+        }
+    }
+    
+    private func loadRemainingPhotos(alreadyLoaded: Int, initialLimit: Int) {
+        expandTask = Task { [weak self] in
+            guard let self else { return }
+            
+            print("🔄 Phase 2: Loading remaining photos in background")
+            NSLog("🔄 Phase 2 started")
+            
+            // Small delay to let UI settle
+            try? await Task.sleep(for: .milliseconds(300))
+            
+            if Task.isCancelled { return }
+            
+            let phase2Start = CFAbsoluteTimeGetCurrent()
+            let allAssets = self.fetchAssets(excludingScreenshots: true, fetchLimit: 0)
+            let newAssetCount = allAssets.count - alreadyLoaded
+            
+            guard newAssetCount > 0 else {
+                print("✅ No additional photos to load")
+                NSLog("✅ Phase 2: no new photos")
+                return
+            }
+            
+            print("📥 Phase 2: \(newAssetCount) additional photos found")
+            NSLog("📥 Phase 2: %d new", newAssetCount)
+            
+            let allGroups = await self.grouper.groupAssets(allAssets)
+            
+            if Task.isCancelled {
+                print("⚠️ Phase 2 cancelled")
+                return
+            }
+            
+            let phase2Duration = CFAbsoluteTimeGetCurrent() - phase2Start
+            print("📊 Phase 2: \(allGroups.count) total groups in \(String(format: "%.3f", phase2Duration))s")
+            NSLog("📊 Phase 2: %d groups, %.3fs", allGroups.count, phase2Duration)
+            
+            await MainActor.run {
+                self.applySnapshot(groups: allGroups, isInitial: false)
+                print("✅ Full library loaded")
+                NSLog("✅ Phase 2 complete")
+            }
+            
+            self.preheatInitialAssets(from: allGroups)
         }
     }
     
     private func fetchAssets(excludingScreenshots: Bool, fetchLimit: Int) -> [PHAsset] {
         let options = PHFetchOptions()
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-        options.fetchLimit = fetchLimit
+        if fetchLimit > 0 {
+            options.fetchLimit = fetchLimit
+        }
         
         if excludingScreenshots {
             let screenshotBit = PHAssetMediaSubtype.photoScreenshot.rawValue
@@ -241,15 +425,19 @@ final class PhotosGridViewController: UIViewController {
             assets.append(asset)
         }
         
-        logger.debug("PHAsset.fetchAssets returned \(assets.count) items")
         return assets
     }
     
-    private func applySnapshot(groups: [PhotoGroup]) {
+    private func applySnapshot(groups: [PhotoGroup], isInitial: Bool) {
         var snapshot = NSDiffableDataSourceSnapshot<Section, Item>()
         itemsBySection.removeAll()
         
-        for group in groups {
+        print("📸 Building snapshot: \(groups.count) groups")
+        NSLog("📸 Snapshot: %d groups", groups.count)
+        
+        let reversedGroups = groups.reversed()
+        
+        for (index, group) in reversedGroups.enumerated() {
             let section = Section.group(group.id)
             snapshot.appendSections([section])
             
@@ -258,17 +446,97 @@ final class PhotosGridViewController: UIViewController {
             }
             snapshot.appendItems(items, toSection: section)
             itemsBySection[section] = items
+            
+            if index < 2 || index >= reversedGroups.count - 2 {
+                print("  \(index): \(group.title) (\(items.count) items)")
+            } else if index == 2 {
+                print("  ... (\(reversedGroups.count - 4) more) ...")
+            }
         }
         
-        logger.info("Applying snapshot with \(snapshot.numberOfSections) sections, \(snapshot.numberOfItems) items")
-        dataSource.apply(snapshot, animatingDifferences: false)
+        self.photoGroups = Array(reversedGroups)
+        
+        print("📊 Applying: \(snapshot.numberOfSections) sections, \(snapshot.numberOfItems) items")
+        NSLog("📊 Apply: %d sections, %d items", snapshot.numberOfSections, snapshot.numberOfItems)
+        
+        let shouldScroll = isInitial && isInitialLoad && !hasScrolledToBottom
+        
+        dataSource.apply(snapshot, animatingDifferences: !isInitial) {
+            if shouldScroll {
+                self.scrollToBottom(animated: false)
+                self.isInitialLoad = false
+                self.hasScrolledToBottom = true
+            }
+            self.logContentSize()
+        }
     }
     
-    private func preheatInitialAssets() {
-        let assetsToHeat = photoGroups.prefix(6).flatMap { $0.representativeAssets }.prefix(36)
+    private func scrollToBottom(animated: Bool) {
+        guard collectionView.numberOfSections > 0 else {
+            print("⚠️ No sections to scroll")
+            return
+        }
+        
+        let lastSection = collectionView.numberOfSections - 1
+        let itemsInLastSection = collectionView.numberOfItems(inSection: lastSection)
+        
+        guard itemsInLastSection > 0 else {
+            print("⚠️ Last section empty")
+            return
+        }
+        
+        let lastIndexPath = IndexPath(item: itemsInLastSection - 1, section: lastSection)
+        
+        print("📍 Scrolling to: section \(lastSection), item \(itemsInLastSection - 1)")
+        NSLog("📍 Scroll to: s%d i%d", lastSection, itemsInLastSection - 1)
+        
+        collectionView.performBatchUpdates(nil) { _ in
+            self.collectionView.scrollToItem(
+                at: lastIndexPath,
+                at: .bottom,
+                animated: animated
+            )
+            
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                let contentHeight = self.collectionView.contentSize.height
+                let frameHeight = self.collectionView.frame.height
+                let adjustedInset = self.collectionView.adjustedContentInset
+                let maxOffset = contentHeight - frameHeight + adjustedInset.bottom
+                
+                if maxOffset > 0 && self.collectionView.contentOffset.y < maxOffset - 50 {
+                    print("📍 Adjusting to: \(maxOffset)")
+                    self.collectionView.setContentOffset(
+                        CGPoint(x: 0, y: maxOffset),
+                        animated: false
+                    )
+                }
+                
+                print("📍 Final offset: \(self.collectionView.contentOffset.y)")
+                NSLog("📍 Final: %.0f", self.collectionView.contentOffset.y)
+            }
+        }
+    }
+    
+    private func logContentSize() {
+        let contentSize = collectionView.contentSize
+        let frameSize = collectionView.frame.size
+        let sections = collectionView.numberOfSections
+        var items = 0
+        for s in 0..<sections {
+            items += collectionView.numberOfItems(inSection: s)
+        }
+        
+        print("📏 Content: \(Int(contentSize.height))pt, Frame: \(Int(frameSize.height))pt")
+        print("📏 Sections: \(sections), Items: \(items)")
+        NSLog("📏 %dx%d sections/items", sections, items)
+    }
+    
+    private func preheatInitialAssets(from groups: [PhotoGroup]) {
+        let assetsToHeat = groups.suffix(6).flatMap { $0.representativeAssets }.suffix(36)
         guard !assetsToHeat.isEmpty else { return }
         
-        logger.debug("Preheating \(assetsToHeat.count) initial assets")
+        print("⚡️ Preheating \(assetsToHeat.count) assets")
+        NSLog("⚡️ Preheat: %d", assetsToHeat.count)
         imageManager.startCachingImages(
             for: Array(assetsToHeat),
             targetSize: thumbnailSize,
@@ -291,7 +559,7 @@ final class PhotosGridViewController: UIViewController {
 extension PhotosGridViewController: UICollectionViewDelegate {
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         guard let item = dataSource.itemIdentifier(for: indexPath) else { return }
-        logger.info("Cell tapped: \(item.assetID)")
+        print("👆 Tapped: s\(indexPath.section) i\(indexPath.item)")
         
         let options = PHImageRequestOptions()
         options.deliveryMode = .highQualityFormat
@@ -311,6 +579,19 @@ extension PhotosGridViewController: UICollectionViewDelegate {
             }
         }
     }
+    
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        let offset = scrollView.contentOffset.y
+        let contentHeight = scrollView.contentSize.height
+        let frameHeight = scrollView.frame.height
+        let adjustedInset = scrollView.adjustedContentInset
+        let maxOffset = contentHeight - frameHeight + adjustedInset.bottom
+        
+        if Int(offset) % 200 == 0 && maxOffset > 0 {
+            let progress = Int((offset / maxOffset) * 100)
+            print("📜 Offset: \(Int(offset)), \(progress)%")
+        }
+    }
 }
 
 // MARK: - UICollectionViewDataSourcePrefetching
@@ -320,7 +601,6 @@ extension PhotosGridViewController: UICollectionViewDataSourcePrefetching {
         let assets = indexPaths.compactMap { dataSource.itemIdentifier(for: $0)?.asset }
         guard !assets.isEmpty else { return }
         
-        logger.debug("Prefetching \(assets.count) assets at indexPaths: \(indexPaths.map { $0.item })")
         imageManager.startCachingImages(
             for: assets,
             targetSize: thumbnailSize,
@@ -333,13 +613,77 @@ extension PhotosGridViewController: UICollectionViewDataSourcePrefetching {
         let assets = indexPaths.compactMap { dataSource.itemIdentifier(for: $0)?.asset }
         guard !assets.isEmpty else { return }
         
-        logger.debug("Cancelling prefetch for \(assets.count) assets")
         imageManager.stopCachingImages(
             for: assets,
             targetSize: thumbnailSize,
             contentMode: .aspectFill,
             options: photoRequestOptions()
         )
+    }
+}
+
+// MARK: - Loading State View
+
+private final class LoadingStateView: UIView {
+    private let containerStack = UIStackView()
+    private let spinner = UIActivityIndicatorView(style: .large)
+    private let messageLabel = UILabel()
+    private let errorLabel = UILabel()
+    
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setupViews()
+    }
+    
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    private func setupViews() {
+        backgroundColor = .systemGroupedBackground
+        
+        containerStack.axis = .vertical
+        containerStack.alignment = .center
+        containerStack.spacing = 16
+        containerStack.translatesAutoresizingMaskIntoConstraints = false
+        
+        messageLabel.font = .systemFont(ofSize: 17)
+        messageLabel.textColor = .secondaryLabel
+        messageLabel.textAlignment = .center
+        
+        errorLabel.font = .systemFont(ofSize: 17)
+        errorLabel.textColor = .systemRed
+        errorLabel.textAlignment = .center
+        errorLabel.numberOfLines = 0
+        
+        containerStack.addArrangedSubview(spinner)
+        containerStack.addArrangedSubview(messageLabel)
+        containerStack.addArrangedSubview(errorLabel)
+        
+        addSubview(containerStack)
+        
+        NSLayoutConstraint.activate([
+            containerStack.centerXAnchor.constraint(equalTo: centerXAnchor),
+            containerStack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            containerStack.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 32),
+            containerStack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -32)
+        ])
+    }
+    
+    func showLoading(message: String) {
+        spinner.startAnimating()
+        spinner.isHidden = false
+        messageLabel.text = message
+        messageLabel.isHidden = false
+        errorLabel.isHidden = true
+    }
+    
+    func showError(message: String) {
+        spinner.stopAnimating()
+        spinner.isHidden = true
+        messageLabel.isHidden = true
+        errorLabel.text = message
+        errorLabel.isHidden = false
     }
 }
 
@@ -366,7 +710,7 @@ private final class PhotoGridCell: UICollectionViewCell {
     
     private func setupViews() {
         contentView.backgroundColor = .secondarySystemGroupedBackground
-        contentView.layer.cornerRadius = 10
+        contentView.layer.cornerRadius = 12
         contentView.layer.cornerCurve = .continuous
         contentView.clipsToBounds = true
         
