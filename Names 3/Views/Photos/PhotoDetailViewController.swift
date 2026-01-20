@@ -228,10 +228,6 @@ final class PhotoDetailViewController: UIViewController {
             get: { [] },
             set: { _ in }
         )
-        let isQuickNotesActive = Binding<Bool>(
-            get: { false },
-            set: { _ in }
-        )
         let selectedContactBinding = Binding<Contact?>(
             get: { [weak self] in self?.selectedContact },
             set: { [weak self] newValue in
@@ -240,12 +236,9 @@ final class PhotoDetailViewController: UIViewController {
         )
         
         let quickInputView = QuickInputView(
-            mode: .people,
             parsedContacts: parsedContacts,
-            isQuickNotesActive: isQuickNotesActive,
             selectedContact: selectedContactBinding,
-            onCameraTap: nil,
-            allowQuickNoteCreation: false,
+            onQuizTap: nil,
             onReturnOverride: {
                 NotificationCenter.default.post(name: .photoDetailCommitRequested, object: nil)
             }

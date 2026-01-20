@@ -17,6 +17,8 @@ final class PhotosDayPickerViewController: UIViewController {
     private var collectionView: UICollectionView!
     private var coordinator: PhotoGridView.Coordinator!
     
+    private var isDismissing = false
+    
     init(
         scope: PhotosPickerScope,
         contactsContext: ModelContext,
@@ -172,6 +174,14 @@ final class PhotosDayPickerViewController: UIViewController {
     
     @objc private func closeButtonTapped() {
         print("🔵 [PhotosDayPickerVC] Close button tapped")
+        isDismissing = true
+        
+        // If in fullscreen, zoom out instantly without animation before dismissing
+        if let coordinator = coordinator,
+           coordinator.availableColumns[coordinator.currentColumnIndex] == 1 {
+            coordinator.prepareForDismissal()
+        }
+        
         dismiss(animated: true)
     }
 }

@@ -1,7 +1,9 @@
 import SwiftUI
+import SwiftData
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
     
     var body: some View {
         NavigationStack {
@@ -15,10 +17,21 @@ struct SettingsView: View {
                             Text(LocalizedStringKey("settings.onboarding.showAgain"))
                         }
                     }
+                    
+                    Button {
+                        showFaceNamingPromptManually()
+                    } label: {
+                        HStack {
+                            Image(systemName: "person.crop.rectangle.stack")
+                                .foregroundStyle(.blue)
+                            Text("Show Face Naming Prompt")
+                                .foregroundStyle(.blue)
+                        }
+                    }
                 } header: {
                     Text(LocalizedStringKey("settings.onboarding.header"))
                 } footer: {
-                    Text(LocalizedStringKey("settings.onboarding.footer"))
+                    Text("Test the welcome face naming flow even with existing contacts")
                 }
                 
                 Section {
@@ -41,7 +54,7 @@ struct SettingsView: View {
                 
                 Section {
                     Button(role: .destructive) {
-                        OnboardingManager.shared.resetOnboarding()
+                        resetAndShowOnboarding()
                     } label: {
                         HStack {
                             Image(systemName: "trash")
@@ -49,7 +62,7 @@ struct SettingsView: View {
                         }
                     }
                 } footer: {
-                    Text(LocalizedStringKey("settings.onboarding.resetFooter"))
+                    Text("Reset onboarding status and show the full flow immediately")
                 }
             }
             .navigationTitle(LocalizedStringKey("settings.title"))
@@ -71,18 +84,54 @@ struct SettingsView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
             print("🔵 [Settings] Attempting to show onboarding after delay")
             
-            guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                  let window = windowScene.windows.first else {
-                print("❌ [Settings] No window found")
-                return
+            if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+               let window = scene.windows.first {
+                OnboardingCoordinatorManager.shared.showOnboarding(in: window, forced: true, modelContext: nil)
             }
+        }
+    }
+    
+    private func showFaceNamingPromptManually() {
+        print("🔵 [Settings] Show face naming prompt tapped")
+        dismiss()
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+            print("🔵 [Settings] Showing face naming prompt after delay")
             
-            print("✅ [Settings] Found window, calling coordinator manager")
-            OnboardingCoordinatorManager.shared.showOnboarding(in: window, forced: true)
+            if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+               let window = scene.windows.first {
+                OnboardingCoordinatorManager.shared.showFaceNamingPrompt(
+                    in: window,
+                    modelContext: modelContext,
+                    forced: true
+                )
+            }
+        }
+    }
+    
+    private func resetAndShowOnboarding() {
+        print("🔵 [Settings] Reset onboarding tapped")
+        
+        OnboardingManager.shared.resetOnboarding()
+        
+        dismiss()
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+            print("🔵 [Settings] Showing onboarding after reset")
+            
+            if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+               let window = scene.windows.first {
+                OnboardingCoordinatorManager.shared.showOnboarding(
+                    in: window,
+                    forced: false,
+                    modelContext: modelContext
+                )
+            }
         }
     }
 }
 
 #Preview {
     SettingsView()
+        .modelContainer(for: [Contact.self, Note.self, Tag.self], inMemory: true)
 }

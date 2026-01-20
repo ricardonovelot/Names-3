@@ -21,12 +21,12 @@ final class PostOnboardingFacePromptCoordinator {
         logger.info("PostOnboardingFacePromptCoordinator deinitialized")
     }
     
-    func start(completion: (() -> Void)? = nil) {
+    func start(forced: Bool = false, completion: (() -> Void)? = nil) {
         self.completion = completion
-        logger.info("Starting post-onboarding face prompt")
+        logger.info("Starting post-onboarding face prompt (forced: \(forced))")
         
         Task { @MainActor in
-            guard shouldShowPrompt() else {
+            if !forced && !shouldShowPrompt() {
                 logger.info("Skipping face prompt - user already has contacts")
                 completion?()
                 return
@@ -67,24 +67,20 @@ final class PostOnboardingFacePromptCoordinator {
             return
         }
         
-        logger.info("Fetching recent photos with faces...")
+        logger.info("Fetching smart photo selection...")
         
-        guard let photosWithFaces = await fetchRecentPhotosWithFaces(limit: 10) else {
-            logger.info("No recent photos with faces found")
+        let smartAssets = fetchSmartPhotoSelection()
+        
+        guard smartAssets.count > 0 else {
+            logger.info("No relevant photos found")
             completion?()
             return
         }
         
-        guard !photosWithFaces.isEmpty else {
-            logger.info("No photos with detected faces")
-            completion?()
-            return
-        }
-        
-        logger.info("Found \(photosWithFaces.count) photos with faces, presenting welcome view")
+        logger.info("Selected \(smartAssets.count) high-priority photos for face detection")
         
         let welcomeVC = WelcomeFaceNamingViewController(
-            photosWithFaces: photosWithFaces,
+            prioritizedAssets: smartAssets,
             modelContext: modelContext
         )
         welcomeVC.delegate = self
@@ -111,73 +107,36 @@ final class PostOnboardingFacePromptCoordinator {
         }
     }
     
-    private func fetchRecentPhotosWithFaces(limit: Int) async -> [(image: UIImage, date: Date, asset: PHAsset)]? {
+    private func fetchSmartPhotoSelection() -> [PHAsset] {
         let options = PHFetchOptions()
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-        options.fetchLimit = 50
-        options.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+        
+        options.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+            NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue),
+            NSPredicate(format: "(mediaSubtype & %d) == 0", PHAssetMediaSubtype.photoScreenshot.rawValue),
+            NSPredicate(format: "pixelWidth >= 400"),
+            NSPredicate(format: "pixelHeight >= 400")
+        ])
         
         let fetchResult = PHAsset.fetchAssets(with: options)
-        var photosWithFaces: [(image: UIImage, date: Date, asset: PHAsset)] = []
-        var checked = 0
+        var prioritizedAssets: [PHAsset] = []
+        var portraitAssets: [PHAsset] = []
+        var landscapeAssets: [PHAsset] = []
         
-        for index in 0..<fetchResult.count {
-            guard photosWithFaces.count < limit else { break }
-            guard checked < 50 else { break }
-            
-            let asset = fetchResult.object(at: index)
-            checked += 1
-            
-            guard let image = await loadFullImage(for: asset) else {
-                continue
-            }
-            
-            let hasFaces = await detectFaces(in: image)
-            
-            if hasFaces {
-                let date = asset.creationDate ?? Date()
-                photosWithFaces.append((image: image, date: date, asset: asset))
-                logger.debug("Found photo with faces from \(date)")
+        fetchResult.enumerateObjects { asset, _, _ in
+            if asset.pixelHeight > asset.pixelWidth {
+                portraitAssets.append(asset)
+            } else {
+                landscapeAssets.append(asset)
             }
         }
         
-        return photosWithFaces.isEmpty ? nil : photosWithFaces
-    }
-    
-    private func loadFullImage(for asset: PHAsset) async -> UIImage? {
-        let options = PHImageRequestOptions()
-        options.deliveryMode = .highQualityFormat
-        options.resizeMode = .none
-        options.isNetworkAccessAllowed = true
-        options.isSynchronous = false
+        prioritizedAssets.append(contentsOf: portraitAssets)
+        prioritizedAssets.append(contentsOf: landscapeAssets)
         
-        return await withCheckedContinuation { continuation in
-            PHCachingImageManager().requestImage(
-                for: asset,
-                targetSize: PHImageManagerMaximumSize,
-                contentMode: .aspectFit,
-                options: options
-            ) { image, _ in
-                continuation.resume(returning: image)
-            }
-        }
-    }
-    
-    private func detectFaces(in image: UIImage) async -> Bool {
-        guard let cgImage = image.cgImage else { return false }
+        logger.info("Smart selection: \(portraitAssets.count) portrait, \(landscapeAssets.count) landscape → \(prioritizedAssets.count) total photos available")
         
-        return await withCheckedContinuation { continuation in
-            let request = VNDetectFaceRectanglesRequest()
-            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-            
-            do {
-                try handler.perform([request])
-                let faces = (request.results as? [VNFaceObservation]) ?? []
-                continuation.resume(returning: !faces.isEmpty)
-            } catch {
-                continuation.resume(returning: false)
-            }
-        }
+        return prioritizedAssets
     }
     
     private func findTopMostViewController(_ controller: UIViewController) -> UIViewController {

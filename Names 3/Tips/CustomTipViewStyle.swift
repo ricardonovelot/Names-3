@@ -11,7 +11,7 @@ struct CustomTipViewStyle: TipViewStyle {
                     .frame(width: 32, height: 32)
             }
             
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 8) {
                 configuration.title
                     .font(.headline)
                     .foregroundStyle(.primary)
@@ -23,15 +23,18 @@ struct CustomTipViewStyle: TipViewStyle {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 
-                HStack(spacing: 8) {
-                    ForEach(configuration.actions) { action in
-                        Button(action: action.handler) {
-                            action.label()
-                                .font(.subheadline.weight(.medium))
+                if !configuration.actions.isEmpty {
+                    HStack(spacing: 8) {
+                        ForEach(configuration.actions) { action in
+                            Button(action: action.handler) {
+                                action.label()
+                                    .font(.subheadline.weight(.medium))
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
                     }
+                    .padding(.top, 4)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

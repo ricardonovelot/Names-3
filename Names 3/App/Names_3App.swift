@@ -9,6 +9,7 @@ import SwiftUI
 import SwiftData
 import UIKit
 import os
+import TipKit
 
 enum AppTab: Hashable {
     case people
@@ -197,6 +198,9 @@ struct Names_3App: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .task {
+                    TipManager.shared.configure()
+                }
                 .onAppear {
                     if !hasCheckedOnboarding {
                         hasCheckedOnboarding = true
@@ -216,7 +220,13 @@ struct Names_3App: App {
             }
             
             print("🔵 [App] Checking onboarding status")
-            OnboardingCoordinatorManager.shared.showOnboarding(in: window, forced: false)
+            
+            let modelContext = ModelContext(self.sharedModelContainer)
+            OnboardingCoordinatorManager.shared.showOnboarding(
+                in: window,
+                forced: false,
+                modelContext: modelContext
+            )
         }
     }
 }

@@ -3,37 +3,24 @@ import SwiftData
 import SmoothGradient
 import Vision
 import UIKit
-
-enum QuickInputMode {
-    case people
-    case quickNotes
-}
+import TipKit
 
 struct QuickInputView: View {
     @Environment(\.modelContext) private var modelContext
 
-    // Mode and hooks
-    let mode: QuickInputMode
+    // Bindings and hooks
     @Binding var parsedContacts: [Contact]
-    @Binding var isQuickNotesActive: Bool
     @Binding var selectedContact: Contact?
-    var onCameraTap: (() -> Void)? = nil
+    var onQuizTap: (() -> Void)? = nil
     var onQuickNoteAdded: (() -> Void)? = nil
-    var onQuickNoteDetected: (() -> Void)? = nil
-    var onQuickNoteCleared: (() -> Void)? = nil
-    var onInlinePhotosTap: (() -> Void)? = nil
-    var isInlinePhotosActive: (() -> Bool)? = nil
-
-    // Optional quick note to link created entities to, and flag to allow/deny quick note creation
-    var linkedQuickNote: QuickNote? = nil
-    var allowQuickNoteCreation: Bool = true
-
-    // Optional override for Return key handling (e.g., commit names in PhotoDetail)
     var onReturnOverride: (() -> Void)? = nil
     
     // Face carousel integration
     var faceDetectionViewModel: FaceDetectionViewModel? = nil
     var onFaceSelected: ((Int) -> Void)? = nil
+
+    // Optional quick note to link created entities to
+    var linkedQuickNote: QuickNote? = nil
 
     // People suggestions and selection
     @Query(filter: #Predicate<Contact> { $0.isArchived == false })
@@ -51,16 +38,11 @@ struct QuickInputView: View {
     @State private var filterString: String = ""
     @State private var suggestedContacts: [Contact] = []
     @State private var parseDebounceWork: DispatchWorkItem?
-    @State private var quickNoteActive: Bool = false
-    @State private var suppressNextClear: Bool = false
-    @State private var showModePicker = false
     @State private var shouldShowCreateButton: Bool = false
     @State private var parsedTagNames: [String] = []
 
     // Photo processing state
     @State private var isProcessingPhoto = false
-    @State private var lastPickedImage: UIImage?
-    @State private var isCameraPickerPresented = false
 
     // Photo processing callbacks
     var onPhotoPicked: ((UIImage, Date?) -> Void)? = nil
@@ -73,19 +55,6 @@ struct QuickInputView: View {
         }
         let anywhereQN = #"(?i)\bqn\b"#
         return s.range(of: anywhereQN, options: .regularExpression) != nil
-    }
-
-    private func stripQuickNotePrefix(from input: String) -> String {
-        var s = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        let prefixPattern = #"(?i)^(quick\s*note|quick)\b[\s:]*"#
-        if let r = s.range(of: prefixPattern, options: .regularExpression) {
-            s = String(s[r.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        let qnPattern = #"(?i)\bqn\b\s*[:;,]?"#
-        s = s.replacingOccurrences(of: qnPattern, with: "", options: .regularExpression)
-        s = s.replacingOccurrences(of: #"\s{2,}"#, with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return s
     }
 
     var body: some View {
@@ -109,11 +78,23 @@ struct QuickInputView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
             
-            VStack {
+            VStack(spacing: 12) {
+                TipView(QuickInputFormatTip(), arrowEdge: .bottom)
+                    .padding(.horizontal)
+                
+                TipView(QuickInputBulkAddTip(), arrowEdge: .bottom)
+                    .padding(.horizontal)
+                
+                TipView(QuickInputTagsTip(), arrowEdge: .bottom)
+                    .padding(.horizontal)
+                
+                TipView(QuickInputDateParsingTip(), arrowEdge: .bottom)
+                    .padding(.horizontal)
+                
                 HStack(spacing: 6) {
                     InputBubble {
                         HStack(spacing: 8) {
-                            if mode == .people, let token = selectedContact {
+                            if let token = selectedContact {
                                 HStack(spacing: 6) {
                                     Text(token.name ?? "Unnamed")
                                         .font(.subheadline)
@@ -153,7 +134,7 @@ struct QuickInputView: View {
                                             override()
                                             return
                                         }
-                                        if mode == .people && !suggestedContacts.isEmpty {
+                                        if !suggestedContacts.isEmpty {
                                             selectExistingContact(suggestedContacts[0])
                                         } else {
                                             save()
@@ -174,103 +155,43 @@ struct QuickInputView: View {
                                             save()
                                         }
                                     } else {
-                                        if mode == .people {
-                                            parseDebounceWork?.cancel()
-                                            let s = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                                            if isQuickNoteCommand(s) && selectedContact == nil {
-                                                parsePeopleInput()
-                                            } else {
-                                                let work = DispatchWorkItem {
-                                                    parsePeopleInput()
-                                                }
-                                                parseDebounceWork = work
-                                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
-                                            }
+                                        parseDebounceWork?.cancel()
+                                        let work = DispatchWorkItem {
+                                            parsePeopleInput()
                                         }
+                                        parseDebounceWork = work
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
                                     }
                                 }
 
                                 if text.isEmpty {
-                                    Text(mode == .people && selectedContact != nil ? "Add a note…" : "")
+                                    Text(selectedContact != nil ? "Add a note…" : "")
                                         .foregroundStyle(.secondary)
                                         .padding(.leading, 3)
                                         .padding(.top, 1)
                                         .allowsHitTesting(false)
                                 }
                             }
-
-                            if mode == .people {
-                                Button {
-                                    guard !isCameraPickerPresented else {
-                                        print("⚠️ [QuickInput] Camera picker already presented, ignoring tap")
-                                        return
-                                    }
-                                    isCameraPickerPresented = true
-                                    onCameraTap?()
-                                } label: {
-                                    Image(systemName: "camera")
-                                        .foregroundStyle(.secondary)
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(isCameraPickerPresented)
-                            }
                         }
                     }
 
-                    if mode == .people {
-                        Button {
-                            let inlineSupported = (onInlinePhotosTap != nil) && (isInlinePhotosActive != nil)
-                            let inlineActive = isInlinePhotosActive?() ?? false
-
-                            if !inlineSupported {
-                                if isQuickNotesActive {
-                                    isQuickNotesActive = false
-                                    onQuickNoteCleared?()
-                                } else {
-                                    isQuickNotesActive = true
-                                    onQuickNoteDetected?()
-                                }
-                                return
-                            }
-
-                            if !isQuickNotesActive && !inlineActive {
-                                isQuickNotesActive = true
-                                onQuickNoteDetected?()
-                            } else if isQuickNotesActive && !inlineActive {
-                                isQuickNotesActive = false
-                                onQuickNoteCleared?()
-                                onInlinePhotosTap?()
-                            } else if inlineActive {
-                                if isQuickNotesActive {
-                                    isQuickNotesActive = false
-                                    onQuickNoteCleared?()
-                                }
-                                onInlinePhotosTap?()
-                            }
-                        } label: {
-                            let inlineActive = isInlinePhotosActive?() ?? false
-                            let inlineSupported = (onInlinePhotosTap != nil) && (isInlinePhotosActive != nil)
-                            let symbolName = inlineSupported && inlineActive
-                                ? "person"
-                                : (isQuickNotesActive
-                                   ? (inlineSupported ? "photo.on.rectangle" : "person")
-                                   : "note.text")
-
-                            Image(systemName: symbolName)
-                                .font(.system(size: 24, weight: .medium))
-                                .frame(width: controlSize, height: controlSize)
-                                .liquidGlass(in: Circle())
-                                .clipShape(Circle())
-                        }
-                        .accessibilityLabel("Cycle input mode")
+                    Button {
+                        onQuizTap?()
+                    } label: {
+                        Image(systemName: "questionmark.circle.fill")
+                            .font(.system(size: 24, weight: .medium))
+                            .frame(width: controlSize, height: controlSize)
+                            .liquidGlass(in: Circle())
+                            .clipShape(Circle())
                     }
+                    .accessibilityLabel("Open Quiz")
                 }
             }
         }
         .padding(.horizontal)
         .padding(.bottom, 16)
         .overlay(alignment: .bottom) {
-            if mode == .people, selectedContact == nil && !filterString.isEmpty && (!suggestedContacts.isEmpty || shouldShowCreateButton) {
+            if selectedContact == nil && !filterString.isEmpty && (!suggestedContacts.isEmpty || shouldShowCreateButton) {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(suggestedContacts) { contact in
@@ -411,18 +332,14 @@ struct QuickInputView: View {
             print("🎯 [QuickInput] Received resign focus notification")
             fieldIsFocused = false
         }
-        .onReceive(NotificationCenter.default.publisher(for: .quickInputCameraDidPickPhoto)) { notification in
-            isCameraPickerPresented = false
-            
-            if let userInfo = notification.userInfo,
-               let image = userInfo["image"] as? UIImage,
-               let date = userInfo["date"] as? Date? {
-                handlePhotoPicked(image: image, date: date)
+        .onReceive(NotificationCenter.default.publisher(for: .quickInputShowExample)) { notification in
+            if let example = notification.userInfo?["example"] as? String {
+                text = example
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(100))
+                    fieldIsFocused = true
+                }
             }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .quickInputCameraDidDismiss)) { _ in
-            print("📸 [QuickInput] Camera picker dismissed without selection")
-            isCameraPickerPresented = false
         }
     }
 
@@ -432,7 +349,7 @@ struct QuickInputView: View {
 
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if let existing = selectedContact, mode == .people {
+        if let existing = selectedContact {
             if let note = buildNoteFromText(for: existing, text: trimmed) {
                 if existing.notes == nil { existing.notes = [] }
                 existing.notes?.append(note)
@@ -442,56 +359,45 @@ struct QuickInputView: View {
                     qn.linkedNotes?.append(note)
                 }
                 do { try modelContext.save() } catch { print("Save failed: \(error)") }
+                
+                TipManager.shared.donateNoteAdded()
             }
             text = ""
             resetTextAndPreview()
             return
         }
 
-        if ((isQuickNoteCommand(trimmed) && allowQuickNoteCreation) || mode == .quickNotes) {
-            if let qn = buildQuickNoteFromText(trimmed) {
-                modelContext.insert(qn)
-                do { try modelContext.save() } catch { print("Save failed: \(error)") }
-                if mode == .people {
-                    onQuickNoteAdded?()
-                    suppressNextClear = true
-                    quickNoteActive = true
-                }
+        var globalTags: [Tag] = []
+        
+        for tagName in parsedTagNames {
+            if let tag = Tag.fetchOrCreate(named: tagName, in: modelContext, seedDate: Date()) {
+                globalTags.append(tag)
             }
-            resetTextAndPreview()
-            return
         }
-
-        if mode == .people {
-            // Use stored parsed tag names instead of re-extracting
-            var globalTags: [Tag] = []
-            
-            for tagName in parsedTagNames {
-                if let tag = Tag.fetchOrCreate(named: tagName, in: modelContext, seedDate: Date()) {
-                    globalTags.append(tag)
-                }
-            }
-            
-            // Assign tags to all parsed contacts
+        
+        for contact in parsedContacts {
+            contact.tags = globalTags
+            modelContext.insert(contact)
+        }
+        
+        if let qn = linkedQuickNote {
+            if qn.linkedContacts == nil { qn.linkedContacts = [] }
+            if qn.linkedNotes == nil { qn.linkedNotes = [] }
             for contact in parsedContacts {
-                contact.tags = globalTags
-                modelContext.insert(contact)
-            }
-            
-            if let qn = linkedQuickNote {
-                if qn.linkedContacts == nil { qn.linkedContacts = [] }
-                if qn.linkedNotes == nil { qn.linkedNotes = [] }
-                for contact in parsedContacts {
-                    qn.linkedContacts?.append(contact)
-                    for n in contact.notes ?? [] {
-                        n.quickNote = qn
-                        qn.linkedNotes?.append(n)
-                    }
+                qn.linkedContacts?.append(contact)
+                for n in contact.notes ?? [] {
+                    n.quickNote = qn
+                    qn.linkedNotes?.append(n)
                 }
             }
-            do { try modelContext.save() } catch { print("Save failed: \(error)") }
-            resetTextAndPreview()
         }
+        do { try modelContext.save() } catch { print("Save failed: \(error)") }
+        
+        if parsedContacts.count > 0 {
+            TipManager.shared.donateContactCreated()
+        }
+        
+        resetTextAndPreview()
     }
 
     private func resetTextAndPreview() {
@@ -510,14 +416,6 @@ struct QuickInputView: View {
         var trimmed = workingInput.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if trimmed.isEmpty {
-            if quickNoteActive {
-                if suppressNextClear {
-                    suppressNextClear = false
-                } else {
-                    quickNoteActive = false
-                    onQuickNoteCleared?()
-                }
-            }
             withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
                 parsedContacts = []
             }
@@ -526,41 +424,6 @@ struct QuickInputView: View {
             shouldShowCreateButton = false
             parsedTagNames = []
             return
-        }
-
-        let detected = isQuickNoteCommand(trimmed)
-        if detected && selectedContact == nil {
-            if allowQuickNoteCreation {
-                if !quickNoteActive {
-                    quickNoteActive = true
-                    onQuickNoteDetected?()
-                }
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
-                    parsedContacts = []
-                }
-                filterString = ""
-                suggestedContacts = []
-                shouldShowCreateButton = false
-                parsedTagNames = []
-                return
-            }
-        } else if quickNoteActive {
-            quickNoteActive = false
-            onQuickNoteCleared?()
-            let sanitized = stripQuickNoteMarkers(from: workingInput)
-            workingInput = sanitized
-            text = sanitized
-            trimmed = sanitized.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
-                    parsedContacts = []
-                }
-                filterString = ""
-                suggestedContacts = []
-                shouldShowCreateButton = false
-                parsedTagNames = []
-                return
-            }
         }
 
         let dateDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.date.rawValue)
@@ -595,7 +458,6 @@ struct QuickInputView: View {
         }
         cleanedInput = cleanedInput.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        // Store extracted tag names in state
         parsedTagNames = extractValidTagNames(from: cleanedInput)
         cleanedInput = removeTagTokens(from: cleanedInput)
 
@@ -664,31 +526,24 @@ struct QuickInputView: View {
         return tokens.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    // Pure function to extract valid tag names without creating Tag objects
     private func extractValidTagNames(from text: String) -> [String] {
         var tagNames: [String] = []
         var seenKeys = Set<String>()
         
-        // Split into tokens with their preceding character context
         let tokens = text.split(whereSeparator: { $0.isWhitespace })
         
         for token in tokens {
-            // Must start with # to be a tag
             guard token.hasPrefix("#") else { continue }
             
-            // Extract tag text (remove # and trailing punctuation)
             let raw = token.dropFirst()
             let trimmed = raw.trimmingCharacters(in: .punctuationCharacters)
             
-            // Must have content after #
             guard !trimmed.isEmpty else { continue }
             
-            // Check if this exact # position is valid (preceded by whitespace or start of string)
             let tagString = String(token)
             if let range = text.range(of: tagString) {
                 let startIndex = range.lowerBound
                 
-                // Valid if at start of string OR preceded by whitespace
                 let isAtStart = startIndex == text.startIndex
                 let isPrecededByWhitespace = !isAtStart && text[text.index(before: startIndex)].isWhitespace
                 
@@ -719,10 +574,6 @@ struct QuickInputView: View {
                 return name.lowercased().hasPrefix(q.lowercased())
             }
             
-            // Show create button when:
-            // 1. There's valid input (at least 2 characters)
-            // 2. Not a quick note command
-            // Note: We allow duplicates since multiple people can have the same name
             let isValidName = !q.isEmpty && q.count >= 2 && !isQuickNoteCommand(q)
             
             withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
@@ -733,10 +584,7 @@ struct QuickInputView: View {
     }
 
     private func createNewContactFromFilterString() {
-        // Use the parsed contact if available (which has cleaned name)
-        // Otherwise fall back to filterString
         let cleanedName: String
-        let contactTags: [Tag]
         
         if let firstParsed = parsedContacts.first {
             cleanedName = firstParsed.name ?? filterString.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -746,7 +594,6 @@ struct QuickInputView: View {
         
         guard !cleanedName.isEmpty else { return }
         
-        // Create Tag objects from parsed tag names
         var tags: [Tag] = []
         for tagName in parsedTagNames {
             if let tag = Tag.fetchOrCreate(named: tagName, in: modelContext, seedDate: Date()) {
@@ -754,7 +601,6 @@ struct QuickInputView: View {
             }
         }
         
-        // Create a new contact with the cleaned name and parsed tags
         let newContact = Contact(
             name: cleanedName,
             timestamp: Date(),
@@ -764,7 +610,6 @@ struct QuickInputView: View {
         )
         newContact.uuid = UUID()
         
-        // Select this new contact immediately (it will be saved when user adds a note)
         selectedContact = newContact
         text = ""
         filterString = ""
@@ -776,17 +621,14 @@ struct QuickInputView: View {
             parsedContacts = []
         }
         
-        // Insert into context so it's tracked
         modelContext.insert(newContact)
         
-        // Save immediately
         do {
             try modelContext.save()
         } catch {
             print("❌ [QuickInput] Failed to save new contact: \(error)")
         }
         
-        // Focus the input field for adding a note
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(50))
             fieldIsFocused = true
@@ -837,15 +679,12 @@ struct QuickInputView: View {
             }
         }
 
-        // Extract tag names first, validate them properly
         let tagNames = extractValidTagNames(from: working)
         
-        // Remove tag tokens from working text
         var tokens = working.split(whereSeparator: { $0.isWhitespace })
         tokens.removeAll(where: { $0.hasPrefix("#") })
         working = tokens.joined(separator: " ")
 
-        // NOW create the Tag objects and assign to contact
         var contactTags = contact.tags ?? []
         for tagName in tagNames {
             if let tag = Tag.fetchOrCreate(named: tagName, in: modelContext) {
@@ -872,45 +711,6 @@ struct QuickInputView: View {
         return Note(content: content, creationDate: when, isLongAgo: isLongAgo)
     }
 
-    private func buildQuickNoteFromText(_ raw: String) -> QuickNote? {
-        var working = stripQuickNotePrefix(from: raw)
-
-        if working.isEmpty { return nil }
-
-        let dateDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.date.rawValue)
-        var detectedDate: Date? = nil
-
-        if let matches = dateDetector?.matches(in: working, options: [], range: NSRange(location: 0, length: working.utf16.count)) {
-            for match in matches {
-                if match.resultType == .date, let date = match.date {
-                    detectedDate = adjustToPast(date)
-                    if let range = Range(match.range, in: working) {
-                        working.removeSubrange(range)
-                    }
-                    break
-                }
-            }
-        }
-
-        var isLongAgo = false
-        let patterns = ["\\blong\\s*time\\s*ago\\b", "\\blta\\b"]
-        for pattern in patterns {
-            if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
-                let range = NSRange(location: 0, length: working.utf16.count)
-                if regex.firstMatch(in: working, options: [], range: range) != nil {
-                    isLongAgo = true
-                }
-                working = regex.stringByReplacingMatches(in: working, options: [], range: range, withTemplate: "")
-            }
-        }
-
-        let content = working.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !content.isEmpty else { return nil }
-
-        let when = detectedDate ?? Date()
-        return QuickNote(content: content, date: when, isLongAgo: isLongAgo, isProcessed: false)
-    }
-
     private func adjustToPast(_ date: Date) -> Date {
         let today = Date()
         let calendar = Calendar.current
@@ -921,106 +721,6 @@ struct QuickInputView: View {
         }
 
         return date
-    }
-
-    private func stripQuickNoteMarkers(from input: String) -> String {
-        var s = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        let prefixPattern = #"(?i)^(quick\s*note|quick)\b[\s:]*"#
-        if let r = s.range(of: prefixPattern, options: .regularExpression) {
-            s = String(s[r.upperBound...])
-        }
-        let separators = CharacterSet.whitespacesAndNewlines
-        let punct = CharacterSet.punctuationCharacters
-        let filteredTokens: [String] = s.components(separatedBy: separators).compactMap { raw in
-            guard !raw.isEmpty else { return nil }
-            let trimmedToken = raw.trimmingCharacters(in: punct)
-            if trimmedToken.isEmpty { return nil }
-            let lower = trimmedToken.lowercased()
-            if lower == "qn" || lower == "q" { return nil }
-            if lower == "quick" || lower == "quicknote" { return nil }
-            return raw
-        }
-
-        let joined = filteredTokens.joined(separator: " ")
-        return joined.replacingOccurrences(of: #"\s{2,}"#, with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func handlePhotoPicked(image: UIImage, date: Date?) {
-        // Only auto-assign if a single contact is selected
-        guard let selectedContact = selectedContact else {
-            // Pass through to normal photo picker flow if no contact selected
-            print("📸 [QuickInput] No contact selected, passing to fallback")
-            onPhotoPicked?(image, date)
-            return
-        }
-        
-        Task {
-            let success = await detectAndAssignSingleFace(to: selectedContact, image: image)
-            
-            await MainActor.run {
-                if success {
-                    print("✅ [QuickInput] Successfully auto-assigned single face to \(selectedContact.name ?? "contact")")
-                } else {
-                    print("📸 [QuickInput] Auto-assignment failed (0 or multiple faces), passing to fallback")
-                    onPhotoPicked?(image, date)
-                }
-            }
-        }
-    }
-
-    private func detectAndAssignSingleFace(to contact: Contact, image: UIImage) async -> Bool {
-        guard let cgImage = image.cgImage else { return false }
-        
-        await MainActor.run {
-            isProcessingPhoto = true
-        }
-        
-        defer {
-            Task { @MainActor in
-                isProcessingPhoto = false
-            }
-        }
-        
-        let request = VNDetectFaceRectanglesRequest()
-        let handler = VNImageRequestHandler(cgImage: cgImage)
-        
-        do {
-            try handler.perform([request])
-            
-            if let observations = request.results as? [VNFaceObservation],
-               observations.count == 1,
-               let face = observations.first {
-                
-                let imageSize = CGSize(width: CGFloat(cgImage.width), height: CGFloat(cgImage.height))
-                let rect = FaceCrop.expandedRect(for: face, imageSize: imageSize)
-                
-                if !rect.isNull && !rect.isEmpty,
-                   let cropped = cgImage.cropping(to: rect) {
-                    let faceImage = UIImage(cgImage: cropped)
-                    
-                    // Update the selected contact with this photo
-                    await MainActor.run {
-                        contact.photo = faceImage.jpegData(compressionQuality: 0.92) ?? Data()
-                    }
-                    
-                    do {
-                        try await MainActor.run {
-                            try modelContext.save()
-                        }
-                        return true
-                    } catch {
-                        print("❌ [QuickInput] Failed to save contact with new photo: \(error)")
-                    }
-                }
-            } else {
-                let count = (request.results as? [VNFaceObservation])?.count ?? 0
-                print("📸 [QuickInput] Detected \(count) faces, need exactly 1 for auto-assignment")
-            }
-        } catch {
-            print("❌ [QuickInput] Face detection failed: \(error)")
-        }
-        return false
     }
 }
 
@@ -1052,12 +752,11 @@ struct TotalQuickInputHeightKey: PreferenceKey {
     }
 }
 
-// Notification name for live text updates
 extension Notification.Name {
     static let quickInputTextDidChange = Notification.Name("QuickInputTextDidChange")
     static let quickInputRequestFocus = Notification.Name("QuickInputRequestFocus")
     static let quickInputResignFocus = Notification.Name("QuickInputResignFocus")
-    static let quickInputCameraDidPickPhoto = Notification.Name("QuickInputCameraDidPickPhoto")
+    static let quickInputShowExample = Notification.Name("QuickInputShowExample")
     static let quickInputCameraDidDismiss = Notification.Name("QuickInputCameraDidDismiss")
 }
 

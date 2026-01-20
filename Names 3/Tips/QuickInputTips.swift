@@ -1,6 +1,42 @@
 import TipKit
 import SwiftUI
 
+struct QuickInputFormatTip: Tip {
+    static let contactCreated = Event(id: "contact-created")
+    
+    var title: Text {
+        Text("Quick Add Your First Friend")
+    }
+    
+    var message: Text? {
+        Text("Type their name, add double colon (::), then what you remember about them. Add \"long time ago\" if you haven't seen them recently.")
+    }
+    
+    var image: Image? {
+        Image(systemName: "person.fill.questionmark")
+    }
+    
+    var actions: [Action] {
+        [
+            Action(id: "try-example", title: "Try Example") {
+                NotificationCenter.default.post(
+                    name: .quickInputShowExample,
+                    object: nil,
+                    userInfo: ["example": "Sarah:: met at tech conference, long time ago"]
+                )
+            }
+        ]
+    }
+    
+    var rules: [Rule] {
+        [
+            #Rule(Self.contactCreated) {
+                $0.donations.count == 0
+            }
+        ]
+    }
+}
+
 struct QuickInputBulkAddTip: Tip {
     static let contactCreated = Event(id: "contact-created")
     
@@ -25,55 +61,37 @@ struct QuickInputBulkAddTip: Tip {
     }
 }
 
-struct QuickInputModeSwitchTip: Tip {
-    static let quickNoteCreated = Event(id: "quick-note-created")
+struct QuickInputTagsTip: Tip {
+    static let tagAdded = Event(id: "tag-added")
+    static let contactCreated = Event(id: "contact-created")
     
     var title: Text {
-        Text("Switch to Quick Notes")
+        Text("Organize with Tags")
     }
     
     var message: Text? {
-        Text("Tap the note icon to switch between people mode and quick notes mode for capturing temporary thoughts")
+        Text("Add tags to contacts using #hashtags. Example: \"Alice #work #designer\"")
     }
     
     var image: Image? {
-        Image(systemName: "note.text")
+        Image(systemName: "number")
     }
     
     var rules: [Rule] {
         [
-            #Rule(Self.quickNoteCreated) {
-                $0.donations.count < 2
-            }
-        ]
-    }
-}
-
-struct QuickInputCameraTip: Tip {
-    static let photoTaken = Event(id: "photo-taken")
-    
-    var title: Text {
-        Text("Capture Faces with Camera")
-    }
-    
-    var message: Text? {
-        Text("Tap the camera icon to quickly capture a photo and assign it to a contact")
-    }
-    
-    var image: Image? {
-        Image(systemName: "camera.fill")
-    }
-    
-    var rules: [Rule] {
-        [
-            #Rule(Self.photoTaken) {
-                $0.donations.count < 1
+            #Rule(Self.contactCreated) {
+                $0.donations.count >= 5
+            },
+            #Rule(Self.tagAdded) {
+                $0.donations.count == 0
             }
         ]
     }
 }
 
 struct QuickInputDateParsingTip: Tip {
+    static let contactCreated = Event(id: "contact-created")
+    
     var title: Text {
         Text("Add Dates Naturally")
     }
@@ -85,18 +103,26 @@ struct QuickInputDateParsingTip: Tip {
     var image: Image? {
         Image(systemName: "calendar")
     }
+    
+    var rules: [Rule] {
+        [
+            #Rule(Self.contactCreated) {
+                $0.donations.count >= 8
+            }
+        ]
+    }
 }
 
-struct QuickInputTagsTip: Tip {
+struct QuickInputQuizTip: Tip {
     var title: Text {
-        Text("Organize with Tags")
+        Text("Test Your Memory")
     }
     
     var message: Text? {
-        Text("Add tags to contacts using #hashtags. Example: \"Alice #work #designer\"")
+        Text("Tap the quiz button to practice recognizing faces and build your memory")
     }
     
     var image: Image? {
-        Image(systemName: "number")
+        Image(systemName: "questionmark.circle.fill")
     }
 }

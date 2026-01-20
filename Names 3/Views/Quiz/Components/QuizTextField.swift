@@ -9,6 +9,7 @@ struct QuizTextField: View {
     let onSubmit: () -> Void
     
     @Environment(\.colorScheme) private var colorScheme
+    @FocusState private var internalFocus: Bool
     @AccessibilityFocusState private var isAccessibilityFocused: Bool
     
     var body: some View {
@@ -29,15 +30,21 @@ struct QuizTextField: View {
                 .overlay(
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .strokeBorder(
-                            isFocused ? Color.accentColor : Color.clear,
+                            internalFocus ? Color.accentColor : Color.clear,
                             lineWidth: 2
                         )
                 )
-                .focused($isFocused)
+                .focused($internalFocus)
                 .accessibilityFocused($isAccessibilityFocused)
                 .accessibilityLabel("Name input")
                 .accessibilityHint("Type the name of the person shown")
                 .onSubmit(onSubmit)
+                .onChange(of: internalFocus) { _, newValue in
+                    isFocused = newValue
+                }
+                .onChange(of: isFocused) { _, newValue in
+                    internalFocus = newValue
+                }
             
             SubmitButton(
                 text: text,
@@ -45,7 +52,7 @@ struct QuizTextField: View {
                 action: onSubmit
             )
         }
-        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isFocused)
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: internalFocus)
     }
 }
 

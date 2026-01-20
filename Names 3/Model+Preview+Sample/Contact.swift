@@ -12,6 +12,7 @@ import SwiftData
 class Contact {
     var uuid: UUID = UUID()
     var name: String? = ""
+    var nicknames: [String]? = []
     var summary: String? = ""
     var isMetLongAgo: Bool = false
     var isArchived: Bool = false
@@ -36,6 +37,7 @@ class Contact {
     init(
         uuid: UUID = UUID(),
         name: String = "",
+        nicknames: [String]? = [],
         summary: String = "",
         isMetLongAgo: Bool = false,
         isArchived: Bool = false,
@@ -53,6 +55,7 @@ class Contact {
     ) {
         self.uuid = uuid
         self.name = name
+        self.nicknames = nicknames
         self.summary = summary
         self.isMetLongAgo = isMetLongAgo
         self.isArchived = isArchived
@@ -67,6 +70,32 @@ class Contact {
         self.cropScale = cropScale
         self.quickNotes = quickNotes
         self.quizPerformance = quizPerformance
+    }
+    
+    var allAcceptableNames: [String] {
+        var names: [String] = []
+        
+        if let name = name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+            names.append(name)
+        }
+        
+        if let nicknames = nicknames {
+            names.append(contentsOf: nicknames.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+        }
+        
+        return Array(Set(names))
+    }
+    
+    var displayName: String {
+        if let name = name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+            return name
+        }
+        
+        if let firstNickname = nicknames?.first?.trimmingCharacters(in: .whitespacesAndNewlines), !firstNickname.isEmpty {
+            return firstNickname
+        }
+        
+        return "Unnamed"
     }
 }
 

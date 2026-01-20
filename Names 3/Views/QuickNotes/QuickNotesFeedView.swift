@@ -9,10 +9,6 @@ struct QuickNotesFeedView: View {
     @Query(sort: [SortDescriptor(\QuickNote.date, order: .reverse)])
     private var quickNotes: [QuickNote]
 
-    @State private var parsedContacts: [Contact] = []
-    @State private var isQuickNotesActive: Bool = true
-    @State private var selectedContact: Contact?
-
     var body: some View {
         NavigationStack {
             Group {
@@ -23,7 +19,7 @@ struct QuickNotesFeedView: View {
                             .foregroundStyle(.secondary)
                         Text("No quick notes")
                             .font(.headline)
-                        Text("Capture thoughts fast using the input below or from the People tab using “quick” or “quick note”.")
+                        Text("Capture thoughts fast using the input below")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
@@ -58,7 +54,7 @@ struct QuickNotesFeedView: View {
             }
             .navigationTitle("Quick Notes")
             .safeAreaInset(edge: .bottom) {
-                QuickInputView(mode: .quickNotes, parsedContacts: $parsedContacts, isQuickNotesActive: $isQuickNotesActive, selectedContact: $selectedContact)
+                QuickNoteInputView()
                     .padding(.top, 8)
                     .background(Color(UIColor.systemGroupedBackground))
             }

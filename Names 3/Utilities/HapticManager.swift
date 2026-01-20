@@ -6,7 +6,7 @@ final class HapticManager {
     private let impactLight = UIImpactFeedbackGenerator(style: .light)
     private let impactMedium = UIImpactFeedbackGenerator(style: .medium)
     private let impactHeavy = UIImpactFeedbackGenerator(style: .heavy)
-    private let selection = UISelectionFeedbackGenerator()
+    private let selectionGenerator = UISelectionFeedbackGenerator()
     private let notification = UINotificationFeedbackGenerator()
     
     private init() {
@@ -17,7 +17,7 @@ final class HapticManager {
         impactLight.prepare()
         impactMedium.prepare()
         impactHeavy.prepare()
-        selection.prepare()
+        selectionGenerator.prepare()
         notification.prepare()
     }
     
@@ -34,7 +34,7 @@ final class HapticManager {
     }
     
     func selection() {
-        selection.selectionChanged()
+        selectionGenerator.selectionChanged()
     }
     
     func success() {

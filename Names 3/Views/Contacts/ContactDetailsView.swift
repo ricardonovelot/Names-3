@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import UIKit
+import TipKit
 
 struct ContactDetailsView: View {
     @Environment(\.modelContext) private var modelContext
@@ -48,6 +49,10 @@ struct ContactDetailsView: View {
             .ignoresSafeArea(image != UIImage() ? .all : [])
             .background(Color(UIColor.systemGroupedBackground))
             .scrollIndicators(.hidden)
+            .onAppear {
+                // Donate event when user views contact details
+                TipManager.shared.donateContactViewed()
+            }
             .toolbar {
                 if isCreationFlow {
                     ToolbarItem(placement: .topBarLeading) {

@@ -13,6 +13,7 @@ import SmoothGradient
 import UIKit
 import UniformTypeIdentifiers
 import Photos
+import TipKit
 
 // MARK: - Drag & Drop Support
 
@@ -83,6 +84,9 @@ struct ContentView: View {
     @State private var homeTabSelection: AppTab = .home
     @State private var fullPhotoGridFaceViewModel: FaceDetectionViewModel? = nil
     @State private var showSettings = false
+    @State private var showQuickNotesFeed = false
+    @State private var showExitQuizConfirmation = false
+    @State private var quizResetTrigger = UUID()
     
     private struct PhotosSheetPayload: Identifiable, Hashable {
         let id = UUID()
@@ -228,7 +232,20 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                if let contact = selectedContact {
+                if showQuizView {
+                    QuizView(
+                        contacts: contacts,
+                        onComplete: {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                                showQuizView = false
+                            }
+                            quizResetTrigger = UUID()
+                        }
+                    )
+                    .id(quizResetTrigger)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .zIndex(4)
+                } else if let contact = selectedContact {
                     ContactDetailsView(contact: contact, onBack: {
                         withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
                             selectedContact = nil
@@ -238,20 +255,12 @@ struct ContentView: View {
                         .zIndex(3)
                 } else {
                     listContent
-                        .opacity(showInlineQuickNotes || showInlinePhotoPicker || showFullPhotoGrid ? 0 : 1)
-                        .offset(y: showInlineQuickNotes || showInlinePhotoPicker || showFullPhotoGrid ? -16 : 0)
-                        .allowsHitTesting(!showInlineQuickNotes && !showInlinePhotoPicker && !showFullPhotoGrid)
+                        .opacity(showInlinePhotoPicker || showFullPhotoGrid ? 0 : 1)
+                        .offset(y: showInlinePhotoPicker || showFullPhotoGrid ? -16 : 0)
+                        .allowsHitTesting(!showInlinePhotoPicker && !showFullPhotoGrid)
                         .zIndex(0)
-                        .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showInlineQuickNotes)
                         .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showInlinePhotoPicker)
                         .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showFullPhotoGrid)
-
-                    QuickNotesInlineView()
-                        .opacity(showInlineQuickNotes ? 1 : 0)
-                        .offset(y: showInlineQuickNotes ? 0 : 28)
-                        .allowsHitTesting(showInlineQuickNotes)
-                        .zIndex(showFullPhotoGrid ? 0 : 1)
-                        .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showInlineQuickNotes)
 
                     PhotosInlineView(contactsContext: modelContext, isVisible: showInlinePhotoPicker) { image, date in
                         print("✅ [ContentView] Photo picked from inline view")
@@ -263,7 +272,7 @@ struct ContentView: View {
                     .opacity(showInlinePhotoPicker ? 1 : 0)
                     .offset(y: showInlinePhotoPicker ? 0 : 28)
                     .allowsHitTesting(showInlinePhotoPicker)
-                    .zIndex(showInlineQuickNotes || showFullPhotoGrid ? 0 : 1)
+                    .zIndex(showFullPhotoGrid ? 0 : 1)
                     .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showInlinePhotoPicker)
                     
                     if let payload = fullPhotoGridPayload {
@@ -272,6 +281,7 @@ struct ContentView: View {
                 }
             }
             .animation(.spring(response: 0.35, dampingFraction: 0.9), value: selectedContact != nil)
+            .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showQuizView)
             .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
             .onChange(of: pickedImageForBatch) { oldValue, newValue in
                 if let image = newValue {
@@ -286,54 +296,27 @@ struct ContentView: View {
                 }
             }
             .safeAreaInset(edge: .bottom) {
-                QuickInputView(
-                    mode: .people,
-                    parsedContacts: $parsedContacts,
-                    isQuickNotesActive: $showInlineQuickNotes,
-                    selectedContact: $selectedContact,
-                    onCameraTap: {
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-                            if showInlineQuickNotes { showInlineQuickNotes = false }
-                            if showInlinePhotoPicker { showInlinePhotoPicker = false }
-                            if showFullPhotoGrid { closeFullPhotoGrid() }
+                if !showQuizView {
+                    QuickInputView(
+                        parsedContacts: $parsedContacts,
+                        selectedContact: $selectedContact,
+                        onQuizTap: {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                                showQuizView = true
+                            }
+                        },
+                        faceDetectionViewModel: fullPhotoGridFaceViewModel,
+                        onFaceSelected: { index in
+                            handleFaceSelectedFromCarousel(index: index)
+                        },
+                        onPhotoPicked: { image, date in
+                            print("📸 [ContentView] Photo fallback - opening bulk face view")
+                            pickedImageForBatch = image
                         }
-                        openFullPhotoGrid(scope: .all, initialScrollDate: nil)
-                    },
-                    onQuickNoteAdded: {
-                        hasPendingQuickNoteInput = false
-                    },
-                    onQuickNoteDetected: {
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-                            if showInlinePhotoPicker { showInlinePhotoPicker = false }
-                            if showFullPhotoGrid { closeFullPhotoGrid() }
-                            showInlineQuickNotes = true
-                        }
-                        hasPendingQuickNoteInput = true
-                    },
-                    onQuickNoteCleared: {
-                        hasPendingQuickNoteInput = false
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-                            showInlineQuickNotes = false
-                        }
-                    },
-                    onInlinePhotosTap: {
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-                            if showInlineQuickNotes { showInlineQuickNotes = false }
-                            if showFullPhotoGrid { closeFullPhotoGrid() }
-                            showInlinePhotoPicker.toggle()
-                        }
-                    },
-                    isInlinePhotosActive: { showInlinePhotoPicker },
-                    faceDetectionViewModel: fullPhotoGridFaceViewModel,
-                    onFaceSelected: { index in
-                        handleFaceSelectedFromCarousel(index: index)
-                    },
-                    onPhotoPicked: { image, date in
-                        print("📸 [ContentView] Photo fallback - opening bulk face view")
-                        pickedImageForBatch = image
-                    }
-                )
-                .id(quickInputResetID)
+                    )
+                    .id(quickInputResetID)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
             .background(Color(uiColor: .systemGroupedBackground))
             .overlay {
@@ -342,75 +325,97 @@ struct ContentView: View {
                 }
             }
             .toolbar {
-                ToolbarItemGroup(placement: .navigationBarTrailing) {
-                    Menu {
-                        Button(action: {
-                        }) {
-                            Label("Export CSV", systemImage: "square.and.arrow.up")
-                        }
+                if showQuizView {
+                    ToolbarItem(placement: .topBarLeading) {
                         Button {
-                            showDeletedView = true
-                        } label: {
-                            Label("Deleted", systemImage: "trash")
-                        }
-                        Button {
-                            showGroupPhotos = true
-                        } label: {
-                            Label("Group Photos", systemImage: "person.3.sequence")
-                        }
-                        Button {
-                            showQuizView = true
-                        } label: {
-                            Label("Faces Quiz", systemImage: "questionmark.circle")
-                        }
-                        Button {
-                            showRegexHelp = true
-                        } label: {
-                            Label("Instructions", systemImage: "info.circle")
-                        }
-
-                        Divider()
-                        
-                        Button {
-                            showManageTags = true
-                        } label: {
-                            Label("Groups & Places", systemImage: "tag")
-                        }
-
-                        Divider()
-
-                        Button {
-                            showHomeView = true
-                        } label: {
-                            Label("Recent", systemImage: "house")
-                        }
-                        
-                        Button {
-                            showSettings = true
-                        } label: {
-                            Label("Settings", systemImage: "gearshape")
-                        }
-
-                        if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited {
-                            Button {
-                                presentLimitedLibraryPicker()
-                            } label: {
-                                Label("Manage Photos Selection", systemImage: "plus.circle")
+                            if let vm = (viewModel as? QuizViewModel), vm.hasAnsweredAnyQuestion {
+                                showExitQuizConfirmation = true
+                            } else {
+                                withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                                    showQuizView = false
+                                }
                             }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 18, weight: .medium))
+                                Text("Exit Quiz")
+                                    .font(.body.weight(.medium))
+                            }
+                            .foregroundStyle(.red)
                         }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .fontWeight(.medium)
-                            .liquidGlass(in: Capsule())
+                    }
+                } else {
+                    ToolbarItemGroup(placement: .navigationBarTrailing) {
+                        Menu {
+                            Button {
+                                showQuickNotesFeed = true
+                            } label: {
+                                Label("Quick Notes", systemImage: "note.text")
+                            }
+                            
+                            Divider()
+                            
+                            Button(action: {
+                            }) {
+                                Label("Export CSV", systemImage: "square.and.arrow.up")
+                            }
+                            Button {
+                                showDeletedView = true
+                            } label: {
+                                Label("Deleted", systemImage: "trash")
+                            }
+                            Button {
+                                showGroupPhotos = true
+                            } label: {
+                                Label("Group Photos", systemImage: "person.3.sequence")
+                            }
+                            Button {
+                                showRegexHelp = true
+                            } label: {
+                                Label("Instructions", systemImage: "info.circle")
+                            }
+
+                            Divider()
+                            
+                            Button {
+                                showManageTags = true
+                            } label: {
+                                Label("Groups & Places", systemImage: "tag")
+                            }
+
+                            Divider()
+
+                            Button {
+                                showHomeView = true
+                            } label: {
+                                Label("Recent", systemImage: "house")
+                            }
+                            
+                            Button {
+                                showSettings = true
+                            } label: {
+                                Label("Settings", systemImage: "gearshape")
+                            }
+
+                            if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited {
+                                Button {
+                                    presentLimitedLibraryPicker()
+                                } label: {
+                                    Label("Manage Photos Selection", systemImage: "plus.circle")
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis")
+                                .fontWeight(.medium)
+                                .liquidGlass(in: Capsule())
+                        }
                     }
                 }
             }
             .toolbarBackground(.hidden)
             
             .photosPicker(isPresented: $showPhotosPicker, selection: $selectedItem, matching: .images)
-            .sheet(isPresented: $showQuizView) {
-                QuizView(contacts: contacts)
-            }
             .sheet(isPresented: $showRegexHelp) {
                 RegexShortcutsView()
             }
@@ -441,6 +446,19 @@ struct ContentView: View {
             }
             .sheet(isPresented: $showSettings) {
                 SettingsView()
+            }
+            .sheet(isPresented: $showQuickNotesFeed) {
+                QuickNotesFeedView()
+            }
+            .alert("Exit Quiz?", isPresented: $showExitQuizConfirmation) {
+                Button("Cancel", role: .cancel) { }
+                Button("Exit", role: .destructive) {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                        showQuizView = false
+                    }
+                }
+            } message: {
+                Text("You can resume this quiz later from where you left off.")
             }
         }
         
@@ -872,6 +890,7 @@ private struct ContactTile: View {
     let contact: Contact
     @Environment(\.modelContext) private var modelContext
     var onChangeDate: (() -> Void)?
+    var showNavigationTip: Bool = false
     
     var body: some View {
         NavigationLink {
@@ -930,6 +949,7 @@ private struct ContactTile: View {
                     .scaleEffect(phase.isIdentity ? 1 : 0.9)
             }
         }
+        .popoverTip(ContactNavigationTip(), arrowEdge: .top)
         .draggable(ContactDragRecord(uuid: contact.uuid)) {
             Text(contact.name ?? "Contact")
                 .padding(6)

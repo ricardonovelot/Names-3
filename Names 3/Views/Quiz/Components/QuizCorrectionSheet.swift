@@ -8,19 +8,26 @@ struct QuizCorrectionSheet: View {
     let onMarkIncorrect: () -> Void
     
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    
+    private var isIPad: Bool {
+        horizontalSizeClass == .regular
+    }
     
     var body: some View {
         NavigationStack {
-            VStack(spacing: 32) {
-                headerSection
-                
-                answersSection
-                
-                Spacer()
-                
-                actionButtons
+            ScrollView {
+                VStack(spacing: 32) {
+                    headerSection
+                        .padding(.top, 20)
+                    
+                    answersSection
+                    
+                    actionButtons
+                        .padding(.bottom, 20)
+                }
+                .padding(.horizontal, isIPad ? 40 : 24)
             }
-            .padding(24)
             .background(Color(UIColor.systemGroupedBackground))
             .navigationTitle("Verify Answer")
             .navigationBarTitleDisplayMode(.inline)
@@ -32,27 +39,28 @@ struct QuizCorrectionSheet: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large])
+        .presentationDetents(isIPad ? [.large] : [.medium, .large])
         .presentationDragIndicator(.visible)
     }
     
     @ViewBuilder
     private var headerSection: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 16) {
             Image(systemName: "questionmark.circle.fill")
-                .font(.system(size: 56))
+                .font(.system(size: isIPad ? 72 : 56))
                 .foregroundStyle(.orange)
             
             Text("Was your answer correct?")
-                .font(.title2.bold())
+                .font(isIPad ? .title.bold() : .title2.bold())
                 .multilineTextAlignment(.center)
             
-            Text("Your answer was close but didn't match exactly. If it's another name they go by, mark it as correct.")
-                .font(.subheadline)
+            Text("If what you entered is another valid name or nickname for this person, mark it as correct and it will be saved.")
+                .font(isIPad ? .body : .subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
         }
+        .frame(maxWidth: isIPad ? 500 : .infinity)
     }
     
     @ViewBuilder
@@ -72,11 +80,12 @@ struct QuizCorrectionSheet: View {
                 color: .green
             )
         }
+        .frame(maxWidth: isIPad ? 500 : .infinity)
     }
     
     @ViewBuilder
     private func answerCard(title: String, answer: String, icon: String, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             Label {
                 Text(title)
                     .font(.caption.weight(.semibold))
@@ -89,13 +98,13 @@ struct QuizCorrectionSheet: View {
             }
             
             Text(answer)
-                .font(.system(size: 18, weight: .semibold, design: .rounded))
+                .font(.system(size: isIPad ? 20 : 18, weight: .semibold, design: .rounded))
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(16)
+        .padding(isIPad ? 20 : 16)
         .background(Color(UIColor.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
     
     @ViewBuilder
@@ -105,33 +114,34 @@ struct QuizCorrectionSheet: View {
                 onMarkCorrect()
                 dismiss()
             } label: {
-                HStack {
+                HStack(spacing: 8) {
                     Image(systemName: "checkmark.circle.fill")
                     Text("Yes, I Was Correct")
                 }
-                .font(.body.weight(.semibold))
+                .font(isIPad ? .title3.weight(.semibold) : .body.weight(.semibold))
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 16)
+                .padding(.vertical, isIPad ? 18 : 16)
                 .background(Color.green)
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
             
             Button {
                 onMarkIncorrect()
                 dismiss()
             } label: {
-                HStack {
+                HStack(spacing: 8) {
                     Image(systemName: "xmark.circle.fill")
                     Text("No, I Was Wrong")
                 }
-                .font(.body.weight(.semibold))
+                .font(isIPad ? .title3.weight(.semibold) : .body.weight(.semibold))
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 16)
+                .padding(.vertical, isIPad ? 18 : 16)
                 .background(Color.red)
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
         }
+        .frame(maxWidth: isIPad ? 500 : .infinity)
     }
 }

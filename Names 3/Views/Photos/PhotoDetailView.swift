@@ -97,12 +97,9 @@ struct PhotoDetailView: View {
         }
         .safeAreaInset(edge: .bottom) {
             QuickInputView(
-                mode: .people,
                 parsedContacts: $parsedContacts,
-                isQuickNotesActive: $isQuickNotesActive,
                 selectedContact: $selectedContact,
-                onCameraTap: nil,
-                allowQuickNoteCreation: false
+                onQuizTap: nil
             )
         }
     }

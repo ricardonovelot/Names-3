@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import TipKit
 
 struct HomeView: View {
     @Binding var tabSelection: AppTab
@@ -37,11 +38,19 @@ struct HomeView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
+                    
+                    TipView(QuizStreakTip(), arrowEdge: .top)
+                        .padding(.horizontal)
 
                     QuizCardsSectionView(
                         onFacesQuiz: { showQuizView = true },
                         onNotesQuiz: { showNotesQuiz = true }
                     )
+                    
+                    if !unprocessedQuickNotes.isEmpty {
+                        TipView(QuickNotesProcessingTip(), arrowEdge: .top)
+                            .padding(.horizontal)
+                    }
 
                     UnprocessedQuickNotesSectionView(
                         quickNotes: recentUnprocessedQuickNotes
@@ -59,7 +68,7 @@ struct HomeView: View {
             }
         }
         .sheet(isPresented: $showQuizView) {
-            QuizView(contacts: contacts)
+            QuizView(contacts: contacts, onComplete: { showQuizView = false })
         }
         .sheet(isPresented: $showNotesQuiz) {
             NotesQuizView(contacts: contacts)
@@ -307,53 +316,56 @@ private struct QuizCardsSectionView: View {
     let onNotesQuiz: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            Button(action: onFacesQuiz) {
-                HStack(spacing: 12) {
-                    Image(systemName: "questionmark.circle")
-                        .font(.system(size: 28, weight: .regular))
-                        .frame(width: 40, height: 40)
-                        .foregroundStyle(.white)
-                        .background(Color.teal)
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Faces Quiz")
-                            .font(.headline)
-                        Text("Practice recognizing faces")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+        VStack(spacing: 12) {
+            HStack(spacing: 12) {
+                Button(action: onFacesQuiz) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "questionmark.circle")
+                            .font(.system(size: 28, weight: .regular))
+                            .frame(width: 40, height: 40)
+                            .foregroundStyle(.white)
+                            .background(Color.teal)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Faces Quiz")
+                                .font(.headline)
+                            Text("Practice recognizing faces")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
                     }
-                    Spacer(minLength: 0)
+                    .padding(16)
+                    .background(.ultraThinMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
-                .padding(16)
-                .background(.ultraThinMaterial)
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            }
-            .buttonStyle(.plain)
+                .buttonStyle(.plain)
+                .popoverTip(NotesQuizTip())
 
-            Button(action: onNotesQuiz) {
-                HStack(spacing: 12) {
-                    Image(systemName: "note.text")
-                        .font(.system(size: 28, weight: .regular))
-                        .frame(width: 40, height: 40)
-                        .foregroundStyle(.white)
-                        .background(Color.orange)
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Notes Quiz")
-                            .font(.headline)
-                        Text("Test your memory of notes")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                Button(action: onNotesQuiz) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "note.text")
+                            .font(.system(size: 28, weight: .regular))
+                            .frame(width: 40, height: 40)
+                            .foregroundStyle(.white)
+                            .background(Color.orange)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Notes Quiz")
+                                .font(.headline)
+                            Text("Test your memory of notes")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
                     }
-                    Spacer(minLength: 0)
+                    .padding(16)
+                    .background(.ultraThinMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
-                .padding(16)
-                .background(.ultraThinMaterial)
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity)
     }
 }

@@ -11,17 +11,55 @@ final class WelcomeFaceNamingViewController: UIViewController {
     
     weak var delegate: WelcomeFaceNamingViewControllerDelegate?
     
-    private let photosWithFaces: [(image: UIImage, date: Date, asset: PHAsset)]
+    private let prioritizedAssets: [PHAsset]
     private let modelContext: ModelContext
+    private let imageManager = PHCachingImageManager()
     
-    private var currentPhotoIndex = 0
+    private var currentPhotoData: (image: UIImage, date: Date, asset: PHAsset)?
     private var detectedFaces: [DetectedFaceInfo] = []
     private var faceAssignments: [String] = []
     private var totalFacesSaved = 0
+    private var totalPhotosProcessed = 0
+    private var isLoadingNextPhoto = false
+    
+    private var recentlyShownFacePrints: [Data] = []
+    private let maxRecentFaces = 30
+    private let similarityThreshold: Float = 0.5
+    
+    private let prefetchCount = 5
+    private let detectionTargetSize = CGSize(width: 1024, height: 1024)
+    
+    private var photoQueue: [PhotoCandidate] = []
+    private var currentBatchIndex = 0
+    private let batchSize = 30
+    private var isPreprocessing = false
+    
+    private struct PhotoCandidate: Comparable {
+        let asset: PHAsset
+        let faceCount: Int
+        let index: Int
+        
+        static func < (lhs: PhotoCandidate, rhs: PhotoCandidate) -> Bool {
+            if lhs.faceCount != rhs.faceCount {
+                if lhs.faceCount >= 2 && lhs.faceCount <= 5 {
+                    if rhs.faceCount >= 2 && rhs.faceCount <= 5 {
+                        return lhs.faceCount > rhs.faceCount
+                    }
+                    return true
+                }
+                if rhs.faceCount >= 2 && rhs.faceCount <= 5 {
+                    return false
+                }
+                return lhs.faceCount > rhs.faceCount
+            }
+            return lhs.index < rhs.index
+        }
+    }
     
     private struct DetectedFaceInfo {
         let image: UIImage
         let boundingBox: CGRect
+        let facePrint: Data?
     }
     
     private lazy var titleLabel: UILabel = {
@@ -38,7 +76,7 @@ final class WelcomeFaceNamingViewController: UIViewController {
     private lazy var subtitleLabel: UILabel = {
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
-        label.text = "We found faces in your recent photos. Let's start naming them!"
+        label.text = "We'll show you different people from your photos"
         label.font = UIFont.systemFont(ofSize: 17, weight: .regular)
         label.textAlignment = .center
         label.textColor = .secondaryLabel
@@ -55,6 +93,13 @@ final class WelcomeFaceNamingViewController: UIViewController {
         imageView.clipsToBounds = true
         imageView.backgroundColor = UIColor.secondarySystemBackground
         return imageView
+    }()
+    
+    private lazy var loadingIndicator: UIActivityIndicatorView = {
+        let indicator = UIActivityIndicatorView(style: .large)
+        indicator.translatesAutoresizingMaskIntoConstraints = false
+        indicator.hidesWhenStopped = true
+        return indicator
     }()
     
     private lazy var facesCollectionView: UICollectionView = {
@@ -117,25 +162,32 @@ final class WelcomeFaceNamingViewController: UIViewController {
         label.font = UIFont.systemFont(ofSize: 15, weight: .regular)
         label.textAlignment = .center
         label.textColor = .tertiaryLabel
+        label.numberOfLines = 2
         return label
     }()
     
     private var currentFaceIndex = 0
     
-    init(photosWithFaces: [(image: UIImage, date: Date, asset: PHAsset)], modelContext: ModelContext) {
-        self.photosWithFaces = photosWithFaces
+    init(prioritizedAssets: [PHAsset], modelContext: ModelContext) {
+        self.prioritizedAssets = prioritizedAssets
         self.modelContext = modelContext
         super.init(nibName: nil, bundle: nil)
+        
+        imageManager.allowsCachingHighQualityImages = false
     }
     
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
     
+    deinit {
+        imageManager.stopCachingImagesForAllAssets()
+    }
+    
     override func viewDidLoad() {
         super.viewDidLoad()
         setupView()
-        loadCurrentPhoto()
+        preprocessNextBatch()
     }
     
     override func viewDidAppear(_ animated: Bool) {
@@ -149,6 +201,7 @@ final class WelcomeFaceNamingViewController: UIViewController {
         view.addSubview(titleLabel)
         view.addSubview(subtitleLabel)
         view.addSubview(photoImageView)
+        view.addSubview(loadingIndicator)
         view.addSubview(facesCollectionView)
         view.addSubview(nameTextField)
         view.addSubview(skipPhotoButton)
@@ -169,6 +222,9 @@ final class WelcomeFaceNamingViewController: UIViewController {
             photoImageView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
             photoImageView.heightAnchor.constraint(equalToConstant: 280),
             
+            loadingIndicator.centerXAnchor.constraint(equalTo: photoImageView.centerXAnchor),
+            loadingIndicator.centerYAnchor.constraint(equalTo: photoImageView.centerYAnchor),
+            
             facesCollectionView.topAnchor.constraint(equalTo: photoImageView.bottomAnchor, constant: 20),
             facesCollectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             facesCollectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -184,6 +240,8 @@ final class WelcomeFaceNamingViewController: UIViewController {
             
             progressLabel.bottomAnchor.constraint(equalTo: doneButton.topAnchor, constant: -12),
             progressLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            progressLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
+            progressLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
             
             doneButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -24),
             doneButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
@@ -191,110 +249,326 @@ final class WelcomeFaceNamingViewController: UIViewController {
         ])
     }
     
-    private func loadCurrentPhoto() {
-        guard currentPhotoIndex < photosWithFaces.count else {
-            finish()
+    private func preprocessNextBatch() {
+        guard !isPreprocessing else { return }
+        guard currentBatchIndex < prioritizedAssets.count else {
+            if photoQueue.isEmpty {
+                loadNextPhotoWithFaces()
+            }
             return
         }
         
-        let photoData = photosWithFaces[currentPhotoIndex]
-        photoImageView.image = photoData.image
-        
-        updateProgressLabel()
+        isPreprocessing = true
         
         Task {
-            await detectFacesInCurrentPhoto(photoData.image)
-            await MainActor.run {
-                facesCollectionView.reloadData()
-                if !detectedFaces.isEmpty {
-                    currentFaceIndex = 0
-                    facesCollectionView.selectItem(
-                        at: IndexPath(item: 0, section: 0),
-                        animated: false,
-                        scrollPosition: .centeredHorizontally
+            let startIndex = currentBatchIndex
+            let endIndex = min(startIndex + batchSize, prioritizedAssets.count)
+            let batchAssets = Array(prioritizedAssets[startIndex..<endIndex])
+            
+            print("📦 Preprocessing batch \(startIndex)..<\(endIndex)")
+            
+            var candidates: [PhotoCandidate] = []
+            
+            for (offset, asset) in batchAssets.enumerated() {
+                guard let image = await loadOptimizedImage(for: asset) else {
+                    continue
+                }
+                
+                let faceCount = await countFaces(in: image)
+                
+                if faceCount > 0 {
+                    let candidate = PhotoCandidate(
+                        asset: asset,
+                        faceCount: faceCount,
+                        index: startIndex + offset
                     )
+                    candidates.append(candidate)
+                }
+            }
+            
+            await MainActor.run {
+                self.photoQueue.append(contentsOf: candidates.sorted())
+                self.currentBatchIndex = endIndex
+                self.isPreprocessing = false
+                
+                print("✅ Batch complete. Queue now has \(self.photoQueue.count) photos")
+                print("   2-5 faces: \(candidates.filter { $0.faceCount >= 2 && $0.faceCount <= 5 }.count)")
+                print("   6+ faces: \(candidates.filter { $0.faceCount > 5 }.count)")
+                print("   1 face: \(candidates.filter { $0.faceCount == 1 }.count)")
+                
+                if self.currentPhotoData == nil {
+                    self.loadNextPhotoWithFaces()
                 }
             }
         }
     }
     
-    private func detectFacesInCurrentPhoto(_ image: UIImage) async {
+    private func countFaces(in image: UIImage) async -> Int {
         guard let cgImage = image.cgImage else {
-            detectedFaces = []
-            faceAssignments = []
-            return
+            return 0
         }
         
-        let request = VNDetectFaceRectanglesRequest()
-        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let request = VNDetectFaceRectanglesRequest()
+                let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+                
+                do {
+                    try handler.perform([request])
+                    let count = (request.results as? [VNFaceObservation])?.count ?? 0
+                    continuation.resume(returning: count)
+                } catch {
+                    continuation.resume(returning: 0)
+                }
+            }
+        }
+    }
+    
+    private func requestOptions() -> PHImageRequestOptions {
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .highQualityFormat
+        options.resizeMode = .fast
+        options.isNetworkAccessAllowed = true
+        options.isSynchronous = false
+        return options
+    }
+    
+    private func loadNextPhotoWithFaces() {
+        guard !isLoadingNextPhoto else { return }
+        isLoadingNextPhoto = true
         
-        do {
-            try handler.perform([request])
-            let observations = (request.results as? [VNFaceObservation]) ?? []
-            
-            let imageSize = CGSize(width: CGFloat(cgImage.width), height: CGFloat(cgImage.height))
-            let fullRect = CGRect(origin: .zero, size: imageSize)
-            
-            var faces: [DetectedFaceInfo] = []
-            
-            for observation in observations {
-                let boundingBox = observation.boundingBox
-                let scaleFactor: CGFloat = 1.8
+        loadingIndicator.startAnimating()
+        detectedFaces = []
+        faceAssignments = []
+        facesCollectionView.reloadData()
+        nameTextField.text = ""
+        
+        Task {
+            while !photoQueue.isEmpty || currentBatchIndex < prioritizedAssets.count {
+                if photoQueue.isEmpty {
+                    await MainActor.run {
+                        self.preprocessNextBatch()
+                    }
+                    
+                    try? await Task.sleep(for: .milliseconds(100))
+                    continue
+                }
                 
-                let scaledBox = CGRect(
-                    x: boundingBox.origin.x * imageSize.width - (boundingBox.width * imageSize.width * (scaleFactor - 1)) / 2,
-                    y: (1 - boundingBox.origin.y - boundingBox.height) * imageSize.height - (boundingBox.height * imageSize.height * (scaleFactor - 1)) / 2,
-                    width: boundingBox.width * imageSize.width * scaleFactor,
-                    height: boundingBox.height * imageSize.height * scaleFactor
-                ).integral
+                let candidate = photoQueue.removeFirst()
                 
-                let clipped = scaledBox.intersection(fullRect)
+                guard let image = await loadOptimizedImage(for: candidate.asset) else {
+                    continue
+                }
                 
-                if !clipped.isNull && !clipped.isEmpty,
-                   let croppedCGImage = cgImage.cropping(to: clipped) {
-                    let faceImage = UIImage(cgImage: croppedCGImage)
-                    faces.append(DetectedFaceInfo(image: faceImage, boundingBox: clipped))
+                let (hasFaces, hasNewFaces) = await detectAndCheckFaceDiversity(image)
+                
+                if hasFaces && hasNewFaces {
+                    let date = candidate.asset.creationDate ?? Date()
+                    await MainActor.run {
+                        self.currentPhotoData = (image: image, date: date, asset: candidate.asset)
+                        self.photoImageView.image = image
+                        self.loadingIndicator.stopAnimating()
+                        self.isLoadingNextPhoto = false
+                        self.updateProgressLabel()
+                        self.facesCollectionView.reloadData()
+                        if !self.detectedFaces.isEmpty {
+                            self.currentFaceIndex = 0
+                            self.facesCollectionView.selectItem(
+                                at: IndexPath(item: 0, section: 0),
+                                animated: false,
+                                scrollPosition: .centeredHorizontally
+                            )
+                        }
+                        
+                        if self.photoQueue.count < 10 && !self.isPreprocessing {
+                            self.preprocessNextBatch()
+                        }
+                    }
+                    return
                 }
             }
             
             await MainActor.run {
-                self.detectedFaces = faces
-                self.faceAssignments = Array(repeating: "", count: faces.count)
-            }
-        } catch {
-            print("❌ Face detection error: \(error)")
-            await MainActor.run {
-                self.detectedFaces = []
-                self.faceAssignments = []
+                self.loadingIndicator.stopAnimating()
+                self.isLoadingNextPhoto = false
+                self.showNoMorePhotosAlert()
             }
         }
+    }
+    
+    private func loadOptimizedImage(for asset: PHAsset) async -> UIImage? {
+        return await withCheckedContinuation { continuation in
+            imageManager.requestImage(
+                for: asset,
+                targetSize: detectionTargetSize,
+                contentMode: .aspectFit,
+                options: requestOptions()
+            ) { image, _ in
+                continuation.resume(returning: image)
+            }
+        }
+    }
+    
+    private func detectAndCheckFaceDiversity(_ image: UIImage) async -> (hasFaces: Bool, hasNewFaces: Bool) {
+        guard let cgImage = image.cgImage else {
+            return (false, false)
+        }
+        
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let faceDetectionRequest = VNDetectFaceRectanglesRequest()
+                let faceLandmarksRequest = VNDetectFaceLandmarksRequest()
+                let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+                
+                do {
+                    try handler.perform([faceDetectionRequest, faceLandmarksRequest])
+                    
+                    guard let faceObservations = faceDetectionRequest.results as? [VNFaceObservation],
+                          !faceObservations.isEmpty else {
+                        continuation.resume(returning: (false, false))
+                        return
+                    }
+                    
+                    let imageSize = CGSize(width: CGFloat(cgImage.width), height: CGFloat(cgImage.height))
+                    let fullRect = CGRect(origin: .zero, size: imageSize)
+                    
+                    var faces: [DetectedFaceInfo] = []
+                    var newFacePrints: [Data] = []
+                    var hasAtLeastOneNewFace = false
+                    
+                    for observation in faceObservations {
+                        let boundingBox = observation.boundingBox
+                        let scaleFactor: CGFloat = 1.8
+                        
+                        let scaledBox = CGRect(
+                            x: boundingBox.origin.x * imageSize.width - (boundingBox.width * imageSize.width * (scaleFactor - 1)) / 2,
+                            y: (1 - boundingBox.origin.y - boundingBox.height) * imageSize.height - (boundingBox.height * imageSize.height * (scaleFactor - 1)) / 2,
+                            width: boundingBox.width * imageSize.width * scaleFactor,
+                            height: boundingBox.height * imageSize.height * scaleFactor
+                        ).integral
+                        
+                        let clipped = scaledBox.intersection(fullRect)
+                        
+                        if !clipped.isNull && !clipped.isEmpty,
+                           let croppedCGImage = cgImage.cropping(to: clipped) {
+                            
+                            let facePrintData = self.generateFacePrint(for: observation, in: cgImage)
+                            
+                            let isNewFace = self.isFaceNew(facePrint: facePrintData)
+                            if isNewFace {
+                                hasAtLeastOneNewFace = true
+                                if let fpData = facePrintData {
+                                    newFacePrints.append(fpData)
+                                }
+                            }
+                            
+                            let faceImage = UIImage(cgImage: croppedCGImage)
+                            faces.append(DetectedFaceInfo(
+                                image: faceImage,
+                                boundingBox: clipped,
+                                facePrint: facePrintData
+                            ))
+                        }
+                    }
+                    
+                    DispatchQueue.main.async {
+                        self.detectedFaces = faces
+                        self.faceAssignments = Array(repeating: "", count: faces.count)
+                        
+                        for fpData in newFacePrints {
+                            self.recentlyShownFacePrints.append(fpData)
+                        }
+                        
+                        if self.recentlyShownFacePrints.count > self.maxRecentFaces {
+                            self.recentlyShownFacePrints.removeFirst(self.recentlyShownFacePrints.count - self.maxRecentFaces)
+                        }
+                        
+                        continuation.resume(returning: (!faces.isEmpty, hasAtLeastOneNewFace))
+                    }
+                } catch {
+                    print("❌ Face detection error: \(error)")
+                    continuation.resume(returning: (false, false))
+                }
+            }
+        }
+    }
+    
+    private func generateFacePrint(for observation: VNFaceObservation, in cgImage: CGImage) -> Data? {
+        let boundingBox = observation.boundingBox
+        let width = CGFloat(cgImage.width)
+        let height = CGFloat(cgImage.height)
+        
+        let rect = CGRect(
+            x: boundingBox.origin.x * width,
+            y: (1 - boundingBox.origin.y - boundingBox.height) * height,
+            width: boundingBox.width * width,
+            height: boundingBox.height * height
+        )
+        
+        guard let faceCrop = cgImage.cropping(to: rect) else {
+            return nil
+        }
+        
+        let featurePrintRequest = VNGenerateImageFeaturePrintRequest()
+        let handler = VNImageRequestHandler(cgImage: faceCrop, options: [:])
+        
+        do {
+            try handler.perform([featurePrintRequest])
+            guard let featurePrint = featurePrintRequest.results?.first as? VNFeaturePrintObservation else {
+                return nil
+            }
+            
+            return try NSKeyedArchiver.archivedData(withRootObject: featurePrint, requiringSecureCoding: true)
+        } catch {
+            return nil
+        }
+    }
+    
+    private func isFaceNew(facePrint: Data?) -> Bool {
+        guard let newFacePrintData = facePrint,
+              let newFaceprint = try? NSKeyedUnarchiver.unarchivedObject(ofClass: VNFeaturePrintObservation.self, from: newFacePrintData) else {
+            return true
+        }
+        
+        for existingFacePrintData in recentlyShownFacePrints {
+            guard let existingFaceprint = try? NSKeyedUnarchiver.unarchivedObject(ofClass: VNFeaturePrintObservation.self, from: existingFacePrintData) else {
+                continue
+            }
+            
+            do {
+                var distance = Float(0)
+                try newFaceprint.computeDistance(&distance, to: existingFaceprint)
+                
+                if distance < similarityThreshold {
+                    return false
+                }
+            } catch {
+                continue
+            }
+        }
+        
+        return true
     }
     
     private func updateProgressLabel() {
-        let namedCount = faceAssignments.filter { !$0.isEmpty }.count
-        progressLabel.text = "Photo \(currentPhotoIndex + 1) of \(photosWithFaces.count) • \(totalFacesSaved) faces named so far"
+        if totalFacesSaved == 0 {
+            progressLabel.text = "Looking for different people in your photos..."
+        } else {
+            progressLabel.text = "🎉 \(totalFacesSaved) \(totalFacesSaved == 1 ? "face" : "faces") named so far"
+        }
     }
     
     @objc private func skipPhotoTapped() {
-        moveToNextPhoto()
+        saveCurrentFaces()
+        loadNextPhotoWithFaces()
     }
     
     @objc private func doneTapped() {
         finish()
     }
     
-    private func moveToNextPhoto() {
-        saveCurrentFaces()
-        currentPhotoIndex += 1
-        currentFaceIndex = 0
-        nameTextField.text = ""
-        loadCurrentPhoto()
-    }
-    
     private func saveCurrentFaces() {
-        guard currentPhotoIndex < photosWithFaces.count else { return }
-        
-        let photoData = photosWithFaces[currentPhotoIndex]
+        guard let photoData = currentPhotoData else { return }
         
         for (index, name) in faceAssignments.enumerated() {
             let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -324,10 +598,34 @@ final class WelcomeFaceNamingViewController: UIViewController {
         
         do {
             try modelContext.save()
-            print("✅ Saved \(faceAssignments.filter { !$0.isEmpty }.count) faces from photo \(currentPhotoIndex + 1)")
+            print("✅ Saved \(faceAssignments.filter { !$0.isEmpty }.count) faces from current photo")
         } catch {
             print("❌ Failed to save faces: \(error)")
         }
+        
+        totalPhotosProcessed += 1
+    }
+    
+    private func showNoMorePhotosAlert() {
+        let message: String
+        if totalFacesSaved > 0 {
+            message = "You've named \(totalFacesSaved) different \(totalFacesSaved == 1 ? "person" : "people") from your photos!"
+        } else {
+            message = "No more unique faces found. You can add faces anytime from the photo library."
+        }
+        
+        let alert = UIAlertController(
+            title: "All Done!",
+            message: message,
+            preferredStyle: .alert
+        )
+        
+        alert.addAction(UIAlertAction(title: "Finish", style: .default) { [weak self] _ in
+            guard let self = self else { return }
+            self.delegate?.welcomeFaceNamingViewControllerDidFinish(self)
+        })
+        
+        present(alert, animated: true)
     }
     
     private func finish() {
@@ -335,7 +633,7 @@ final class WelcomeFaceNamingViewController: UIViewController {
         
         let message: String
         if totalFacesSaved > 0 {
-            message = "Great! You named \(totalFacesSaved) \(totalFacesSaved == 1 ? "face" : "faces"). You can add more anytime from the photo library."
+            message = "Great! You named \(totalFacesSaved) different \(totalFacesSaved == 1 ? "person" : "people"). You can add more anytime from the photo library."
         } else {
             message = "No problem! You can name faces anytime from the photo library."
         }
@@ -411,7 +709,8 @@ extension WelcomeFaceNamingViewController: UITextFieldDelegate {
             )
         } else {
             textField.text = ""
-            moveToNextPhoto()
+            saveCurrentFaces()
+            loadNextPhotoWithFaces()
         }
         
         return false
@@ -489,10 +788,9 @@ private final class FaceCell: UICollectionViewCell {
             let config = UIImage.SymbolConfiguration(pointSize: 16, weight: .bold)
             statusIndicator.image = UIImage(systemName: "checkmark.seal.fill", withConfiguration: config)
             statusIndicator.tintColor = .systemGreen
+            statusIndicator.isHidden = false
         } else {
-            let config = UIImage.SymbolConfiguration(pointSize: 16, weight: .bold)
-            statusIndicator.image = UIImage(systemName: "questionmark.circle.fill", withConfiguration: config)
-            statusIndicator.tintColor = .systemYellow
+            statusIndicator.isHidden = true
         }
     }
     

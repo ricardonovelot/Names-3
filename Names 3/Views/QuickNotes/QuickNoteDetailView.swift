@@ -62,12 +62,10 @@ struct QuickNoteDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom) {
             QuickInputView(
-                mode: .people,
                 parsedContacts: $parsedContacts,
-                isQuickNotesActive: $isQuickNotesActive,
                 selectedContact: $selectedContact,
-                linkedQuickNote: quickNote,
-                allowQuickNoteCreation: false
+                onQuizTap: nil,
+                linkedQuickNote: quickNote
             )
             .padding(.top, 8)
             .background(Color(UIColor.systemGroupedBackground))

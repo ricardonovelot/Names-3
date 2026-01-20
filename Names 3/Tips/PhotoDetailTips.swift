@@ -62,3 +62,17 @@ struct PhotoBulkImportTip: Tip {
         Image(systemName: "photo.stack")
     }
 }
+
+struct PhotoCommaSeparatedTip: Tip {
+    var title: Text {
+        Text("Name Multiple Faces at Once")
+    }
+    
+    var message: Text? {
+        Text("Type names separated by commas to assign them in order. Leave blanks to skip faces")
+    }
+    
+    var image: Image? {
+        Image(systemName: "comma.circle")
+    }
+}

@@ -19,7 +19,7 @@ struct QuizStreakTip: Tip {
     var rules: [Rule] {
         [
             #Rule(Self.quizCompleted) {
-                $0.donations.count >= 1 && $0.donations.count < 5
+                $0.donations.count > 0
             }
         ]
     }

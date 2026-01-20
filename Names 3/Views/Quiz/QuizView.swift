@@ -1,420 +1,374 @@
 import SwiftUI
 import SwiftData
-import Combine
 
 struct QuizView: View {
     let contacts: [Contact]
-    @Environment(\.dismiss) private var dismiss
+    let onComplete: () -> Void
+    
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     
-    @State private var quizItems: [QuizItem] = []
-    @State private var currentIndex: Int = 0
-    @State private var userInput: String = ""
-    @State private var showFeedback: Bool = false
-    @State private var isCorrect: Bool = false
-    @State private var hintLevel: Int = 0
-    @State private var score: Int = 0
-    @State private var wrongAnswers: Int = 0
-    @State private var showCompletionSheet: Bool = false
-    @State private var skippedCount: Int = 0
+    @State private var viewModel: QuizViewModel?
+    @State private var isTextFieldFocusedState: Bool = false
+    @State private var showResumeDialog: Bool = false
+    @State private var showExitConfirmation: Bool = false
     
-    @FocusState private var isTextFieldFocused: Bool
-    
-    @State private var keyboardHeight: CGFloat = 0
-    
-    private struct QuizItem: Identifiable {
-        let id = UUID()
-        let contact: Contact
-        let performance: QuizPerformance
-    }
-    
-    private var currentItem: QuizItem? {
-        guard currentIndex >= 0 && currentIndex < quizItems.count else { return nil }
-        return quizItems[currentIndex]
-    }
-    
-    private var correctName: String {
-        currentItem?.contact.name ?? ""
-    }
-    
-    private var hintText: String {
-        guard hintLevel > 0, !correctName.isEmpty else { return "" }
-        
-        switch hintLevel {
-        case 1:
-            return String(correctName.prefix(1)) + String(repeating: "_", count: max(0, correctName.count - 1))
-        case 2:
-            let halfLength = correctName.count / 2
-            return String(correctName.prefix(halfLength)) + String(repeating: "_", count: max(0, correctName.count - halfLength))
-        default:
-            return correctName
-        }
-    }
-    
-    private var shouldShowContextHints: Bool {
-        guard let contact = currentItem?.contact else { return false }
-        let hasPhoto = !contact.photo.isEmpty && UIImage(data: contact.photo) != nil
-        let hasTags = !(contact.tags?.isEmpty ?? true)
-        return !hasPhoto || !hasTags
-    }
+    @Namespace private var animation
     
     var body: some View {
-        NavigationStack {
-            GeometryReader { geometry in
-                ScrollViewReader { scrollProxy in
-                    ScrollView {
-                        VStack(spacing: 16) {
-                            if let item = currentItem {
-                                photoSection(for: item.contact)
-                                    .id("photo")
-                                
-                                groupSection(for: item.contact)
-                                
-                                inputSection
-                                    .id("input")
-                                
-                                if keyboardHeight == 0 {
-                                    hintSection
-                                }
-                                
-                                feedbackSection
-                            } else {
-                                emptyStateSection
-                            }
-                            
-                            Spacer(minLength: keyboardHeight > 0 ? keyboardHeight + 100 : 12)
-                        }
-                        .padding(.bottom, keyboardHeight > 0 ? 0 : 80)
+        Group {
+            if let viewModel {
+                quizContent(viewModel: viewModel)
+            } else {
+                Color.clear
+                    .onAppear {
+                        setupViewModel()
                     }
-                    .scrollDismissesKeyboard(.interactively)
-                    .onChange(of: isTextFieldFocused) { oldValue, newValue in
-                        if newValue {
-                            withAnimation(.easeOut(duration: 0.3)) {
-                                scrollProxy.scrollTo("input", anchor: .top)
-                            }
-                        }
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    handleExitRequest()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 18, weight: .medium))
+                        Text("Exit Quiz")
+                            .font(.body.weight(.medium))
                     }
+                    .foregroundStyle(.red)
                 }
             }
-            .overlay(alignment: .bottom) {
-                if keyboardHeight == 0 {
-                    controlsOverlay
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
+        }
+        .alert("Exit Quiz?", isPresented: $showExitConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Exit", role: .destructive) {
+                onComplete()
             }
-            .navigationTitle("Quiz")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        showCompletionSheet = true
-                    } label: {
-                        Text("End Quiz")
-                            .font(.body)
-                    }
-                }
-                ToolbarItem(placement: .principal) {
-                    if !quizItems.isEmpty {
-                        HStack(spacing: 4) {
-                            Text("\(min(currentIndex + 1, quizItems.count))")
-                                .font(.subheadline.weight(.semibold))
-                            Text("of \(quizItems.count)")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
-            .background(Color(UIColor.systemGroupedBackground))
-            .onAppear {
-                if quizItems.isEmpty {
-                    setupQuiz()
-                }
-                setupKeyboardObservers()
-                focusTextField()
-            }
-            .onDisappear {
-                NotificationCenter.default.removeObserver(self)
-            }
-            .sheet(isPresented: $showCompletionSheet) {
-                QuizCompletionView(
-                    totalQuestions: quizItems.count,
-                    correctAnswers: score,
-                    wrongAnswers: wrongAnswers,
-                    skippedCount: skippedCount,
-                    isFullCompletion: currentIndex >= quizItems.count - 1,
-                    onReview: {
-                        showCompletionSheet = false
-                        reviewSkippedQuestions()
-                    },
-                    onDismiss: {
-                        dismiss()
-                    }
-                )
-                .interactiveDismissDisabled()
-            }
+        } message: {
+            Text("You can resume this quiz later from where you left off.")
+        }
+    }
+    
+    private func handleExitRequest() {
+        guard let viewModel else {
+            onComplete()
+            return
+        }
+        
+        if viewModel.hasAnsweredAnyQuestion {
+            showExitConfirmation = true
+        } else {
+            viewModel.clearSession()
+            onComplete()
         }
     }
     
     @ViewBuilder
-    private func contentSection(for contact: Contact) -> some View {
-        VStack(spacing: 20) {
-            photoSection(for: contact)
-            
-            contextSection(for: contact)
-            
-            inputSection
-                .id("inputSection")
-            
-            hintSection
-            
-            feedbackSection
-            
-            controlsSection
-            
-            Spacer(minLength: 40)
-        }
-        .padding(.top, 16)
-        .padding(.bottom, 40)
-    }
-    
-    @ViewBuilder
-    private func photoSection(for contact: Contact) -> some View {
+    private func quizContent(viewModel: QuizViewModel) -> some View {
         ZStack {
-            if let image = UIImage(data: contact.photo), image != UIImage() {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 200)
-                    .clipped()
+            Color(UIColor.systemGroupedBackground)
+                .ignoresSafeArea()
+            
+            if let item = viewModel.currentItem {
+                ScrollView {
+                    VStack(spacing: 20) {
+                        QuizPhotoCard(contact: item.contact)
+                            .padding(.top, 80)
+                            .transition(cardTransition)
+                            .id(item.id)
+                        
+                        if !(item.contact.tags?.isEmpty ?? true) {
+                            groupSection(for: item.contact)
+                                .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                        }
+                        
+                        inputSection(viewModel: viewModel)
+                            .padding(.top, 8)
+                        
+                        if !viewModel.showFeedback {
+                            hintSection(viewModel: viewModel)
+                                .transition(.opacity.combined(with: .move(edge: .top)))
+                        }
+                        
+                        if viewModel.showFeedback {
+                            feedbackSection(viewModel: viewModel)
+                                .transition(.scale(scale: 0.8).combined(with: .opacity))
+                        }
+                        
+                        Spacer(minLength: 120)
+                    }
+                }
+                .scrollDismissesKeyboard(.interactively)
+                .safeAreaInset(edge: .bottom) {
+                    controlsBar(viewModel: viewModel)
+                }
+            } else {
+                emptyStateView
+            }
+        }
+        .overlay(alignment: .top) {
+            if !viewModel.quizItems.isEmpty {
+                QuizProgressBar(
+                    currentIndex: viewModel.currentIndex,
+                    totalQuestions: viewModel.quizItems.count
+                )
+                .padding(.top, 12)
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { viewModel.showCompletionSheet },
+            set: { viewModel.showCompletionSheet = $0 }
+        )) {
+            QuizCompletionView(
+                totalQuestions: viewModel.quizItems.count,
+                correctAnswers: viewModel.score,
+                wrongAnswers: viewModel.wrongAnswers,
+                skippedCount: viewModel.skippedCount,
+                isFullCompletion: viewModel.currentIndex >= viewModel.quizItems.count - 1,
+                onReview: {
+                    viewModel.showCompletionSheet = false
+                    viewModel.reviewSkippedQuestions()
+                },
+                onDismiss: {
+                    viewModel.showCompletionSheet = false
+                    onComplete()
+                }
+            )
+            .interactiveDismissDisabled()
+        }
+        .sheet(isPresented: Binding(
+            get: { viewModel.showCorrectionSheet },
+            set: { viewModel.showCorrectionSheet = $0 }
+        )) {
+            QuizCorrectionSheet(
+                userAnswer: viewModel.potentialCorrectAnswer,
+                expectedAnswer: viewModel.correctName,
+                allAcceptableAnswers: viewModel.allAcceptableAnswers,
+                onMarkCorrect: {
+                    viewModel.markAsCorrect()
+                },
+                onMarkIncorrect: {
+                    viewModel.markAsIncorrect()
+                }
+            )
+        }
+        .onChange(of: isTextFieldFocusedState) { _, newValue in
+            viewModel.isTextFieldFocused = newValue
+        }
+        .onChange(of: viewModel.isTextFieldFocused) { _, newValue in
+            isTextFieldFocusedState = newValue
+        }
+        .onShake {
+            if !viewModel.showFeedback && viewModel.currentItem != nil {
+                viewModel.requestHint()
+            }
+        }
+        .overlay {
+            if showResumeDialog {
+                Color.black.opacity(0.4)
+                    .ignoresSafeArea()
                     .overlay {
-                        LinearGradient(
-                            gradient: Gradient(colors: [
-                                .black.opacity(0.0),
-                                .black.opacity(0.15),
-                                .black.opacity(0.35)
-                            ]),
-                            startPoint: .top,
-                            endPoint: .bottom
+                        QuizResumeDialog(
+                            progress: "\(viewModel.currentIndex)/\(viewModel.quizItems.count) questions",
+                            onResume: {
+                                _ = viewModel.resumeSession()
+                                Task { @MainActor in
+                                    try? await Task.sleep(nanoseconds: 300_000_000)
+                                    isTextFieldFocusedState = true
+                                }
+                            },
+                            onStartFresh: {
+                                viewModel.clearSession()
+                                viewModel.setupQuiz(with: contacts)
+                                Task { @MainActor in
+                                    try? await Task.sleep(nanoseconds: 300_000_000)
+                                    isTextFieldFocusedState = true
+                                }
+                            }
                         )
                     }
-            } else {
-                ZStack {
-                    RadialGradient(
-                        colors: [
-                            Color(uiColor: .secondarySystemBackground),
-                            Color(uiColor: .tertiarySystemBackground)
-                        ],
-                        center: .center,
-                        startRadius: 20,
-                        endRadius: 140
-                    )
-                    
-                    Image(systemName: "person.crop.square")
-                        .font(.system(size: 48, weight: .light))
-                        .foregroundStyle(.quaternary)
-                }
-                .frame(maxWidth: .infinity)
-                .frame(height: 200)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .padding(.horizontal)
     }
     
     @ViewBuilder
-    private func contextSection(for contact: Contact) -> some View {
-        VStack(spacing: 12) {
-            if !(contact.tags?.isEmpty ?? true) {
-                contextCard(
-                    title: "Group",
-                    content: groupLabel(for: contact),
-                    icon: "person.2.fill"
-                )
-            }
-            
-            if shouldShowContextHints, let summary = contact.summary, !summary.isEmpty {
-                contextCard(
-                    title: "Context",
-                    content: summary,
-                    icon: "text.bubble.fill"
-                )
-            }
-        }
-        .padding(.horizontal)
-    }
-    
-    @ViewBuilder
-    private func contextCard(title: String, content: String, icon: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
-                    .font(.system(size: 13, weight: .medium))
-                Text(title)
-                    .font(.caption.weight(.semibold))
+    private func groupSection(for contact: Contact) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label {
+                Text("Group")
+                    .font(.caption)
+                    .fontWeight(.semibold)
                     .textCase(.uppercase)
+                    .foregroundStyle(.secondary)
+            } icon: {
+                Image(systemName: "person.2.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .foregroundStyle(.secondary)
             
-            Text(content)
-                .font(.body)
+            Text(groupLabel(for: contact))
+                .font(.system(size: 17, weight: .semibold, design: .default))
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .lineLimit(3)
         }
         .padding(16)
-        .liquidGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous), stroke: true)
+        .background(Color(UIColor.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.horizontal, 20)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Group: \(groupLabel(for: contact))")
     }
     
     @ViewBuilder
-    private var inputSection: some View {
-        VStack(spacing: 12) {
+    private func inputSection(viewModel: QuizViewModel) -> some View {
+        VStack(spacing: 16) {
             Text("Type their name")
-                .font(.title3.weight(.semibold))
+                .font(.system(size: 22, weight: .bold, design: .rounded))
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal)
+            
+            QuizTextField(
+                text: Binding(
+                    get: { viewModel.userInput },
+                    set: { viewModel.userInput = $0 }
+                ),
+                isFocused: $isTextFieldFocusedState,
+                placeholder: "Name",
+                isDisabled: viewModel.showFeedback,
+                onSubmit: {
+                    guard !viewModel.showFeedback else { return }
+                    viewModel.submitAnswer()
+                }
+            )
+        }
+        .padding(.horizontal, 20)
+    }
+    
+    @ViewBuilder
+    private func hintSection(viewModel: QuizViewModel) -> some View {
+        VStack(spacing: 14) {
+            if viewModel.hintLevel > 0 {
+                HintDisplay(text: viewModel.hintText)
+            }
             
             HStack(spacing: 12) {
-                TextField("Name", text: $userInput)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.body)
-                    .autocapitalization(.words)
-                    .disableAutocorrection(true)
-                    .focused($isTextFieldFocused)
-                    .disabled(showFeedback)
-                    .onSubmit {
-                        guard !showFeedback else { return }
-                        submitAnswer()
-                    }
-                
-                Button {
-                    guard !showFeedback else { return }
-                    submitAnswer()
-                } label: {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 32))
-                        .foregroundStyle(userInput.isEmpty ? .gray : .blue)
-                }
-                .disabled(showFeedback || userInput.isEmpty)
-            }
-            .padding(.horizontal)
-        }
-    }
-    
-    @ViewBuilder
-    private var hintSection: some View {
-        if !showFeedback {
-            VStack(spacing: 12) {
-                if hintLevel > 0 {
-                    Text(hintText)
-                        .font(.title2.monospaced())
-                        .foregroundStyle(.secondary)
-                        .padding(.vertical, 12)
-                        .padding(.horizontal, 20)
-                        .liquidGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous), stroke: true)
-                        .transition(.opacity.combined(with: .scale(scale: 0.95)))
-                }
-                
-                HStack(spacing: 12) {
-                    Button {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                            hintLevel += 1
+                HintButton(
+                    level: viewModel.hintLevel,
+                    action: {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
+                            viewModel.requestHint()
                         }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "lightbulb.fill")
-                            Text(hintLevel == 0 ? "Hint" : (hintLevel < 3 ? "More" : "Reveal"))
-                        }
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.orange)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                        .liquidGlass(in: Capsule(), stroke: true)
                     }
-                    .buttonStyle(.plain)
-                    
-                    Button {
-                        revealAndFail()
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "flag.fill")
-                            Text("Skip")
-                        }
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                        .liquidGlass(in: Capsule(), stroke: true)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal)
-        }
-    }
-    
-    @ViewBuilder
-    private var feedbackSection: some View {
-        if showFeedback {
-            VStack(spacing: 12) {
-                HStack(spacing: 10) {
-                    Image(systemName: isCorrect ? "checkmark.circle.fill" : "xmark.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(isCorrect ? .green : .red)
-                    Text(isCorrect ? "Correct!" : "Answer: \(correctName)")
-                        .font(.headline)
-                        .foregroundStyle(isCorrect ? .green : .red)
-                }
-                .padding(.vertical, 14)
-                .padding(.horizontal, 20)
-                .frame(maxWidth: .infinity)
-                .liquidGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous), stroke: true)
-                .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                )
                 
-                if hintLevel >= 3 {
-                    Text("Used full reveal")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                SkipButton {
+                    viewModel.revealAndFail()
                 }
             }
-            .padding(.horizontal)
         }
+        .padding(.horizontal, 20)
     }
     
     @ViewBuilder
-    private var controlsSection: some View {
-        HStack {
-            Text("Score: \(score)/\(currentIndex + 1)")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-            Spacer()
-            if !showFeedback {
-                Button("Skip") {
-                    skipQuestion()
-                }
-                .buttonStyle(.bordered)
-            } else {
-                Button("Next") {
-                    advance()
-                }
-                .buttonStyle(.borderedProminent)
+    private func feedbackSection(viewModel: QuizViewModel) -> some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 12) {
+                Image(systemName: viewModel.isCorrect ? "checkmark.circle.fill" : "xmark.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(viewModel.isCorrect ? .green : .red)
+                    .symbolEffect(.bounce, value: viewModel.showFeedback)
+                
+                Text(viewModel.isCorrect ? "Correct!" : viewModel.correctName)
+                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .foregroundStyle(viewModel.isCorrect ? .green : .red)
             }
-        }
-        .padding(.horizontal)
-        .padding(.top, 6)
-    }
-    
-    @ViewBuilder
-    private var emptyStateSection: some View {
-        VStack(spacing: 20) {
-            Spacer()
+            .padding(.vertical, 16)
+            .padding(.horizontal, 24)
+            .frame(maxWidth: .infinity)
+            .background(
+                (viewModel.isCorrect ? Color.green : Color.red).opacity(0.12)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(
+                        (viewModel.isCorrect ? Color.green : Color.red).opacity(0.3),
+                        lineWidth: 2
+                    )
+            )
             
+            if viewModel.hintLevel >= 3 {
+                Label("Answer revealed", systemImage: "eye.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 20)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(viewModel.isCorrect ? "Correct answer" : "Incorrect. The answer is \(viewModel.correctName)")
+    }
+    
+    @ViewBuilder
+    private func controlsBar(viewModel: QuizViewModel) -> some View {
+        VStack(spacing: 0) {
+            Divider()
+            
+            HStack(spacing: 16) {
+                ScoreDisplay(
+                    score: viewModel.score,
+                    total: max(1, viewModel.currentIndex + 1)
+                )
+                
+                Spacer()
+                
+                if !viewModel.showFeedback {
+                    Button {
+                        viewModel.skipQuestion()
+                    } label: {
+                        Text("Skip")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 11)
+                            .background(Color(UIColor.secondarySystemGroupedBackground))
+                            .clipShape(Capsule())
+                    }
+                    .accessibilityLabel("Skip this question")
+                } else {
+                    Button {
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
+                            viewModel.advance()
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text("Next")
+                            Image(systemName: "arrow.right")
+                        }
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 11)
+                        .background(Color.accentColor)
+                        .clipShape(Capsule())
+                    }
+                    .accessibilityLabel("Next question")
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+            .background(.ultraThinMaterial)
+        }
+    }
+    
+    private var emptyStateView: some View {
+        VStack(spacing: 24) {
             Image(systemName: "questionmark.circle")
-                .font(.system(size: 60))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 70))
+                .foregroundStyle(.tertiary)
             
-            VStack(spacing: 8) {
+            VStack(spacing: 10) {
                 Text("No Contacts Available")
                     .font(.title2.bold())
                 
@@ -423,204 +377,18 @@ struct QuizView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
-            
-            Button {
-                dismiss()
-            } label: {
-                Text("Close")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 32)
-                    .padding(.vertical, 12)
-                    .background(Color.accentColor)
-                    .clipShape(Capsule())
-            }
-            
-            Spacer()
         }
-        .padding()
+        .padding(40)
     }
     
-    private func setupQuiz() {
-        let valid = contacts.filter { contact in
-            guard let name = contact.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else {
-                return false
-            }
-            
-            // Filter out contacts with insufficient recognition cues
-            let hasPhoto = !contact.photo.isEmpty && UIImage(data: contact.photo) != nil
-            let hasSummary = !(contact.summary?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-            let hasNotes = !(contact.notes?.isEmpty ?? true)
-            
-            // Need at least photo OR meaningful context (not just tags)
-            return hasPhoto || hasSummary || hasNotes
-        }
-        
-        var items: [QuizItem] = []
-        for contact in valid {
-            let performance = getOrCreatePerformance(for: contact)
-            items.append(QuizItem(contact: contact, performance: performance))
-        }
-        
-        items.sort { item1, item2 in
-            item1.performance.dueDate < item2.performance.dueDate
-        }
-        
-        // Limit to 10 items per session (optimal learning batch size)
-        let sessionSize = min(10, items.count)
-        quizItems = Array(items.prefix(sessionSize))
-    }
-    
-    private func getOrCreatePerformance(for contact: Contact) -> QuizPerformance {
-        if let existing = contact.quizPerformance {
-            return existing
-        }
-        
-        let performance = QuizPerformance(contact: contact)
-        modelContext.insert(performance)
-        contact.quizPerformance = performance
-        
-        do {
-            try modelContext.save()
-        } catch {
-            print("❌ [QuizView] Failed to create performance: \(error)")
-        }
-        
-        return performance
-    }
-    
-    private func submitAnswer() {
-        guard let item = currentItem else { return }
-        
-        // Dismiss keyboard
-        isTextFieldFocused = false
-        
-        let correct = isAnswerCorrect(userAnswer: userInput, correctName: correctName)
-        isCorrect = correct
-        
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-            showFeedback = true
-        }
-        
-        if correct && hintLevel < 3 {
-            score += 1
-            let quality = calculateQuality()
-            item.performance.recordSuccess(quality: quality)
-            
-            // Auto-advance on correct answer after brief celebration
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                self.advance()
-            }
+    private var cardTransition: AnyTransition {
+        if reduceMotion {
+            return .opacity
         } else {
-            wrongAnswers += 1
-            item.performance.recordFailure()
-            // Manual advance on wrong answer (user needs time to process)
-        }
-        
-        do {
-            try modelContext.save()
-        } catch {
-            print("❌ [QuizView] Failed to save performance: \(error)")
-        }
-    }
-    
-    private func revealAndFail() {
-        // Dismiss keyboard
-        isTextFieldFocused = false
-        
-        hintLevel = 3
-        isCorrect = false
-        wrongAnswers += 1
-        
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-            showFeedback = true
-        }
-        
-        if let item = currentItem {
-            item.performance.recordFailure()
-            do {
-                try modelContext.save()
-            } catch {
-                print("❌ [QuizView] Failed to save performance: \(error)")
-            }
-        }
-    }
-    
-    private func calculateQuality() -> Int {
-        switch hintLevel {
-        case 0: return 5
-        case 1: return 4
-        case 2: return 3
-        default: return 2
-        }
-    }
-    
-    private func isAnswerCorrect(userAnswer: String, correctName: String) -> Bool {
-        let normalizedUser = userAnswer.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let normalizedCorrect = correctName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        
-        guard !normalizedUser.isEmpty else { return false }
-        
-        if normalizedUser == normalizedCorrect {
-            return true
-        }
-        
-        let distance = levenshteinDistance(normalizedUser, normalizedCorrect)
-        let threshold = max(1, normalizedCorrect.count / 4)
-        return distance <= threshold
-    }
-    
-    private func levenshteinDistance(_ s1: String, _ s2: String) -> Int {
-        let s1Array = Array(s1)
-        let s2Array = Array(s2)
-        var matrix = [[Int]](repeating: [Int](repeating: 0, count: s2Array.count + 1), count: s1Array.count + 1)
-        
-        for i in 0...s1Array.count {
-            matrix[i][0] = i
-        }
-        for j in 0...s2Array.count {
-            matrix[0][j] = j
-        }
-        
-        for i in 1...s1Array.count {
-            for j in 1...s2Array.count {
-                if s1Array[i-1] == s2Array[j-1] {
-                    matrix[i][j] = matrix[i-1][j-1]
-                } else {
-                    matrix[i][j] = min(
-                        matrix[i-1][j] + 1,
-                        matrix[i][j-1] + 1,
-                        matrix[i-1][j-1] + 1
-                    )
-                }
-            }
-        }
-        
-        return matrix[s1Array.count][s2Array.count]
-    }
-    
-    private func advance() {
-        guard !quizItems.isEmpty else {
-            dismiss()
-            return
-        }
-        
-        if currentIndex >= quizItems.count - 1 {
-            dismiss()
-        } else {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                showFeedback = false
-            }
-            userInput = ""
-            hintLevel = 0
-            currentIndex += 1
-            focusTextField()
-        }
-    }
-    
-    private func focusTextField() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-            isTextFieldFocused = true
+            return .asymmetric(
+                insertion: .move(edge: .trailing).combined(with: .opacity),
+                removal: .move(edge: .leading).combined(with: .opacity)
+            )
         }
     }
     
@@ -630,138 +398,133 @@ struct QuizView: View {
         return names.sorted().joined(separator: ", ")
     }
     
-    private func skipQuestion() {
-        guard let item = currentItem else { return }
+    private func setupViewModel() {
+        let vm = QuizViewModel(modelContext: modelContext)
         
-        skippedCount += 1
-        
-        item.performance.dueDate = Date().addingTimeInterval(3600)
-        
-        do {
-            try modelContext.save()
-        } catch {
-            print("❌ [QuizView] Failed to save skip: \(error)")
-        }
-        
-        advanceWithoutFeedback()
-    }
-    
-    private func reviewSkippedQuestions() {
-        let skippedItems = quizItems.filter { item in
-            let hourAgo = Date().addingTimeInterval(-3600)
-            return item.performance.dueDate > hourAgo && item.performance.dueDate < Date().addingTimeInterval(7200)
-        }
-        
-        if !skippedItems.isEmpty {
-            currentIndex = 0
-            quizItems = skippedItems
-            score = 0
-            skippedCount = 0
-            showFeedback = false
-            userInput = ""
-            hintLevel = 0
-            focusTextField()
-        }
-    }
-    
-    @ViewBuilder
-    private func groupSection(for contact: Contact) -> some View {
-        if !(contact.tags?.isEmpty ?? true) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Group")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(groupLabel(for: contact))
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-                    .lineLimit(2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .padding(.horizontal)
-        }
-    }
-    
-    @ViewBuilder
-    private var controlsOverlay: some View {
-        VStack(spacing: 0) {
-            Divider()
-            
-            HStack {
-                Text("Score: \(score)/\(max(1, currentIndex + 1))")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                
-                if !showFeedback {
-                    Button {
-                        skipQuestion()
-                    } label: {
-                        Text("Skip")
-                            .font(.body.weight(.medium))
-                    }
-                    .buttonStyle(.bordered)
-                } else {
-                    Button {
-                        advance()
-                    } label: {
-                        HStack {
-                            Text("Next")
-                            Image(systemName: "arrow.right")
-                        }
-                        .font(.body.weight(.medium))
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 12)
-            .background(.ultraThinMaterial)
-        }
-    }
-    
-    private func setupKeyboardObservers() {
-        NotificationCenter.default.addObserver(
-            forName: UIResponder.keyboardWillShowNotification,
-            object: nil,
-            queue: .main
-        ) { [self] notification in
-            guard let keyboardFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else {
-                return
-            }
-            
-            withAnimation(.easeOut(duration: 0.25)) {
-                keyboardHeight = keyboardFrame.height
-            }
-        }
-        
-        NotificationCenter.default.addObserver(
-            forName: UIResponder.keyboardWillHideNotification,
-            object: nil,
-            queue: .main
-        ) { [self] _ in
-            withAnimation(.easeOut(duration: 0.25)) {
-                keyboardHeight = 0
-            }
-        }
-    }
-    
-    private func advanceWithoutFeedback() {
-        guard !quizItems.isEmpty else {
-            showCompletionScreen()
-            return
-        }
-        
-        if currentIndex >= quizItems.count - 1 {
-            showCompletionScreen()
+        if vm.hasSavedSession() {
+            viewModel = vm
+            showResumeDialog = true
         } else {
-            userInput = ""
-            hintLevel = 0
-            currentIndex += 1
-            focusTextField()
+            vm.setupQuiz(with: contacts)
+            viewModel = vm
+            
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                isTextFieldFocusedState = true
+            }
+        }
+    }
+}
+
+private struct HintDisplay: View {
+    let text: String
+    
+    var body: some View {
+        Text(text)
+            .font(.system(size: 24, weight: .medium, design: .monospaced))
+            .foregroundStyle(.secondary)
+            .tracking(4)
+            .padding(.vertical, 16)
+            .padding(.horizontal, 24)
+            .frame(maxWidth: .infinity)
+            .background(Color(UIColor.secondarySystemGroupedBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .accessibilityLabel("Hint: \(text)")
+    }
+}
+
+private struct HintButton: View {
+    let level: Int
+    let action: () -> Void
+    
+    private var title: String {
+        switch level {
+        case 0: return "Hint"
+        case 1, 2: return "More"
+        default: return "Reveal"
         }
     }
     
-    private func showCompletionScreen() {
-        showCompletionSheet = true
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: "lightbulb.fill")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.orange)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 11)
+                .background(Color.orange.opacity(0.12))
+                .clipShape(Capsule())
+                .overlay(
+                    Capsule()
+                        .strokeBorder(Color.orange.opacity(0.3), lineWidth: 1)
+                )
+        }
+        .accessibilityLabel("Request \(title.lowercased())")
+    }
+}
+
+private struct SkipButton: View {
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            Label("Skip", systemImage: "flag.fill")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 11)
+                .background(Color(UIColor.secondarySystemGroupedBackground))
+                .clipShape(Capsule())
+        }
+        .accessibilityLabel("Skip and mark as wrong")
+    }
+}
+
+private struct ScoreDisplay: View {
+    let score: Int
+    let total: Int
+    
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.footnote)
+                .foregroundStyle(.green)
+            
+            Text("\(score)/\(total)")
+                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Score: \(score) out of \(total)")
+    }
+}
+
+extension View {
+    func onShake(perform action: @escaping () -> Void) -> some View {
+        self.modifier(ShakeGestureModifier(action: action))
+    }
+}
+
+private struct ShakeGestureModifier: ViewModifier {
+    let action: () -> Void
+    
+    func body(content: Content) -> some View {
+        content
+            .onReceive(NotificationCenter.default.publisher(for: UIDevice.deviceDidShakeNotification)) { _ in
+                action()
+            }
+    }
+}
+
+extension UIDevice {
+    static let deviceDidShakeNotification = Notification.Name(rawValue: "deviceDidShakeNotification")
+}
+
+extension UIWindow {
+    open override func motionEnded(_ motion: UIEvent.EventSubtype, with event: UIEvent?) {
+        if motion == .motionShake {
+            NotificationCenter.default.post(name: UIDevice.deviceDidShakeNotification, object: nil)
+        }
     }
 }

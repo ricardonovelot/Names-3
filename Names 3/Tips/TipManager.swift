@@ -24,18 +24,16 @@ final class TipManager {
     func donateContactCreated() {
         Task {
             await QuickInputBulkAddTip.contactCreated.donate()
+            await QuickInputFormatTip.contactCreated.donate()
+            await QuickInputTagsTip.contactCreated.donate()
+            await QuickInputDateParsingTip.contactCreated.donate()
+            await ContactNavigationTip.contactCreated.donate()
         }
     }
     
-    func donateQuickNoteCreated() {
+    func donateContactViewed() {
         Task {
-            await QuickInputModeSwitchTip.quickNoteCreated.donate()
-        }
-    }
-    
-    func donatePhotoTaken() {
-        Task {
-            await QuickInputCameraTip.photoTaken.donate()
+            await ContactNavigationTip.contactViewed.donate()
         }
     }
     

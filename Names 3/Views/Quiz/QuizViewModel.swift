@@ -15,10 +15,13 @@ final class QuizViewModel {
     var skippedCount: Int = 0
     var showCompletionSheet: Bool = false
     var isTextFieldFocused: Bool = false
+    var showCorrectionSheet: Bool = false
+    var potentialCorrectAnswer: String = ""
     
     // MARK: - Dependencies
     private let modelContext: ModelContext
     private let hapticManager = HapticManager.shared
+    private var currentSession: QuizSession?
     
     // MARK: - Computed Properties
     var currentItem: QuizItem? {
@@ -26,8 +29,16 @@ final class QuizViewModel {
         return quizItems[currentIndex]
     }
     
+    var hasAnsweredAnyQuestion: Bool {
+        return score > 0 || wrongAnswers > 0 || skippedCount > 0
+    }
+    
     var correctName: String {
-        currentItem?.contact.name ?? ""
+        currentItem?.contact.displayName ?? ""
+    }
+    
+    var allAcceptableAnswers: [String] {
+        currentItem?.contact.allAcceptableNames ?? []
     }
     
     var progress: Double {
@@ -61,18 +72,94 @@ final class QuizViewModel {
         self.modelContext = modelContext
     }
     
+    // MARK: - Session Management
+    func hasSavedSession() -> Bool {
+        guard let session = fetchCurrentSession() else { return false }
+        let hoursSinceUpdate = Date().timeIntervalSince(session.lastUpdated) / 3600
+        return hoursSinceUpdate < 24 && session.currentIndex < session.contactIDs.count
+    }
+    
+    func resumeSession() -> Bool {
+        guard let session = fetchCurrentSession() else { return false }
+        
+        var descriptor = FetchDescriptor<Contact>()
+        guard let allContacts = try? modelContext.fetch(descriptor) else { return false }
+        
+        let contactMap = Dictionary(uniqueKeysWithValues: allContacts.map { ($0.uuid, $0) })
+        let resumedContacts = session.contactIDs.compactMap { contactMap[$0] }
+        
+        guard resumedContacts.count == session.contactIDs.count else {
+            clearSession()
+            return false
+        }
+        
+        var items: [QuizItem] = []
+        for contact in resumedContacts {
+            let performance = getOrCreatePerformance(for: contact)
+            items.append(QuizItem(contact: contact, performance: performance))
+        }
+        
+        quizItems = items
+        currentIndex = session.currentIndex
+        score = session.score
+        wrongAnswers = session.wrongAnswers
+        skippedCount = session.skippedCount
+        currentSession = session
+        
+        return true
+    }
+    
+    func clearSession() {
+        if let session = currentSession ?? fetchCurrentSession() {
+            modelContext.delete(session)
+            currentSession = nil
+            saveContext()
+        }
+    }
+    
+    private func fetchCurrentSession() -> QuizSession? {
+        var descriptor = FetchDescriptor<QuizSession>(
+            sortBy: [SortDescriptor(\.lastUpdated, order: .reverse)]
+        )
+        descriptor.fetchLimit = 1
+        
+        return try? modelContext.fetch(descriptor).first
+    }
+    
+    private func saveSessionState() {
+        let contactIDs = quizItems.map { $0.contact.uuid }
+        
+        if let session = currentSession {
+            session.updateProgress(
+                currentIndex: currentIndex,
+                score: score,
+                wrongAnswers: wrongAnswers,
+                skippedCount: skippedCount
+            )
+        } else {
+            let session = QuizSession(
+                contactIDs: contactIDs,
+                currentIndex: currentIndex,
+                score: score,
+                wrongAnswers: wrongAnswers,
+                skippedCount: skippedCount
+            )
+            modelContext.insert(session)
+            currentSession = session
+        }
+        
+        saveContext()
+    }
+    
     // MARK: - Setup
     func setupQuiz(with contacts: [Contact]) {
         let valid = contacts.filter { contact in
-            guard let name = contact.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else {
-                return false
-            }
+            let hasName = !contact.displayName.isEmpty && contact.displayName != "Unnamed"
             
             let hasPhoto = !contact.photo.isEmpty && UIImage(data: contact.photo) != nil
             let hasSummary = !(contact.summary?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-            let hasNotes = !(contact.notes?.isEmpty ?? true)
             
-            return hasPhoto || hasSummary || hasNotes
+            return hasName && hasPhoto && hasSummary
         }
         
         var items: [QuizItem] = []
@@ -85,6 +172,8 @@ final class QuizViewModel {
         
         let sessionSize = min(10, items.count)
         quizItems = Array(items.prefix(sessionSize))
+        
+        saveSessionState()
     }
     
     // MARK: - Quiz Actions
@@ -93,24 +182,26 @@ final class QuizViewModel {
         
         isTextFieldFocused = false
         
-        let correct = isAnswerCorrect(userAnswer: userInput, correctName: correctName)
-        isCorrect = correct
+        let answerResult = checkAnswer(userAnswer: userInput, acceptableNames: allAcceptableAnswers)
+        isCorrect = answerResult.isCorrect
         
-        // Haptic feedback
-        if correct {
-            hapticManager.success()
-        } else {
-            hapticManager.error()
+        if !answerResult.isCorrect {
+            potentialCorrectAnswer = userInput
+            hapticManager.warning()
+            showCorrectionSheet = true
+            return
         }
         
+        hapticManager.success()
         showFeedback = true
         
-        if correct && hintLevel < 3 {
+        if isCorrect && hintLevel < 3 {
             score += 1
             let quality = calculateQuality()
             item.performance.recordSuccess(quality: quality)
             
-            // Auto-advance with context-aware timing
+            saveSessionState()
+            
             let delay = calculateAutoAdvanceDelay()
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
@@ -118,11 +209,59 @@ final class QuizViewModel {
                     advance()
                 }
             }
-        } else {
-            wrongAnswers += 1
-            item.performance.recordFailure()
         }
         
+        saveContext()
+    }
+    
+    func markAsCorrect() {
+        guard let item = currentItem else { return }
+        
+        let trimmedAnswer = potentialCorrectAnswer.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedAnswer.isEmpty {
+            var nicks = item.contact.nicknames ?? []
+            if !nicks.contains(trimmedAnswer) {
+                nicks.append(trimmedAnswer)
+                item.contact.nicknames = nicks
+            }
+        }
+        
+        showCorrectionSheet = false
+        isCorrect = true
+        
+        hapticManager.success()
+        showFeedback = true
+        
+        if hintLevel < 3 {
+            score += 1
+            let quality = calculateQuality()
+            item.performance.recordSuccess(quality: quality)
+            
+            saveSessionState()
+            
+            let delay = calculateAutoAdvanceDelay()
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                if showFeedback && isCorrect {
+                    advance()
+                }
+            }
+        }
+        
+        saveContext()
+    }
+    
+    func markAsIncorrect() {
+        guard let item = currentItem else { return }
+        
+        showCorrectionSheet = false
+        isCorrect = false
+        
+        hapticManager.error()
+        showFeedback = true
+        wrongAnswers += 1
+        item.performance.recordFailure()
+        saveSessionState()
         saveContext()
     }
     
@@ -137,6 +276,7 @@ final class QuizViewModel {
         
         if let item = currentItem {
             item.performance.recordFailure()
+            saveSessionState()
             saveContext()
         }
     }
@@ -153,6 +293,7 @@ final class QuizViewModel {
         item.performance.dueDate = Date().addingTimeInterval(3600)
         
         hapticManager.selection()
+        saveSessionState()
         saveContext()
         advanceWithoutFeedback()
     }
@@ -161,12 +302,14 @@ final class QuizViewModel {
         guard !quizItems.isEmpty else { return }
         
         if currentIndex >= quizItems.count - 1 {
+            clearSession()
             showCompletionSheet = true
         } else {
             showFeedback = false
             userInput = ""
             hintLevel = 0
             currentIndex += 1
+            saveSessionState()
             
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 600_000_000)
@@ -189,6 +332,8 @@ final class QuizViewModel {
             showFeedback = false
             userInput = ""
             hintLevel = 0
+            clearSession()
+            saveSessionState()
             
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 300_000_000)
@@ -221,7 +366,6 @@ final class QuizViewModel {
     }
     
     private func calculateAutoAdvanceDelay() -> Double {
-        // Longer delay for longer names or perfect scores
         let baseDelay: Double = 1.0
         let nameBonus = min(0.3, Double(correctName.count) * 0.03)
         let qualityBonus = hintLevel == 0 ? 0.2 : 0.0
@@ -229,19 +373,57 @@ final class QuizViewModel {
         return baseDelay + nameBonus + qualityBonus
     }
     
-    private func isAnswerCorrect(userAnswer: String, correctName: String) -> Bool {
+    private struct AnswerResult {
+        let isCorrect: Bool
+        let isPartialMatch: Bool
+    }
+    
+    private func checkAnswer(userAnswer: String, acceptableNames: [String]) -> AnswerResult {
         let normalizedUser = userAnswer.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let normalizedCorrect = correctName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         
-        guard !normalizedUser.isEmpty else { return false }
-        
-        if normalizedUser == normalizedCorrect {
-            return true
+        guard !normalizedUser.isEmpty else {
+            return AnswerResult(isCorrect: false, isPartialMatch: false)
         }
         
-        let distance = levenshteinDistance(normalizedUser, normalizedCorrect)
-        let threshold = max(1, normalizedCorrect.count / 4)
-        return distance <= threshold
+        for acceptableName in acceptableNames {
+            let normalizedAcceptable = acceptableName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            
+            if normalizedUser == normalizedAcceptable {
+                return AnswerResult(isCorrect: true, isPartialMatch: false)
+            }
+            
+            let distance = levenshteinDistance(normalizedUser, normalizedAcceptable)
+            let threshold = max(1, normalizedAcceptable.count / 4)
+            
+            if distance <= threshold {
+                return AnswerResult(isCorrect: true, isPartialMatch: false)
+            }
+        }
+        
+        for acceptableName in acceptableNames {
+            let normalizedAcceptable = acceptableName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let userWords = normalizedUser.split(separator: " ").map(String.init)
+            let acceptableWords = normalizedAcceptable.split(separator: " ").map(String.init)
+            
+            if acceptableWords.count > 1 {
+                for userWord in userWords {
+                    for acceptableWord in acceptableWords {
+                        if userWord == acceptableWord && userWord.count >= 2 {
+                            return AnswerResult(isCorrect: false, isPartialMatch: true)
+                        }
+                        
+                        let distance = levenshteinDistance(userWord, acceptableWord)
+                        let threshold = max(1, acceptableWord.count / 3)
+                        
+                        if distance <= threshold && userWord.count >= 3 {
+                            return AnswerResult(isCorrect: false, isPartialMatch: true)
+                        }
+                    }
+                }
+            }
+        }
+        
+        return AnswerResult(isCorrect: false, isPartialMatch: false)
     }
     
     private func levenshteinDistance(_ s1: String, _ s2: String) -> Int {
@@ -275,16 +457,19 @@ final class QuizViewModel {
     
     private func advanceWithoutFeedback() {
         guard !quizItems.isEmpty else {
+            clearSession()
             showCompletionSheet = true
             return
         }
         
         if currentIndex >= quizItems.count - 1 {
+            clearSession()
             showCompletionSheet = true
         } else {
             userInput = ""
             hintLevel = 0
             currentIndex += 1
+            saveSessionState()
             
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 300_000_000)

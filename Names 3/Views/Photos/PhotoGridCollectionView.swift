@@ -134,13 +134,14 @@ struct PhotoGridView: UIViewRepresentable {
         private let imageCache = ImageCacheService.shared
         private(set) var compositionalLayout: UICollectionViewCompositionalLayout?
         
-        private let availableColumns: [Int] = [1, 3, 5]
-        private var currentColumnIndex: Int = 1 // Start at 3 columns
+        let availableColumns: [Int] = [1, 3, 5]
+        private(set) var currentColumnIndex: Int = 1 // Start at 3 columns
         private let itemSpacing: CGFloat = 2
         private let sectionInsets = NSDirectionalEdgeInsets(top: 2, leading: 2, bottom: 2, trailing: 2)
         
         private var anchorIndex: Int?
         private var isZooming: Bool = false
+        private var isPreparedForDismissal: Bool = false
         
         private var currentVisibleFullscreenIndex: Int?
         
@@ -263,9 +264,10 @@ struct PhotoGridView: UIViewRepresentable {
             let columns = availableColumns[currentColumnIndex]
             
             if columns == 1 {
-                // Fullscreen mode
-                collectionView.isPagingEnabled = true
-                collectionView.alwaysBounceVertical = false
+                // Fullscreen mode - disable paging, we'll handle snapping manually
+                collectionView.isPagingEnabled = false
+                collectionView.alwaysBounceVertical = true
+                collectionView.decelerationRate = .fast
                 floatingHeader?.alpha = 0
                 
                 // Update the current visible index
@@ -276,6 +278,7 @@ struct PhotoGridView: UIViewRepresentable {
                 // Grid mode
                 collectionView.isPagingEnabled = false
                 collectionView.alwaysBounceVertical = true
+                collectionView.decelerationRate = .normal
                 floatingHeader?.alpha = 1.0
                 
                 // Clear current visible index
@@ -391,7 +394,7 @@ struct PhotoGridView: UIViewRepresentable {
 
                 guard indexPath.item < self.sortedAssets.count else { return cell }
                 let asset = self.sortedAssets[indexPath.item]
-                let currentIndex = indexPath.item
+                let assetID = asset.localIdentifier
                 
                 let targetSize = CGSize(width: 1200, height: 1200)
                 
@@ -413,9 +416,13 @@ struct PhotoGridView: UIViewRepresentable {
                     self?.handlePhotoLongPress(asset: asset)
                 }
                 
-                cell.onFacesDetected = { [weak self] image, observations, assetID in
+                cell.onFacesDetected = { [weak self] image, observations, detectedAssetID in
                     guard let self = self else { return }
-                    self.handleFacesDetectedInCell(image: image, observations: observations, fromIndex: currentIndex)
+                    guard detectedAssetID == assetID else {
+                        print("⚠️ [PhotoGrid] Ignoring stale face detection for \(detectedAssetID), current asset is \(assetID)")
+                        return
+                    }
+                    self.handleFacesDetectedInCell(image: image, observations: observations, fromIndex: indexPath.item)
                 }
 
                 return cell
@@ -445,6 +452,11 @@ struct PhotoGridView: UIViewRepresentable {
         }
 
         func updateAssets(_ newAssets: [PHAsset], initialScrollDate: Date?) {
+            // Don't update if we're dismissing
+            if isPreparedForDismissal {
+                return
+            }
+            
             if isZooming {
                 return
             }
@@ -835,6 +847,18 @@ struct PhotoGridView: UIViewRepresentable {
                 break
             }
         }
+        
+        func prepareForDismissal() {
+            isPreparedForDismissal = true
+            
+            // Immediately hide carousel without animation
+            carouselContainer?.alpha = 0
+            
+            // Clean up face detection
+            Task { @MainActor in
+                self.currentFaceViewModel.faces = []
+            }
+        }
     }
 }
 
@@ -946,6 +970,31 @@ extension PhotoGridView.Coordinator: UIScrollViewDelegate {
         }
     }
     
+    func scrollViewWillEndDragging(_ scrollView: UIScrollView, withVelocity velocity: CGPoint, targetContentOffset: UnsafeMutablePointer<CGPoint>) {
+        // Only snap in fullscreen mode
+        guard availableColumns[currentColumnIndex] == 1 else { return }
+        guard let collectionView = collectionView else { return }
+        
+        let targetY = targetContentOffset.pointee.y
+        let centerY = targetY + collectionView.bounds.height / 2
+        
+        // Find the item closest to the target center point
+        let targetPoint = CGPoint(x: collectionView.bounds.midX, y: centerY)
+        
+        if let indexPath = collectionView.indexPathForItem(at: targetPoint),
+           let attributes = collectionView.layoutAttributesForItem(at: indexPath) {
+            // Snap to center this item
+            let itemCenterY = attributes.frame.midY
+            let newTargetY = itemCenterY - collectionView.bounds.height / 2
+            
+            // Clamp to valid content offset range
+            let maxY = max(0, collectionView.contentSize.height - collectionView.bounds.height)
+            targetContentOffset.pointee.y = max(0, min(newTargetY, maxY))
+            
+            print("📍 [Snap] Snapping to item \(indexPath.item) at offset \(targetContentOffset.pointee.y)")
+        }
+    }
+    
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
         // When scroll settles in fullscreen, ensure we have the correct faces
         if availableColumns[currentColumnIndex] == 1 {
@@ -1044,7 +1093,7 @@ final class FloatingDateHeaderView: UIView {
 final class PhotoCell: UICollectionViewCell {
     static let reuseIdentifier = "PhotoCell"
 
-    let imageView = UIImageView()
+    private let imageView = UIImageView()
     private var currentRequestID: PHImageRequestID?
     private var representedAssetIdentifier: String?
     private var currentCacheKey: String?
@@ -1084,6 +1133,7 @@ final class PhotoCell: UICollectionViewCell {
 
         representedAssetIdentifier = nil
         currentCacheKey = nil
+        imageView.image = nil
     }
 
     func configure(with asset: PHAsset, imageManager: PHCachingImageManager, cache: ImageCacheService, targetSize: CGSize) {
