@@ -1,0 +1,33 @@
+/* Onboarding */
+"onboarding.page1.title" = "Nunca Olvides una Cara";
+"onboarding.page1.description" = "Lleva registro de todas las personas que conoces en tu día a día. Construye conexiones genuinas que perduren.";
+
+"onboarding.page2.title" = "Captura Momentos al Instante";
+"onboarding.page2.description" = "Toma una foto y detecta caras automáticamente. Agrega personas con solo un toque.";
+
+"onboarding.page3.title" = "Organiza por Momentos";
+"onboarding.page3.description" = "Agrupa personas por lugares y fechas. El gym, cafeterías, reuniones. Mantén todo conectado.";
+
+"onboarding.page4.title" = "Recuerda los Detalles";
+"onboarding.page4.description" = "Anota lo que importa. Recuerda conversaciones, intereses compartidos y conexiones significativas.";
+
+"onboarding.page5.title" = "Domina Nombres y Caras";
+"onboarding.page5.description" = "Practica con nuestro quiz. Convierte caras en amistades recordando quién es quién.";
+
+"onboarding.button.continue" = "Continuar";
+"onboarding.button.getStarted" = "Comenzar";
+"onboarding.button.skip" = "Omitir";
+
+/* Settings */
+"settings.title" = "Ajustes";
+"settings.onboarding.header" = "Bienvenida";
+"settings.onboarding.showAgain" = "Mostrar Bienvenida de Nuevo";
+"settings.onboarding.footer" = "Ve el tutorial de bienvenida de nuevo para aprender todas las funciones.";
+"settings.onboarding.reset" = "Reiniciar Estado de Bienvenida";
+"settings.onboarding.resetFooter" = "Debug: Reinicia el estado de bienvenida completada. Se mostrará en el próximo inicio.";
+
+"settings.appInfo.header" = "Info de la App";
+"settings.appInfo.version" = "Versión";
+"settings.appInfo.build" = "Build";
+
+"settings.button.done" = "Listo";

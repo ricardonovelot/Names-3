@@ -81,15 +81,24 @@ struct ContentView: View {
     @State private var bottomInputHeight: CGFloat = 0
     @State private var showHomeView = false
     @State private var homeTabSelection: AppTab = .home
+    @State private var fullPhotoGridFaceViewModel: FaceDetectionViewModel? = nil
+    @State private var showSettings = false
     
     private struct PhotosSheetPayload: Identifiable, Hashable {
         let id = UUID()
         let scope: PhotosPickerScope
+        let initialScrollDate: Date?
+        
+        init(scope: PhotosPickerScope, initialScrollDate: Date? = nil) {
+            self.scope = scope
+            self.initialScrollDate = initialScrollDate
+        }
     }
-    @State private var photosSheet: PhotosSheetPayload?
     @State private var pickedImageForBatch: UIImage?
+    
+    @State private var showFullPhotoGrid = false
+    @State private var fullPhotoGridPayload: PhotosSheetPayload?
 
-    // Group contacts by the day of their timestamp, with a special "Met long ago" group at the top
     var groups: [contactsGroup] {
         let calendar = Calendar.current
         
@@ -155,7 +164,7 @@ struct ContentView: View {
                             isLast: group.id == groups.last?.id,
                             onImport: {
                                 guard !group.isLongAgo else { return }
-                                photosSheet = PhotosSheetPayload(scope: .day(group.date))
+                                openFullPhotoGrid(scope: .all, initialScrollDate: group.date)
                             },
                             onEditDate: {
                                 guard !group.isLongAgo else { return }
@@ -190,7 +199,7 @@ struct ContentView: View {
                             },
                             onTapHeader: {
                                 guard !group.isLongAgo else { return }
-                                photosSheet = PhotosSheetPayload(scope: .day(group.date))
+                                openFullPhotoGrid(scope: .all, initialScrollDate: group.date)
                             },
                             onDropRecords: { records in
                                 handleDrop(records, to: group)
@@ -226,21 +235,22 @@ struct ContentView: View {
                         }
                     })
                         .transition(.move(edge: .trailing))
-                        .zIndex(2)
+                        .zIndex(3)
                 } else {
                     listContent
-                        .opacity(showInlineQuickNotes || showInlinePhotoPicker ? 0 : 1)
-                        .offset(y: showInlineQuickNotes || showInlinePhotoPicker ? -16 : 0)
-                        .allowsHitTesting(!showInlineQuickNotes && !showInlinePhotoPicker)
+                        .opacity(showInlineQuickNotes || showInlinePhotoPicker || showFullPhotoGrid ? 0 : 1)
+                        .offset(y: showInlineQuickNotes || showInlinePhotoPicker || showFullPhotoGrid ? -16 : 0)
+                        .allowsHitTesting(!showInlineQuickNotes && !showInlinePhotoPicker && !showFullPhotoGrid)
                         .zIndex(0)
                         .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showInlineQuickNotes)
                         .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showInlinePhotoPicker)
+                        .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showFullPhotoGrid)
 
                     QuickNotesInlineView()
                         .opacity(showInlineQuickNotes ? 1 : 0)
                         .offset(y: showInlineQuickNotes ? 0 : 28)
                         .allowsHitTesting(showInlineQuickNotes)
-                        .zIndex(1)
+                        .zIndex(showFullPhotoGrid ? 0 : 1)
                         .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showInlineQuickNotes)
 
                     PhotosInlineView(contactsContext: modelContext, isVisible: showInlinePhotoPicker) { image, date in
@@ -253,12 +263,15 @@ struct ContentView: View {
                     .opacity(showInlinePhotoPicker ? 1 : 0)
                     .offset(y: showInlinePhotoPicker ? 0 : 28)
                     .allowsHitTesting(showInlinePhotoPicker)
-                    .zIndex(showInlineQuickNotes ? 0 : 1)
+                    .zIndex(showInlineQuickNotes || showFullPhotoGrid ? 0 : 1)
                     .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showInlinePhotoPicker)
+                    
+                    if let payload = fullPhotoGridPayload {
+                        fullPhotoGridInlineView(payload: payload)
+                    }
                 }
             }
             .animation(.spring(response: 0.35, dampingFraction: 0.9), value: selectedContact != nil)
-            // Ensure background fills under keyboard and safe areas—no white seams
             .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
             .onChange(of: pickedImageForBatch) { oldValue, newValue in
                 if let image = newValue {
@@ -282,8 +295,9 @@ struct ContentView: View {
                         withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
                             if showInlineQuickNotes { showInlineQuickNotes = false }
                             if showInlinePhotoPicker { showInlinePhotoPicker = false }
+                            if showFullPhotoGrid { closeFullPhotoGrid() }
                         }
-                        photosSheet = PhotosSheetPayload(scope: .all)
+                        openFullPhotoGrid(scope: .all, initialScrollDate: nil)
                     },
                     onQuickNoteAdded: {
                         hasPendingQuickNoteInput = false
@@ -291,6 +305,7 @@ struct ContentView: View {
                     onQuickNoteDetected: {
                         withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
                             if showInlinePhotoPicker { showInlinePhotoPicker = false }
+                            if showFullPhotoGrid { closeFullPhotoGrid() }
                             showInlineQuickNotes = true
                         }
                         hasPendingQuickNoteInput = true
@@ -304,10 +319,15 @@ struct ContentView: View {
                     onInlinePhotosTap: {
                         withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
                             if showInlineQuickNotes { showInlineQuickNotes = false }
+                            if showFullPhotoGrid { closeFullPhotoGrid() }
                             showInlinePhotoPicker.toggle()
                         }
                     },
                     isInlinePhotosActive: { showInlinePhotoPicker },
+                    faceDetectionViewModel: fullPhotoGridFaceViewModel,
+                    onFaceSelected: { index in
+                        handleFaceSelectedFromCarousel(index: index)
+                    },
                     onPhotoPicked: { image, date in
                         print("📸 [ContentView] Photo fallback - opening bulk face view")
                         pickedImageForBatch = image
@@ -350,11 +370,25 @@ struct ContentView: View {
                         }
 
                         Divider()
+                        
+                        Button {
+                            showManageTags = true
+                        } label: {
+                            Label("Groups & Places", systemImage: "tag")
+                        }
+
+                        Divider()
 
                         Button {
                             showHomeView = true
                         } label: {
                             Label("Recent", systemImage: "house")
+                        }
+                        
+                        Button {
+                            showSettings = true
+                        } label: {
+                            Label("Settings", systemImage: "gearshape")
                         }
 
                         if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited {
@@ -391,87 +425,6 @@ struct ContentView: View {
                 GroupPhotosListView(contactsContext: modelContext)
                     .modelContainer(BatchModelContainer.shared)
             }
-            .sheet(item: $photosSheet) { payload in
-                PhotosDayPickerHost(
-                    scope: payload.scope,
-                    contactsContext: modelContext,
-                    initialScrollDate: selectedContact?.timestamp,
-                    onPick: { image, date in
-                        print("✅ [ContentView] onPick called from PhotosDayPicker (Detail completed)")
-                        pickedImageForBatch = image
-                        photosSheet = nil
-                    },
-                    attemptQuickAssign: { image, _ in
-                        guard let contact = selectedContact else {
-                            return false
-                        }
-                        guard let cgImage = image.cgImage else {
-                            return false
-                        }
-
-                        // Perform face detection off-main
-                        let observations: [VNFaceObservation]
-                        do {
-                            let request = VNDetectFaceRectanglesRequest()
-                            let handler = VNImageRequestHandler(cgImage: cgImage)
-                            try handler.perform([request])
-                            observations = (request.results as? [VNFaceObservation]) ?? []
-                        } catch {
-                            print("❌ [ContentView] Face detection failed: \(error)")
-                            return false
-                        }
-
-                        guard observations.count == 1, let face = observations.first else {
-                            print("📸 [ContentView] Auto-assign not applicable. Faces: \(observations.count)")
-                            return false
-                        }
-
-                        // Crop around the single face
-                        let imageSize = CGSize(width: CGFloat(cgImage.width), height: CGFloat(cgImage.height))
-                        let fullRect = CGRect(origin: .zero, size: imageSize)
-                        let scaleFactor: CGFloat = 1.8
-                        let bb = face.boundingBox
-                        let scaledBox = CGRect(
-                            x: bb.origin.x * imageSize.width - (bb.width * imageSize.width * (scaleFactor - 1)) / 2,
-                            y: (1 - bb.origin.y - bb.height) * imageSize.height - (bb.height * imageSize.height * (scaleFactor - 1)) / 2,
-                            width: bb.width * imageSize.width * scaleFactor,
-                            height: bb.height * imageSize.height * scaleFactor
-                        ).integral
-                        let clipped = scaledBox.intersection(fullRect)
-                        guard !clipped.isNull && !clipped.isEmpty, let cropped = cgImage.cropping(to: clipped) else {
-                            print("📸 [ContentView] Crop failed")
-                            return false
-                        }
-                        let faceImage = UIImage(cgImage: cropped)
-
-                        // Save on main actor
-                        await MainActor.run {
-                            contact.photo = faceImage.jpegData(compressionQuality: 0.92) ?? Data()
-                            do {
-                                try modelContext.save()
-                                print("✅ [ContentView] Auto-assigned single face to \(contact.name ?? "contact")")
-                                photosSheet = nil
-                            } catch {
-                                print("❌ [ContentView] Save failed: \(error)")
-                            }
-                        }
-
-                        return true
-                    }
-                )
-                .onAppear {
-                    print("🔵 [ContentView] PhotosDayPickerHost sheet appeared")
-                    if let date = selectedContact?.timestamp {
-                        print("🔵 [ContentView] Opening photo picker with scroll date: \(date) for contact: \(selectedContact?.name ?? "unknown")")
-                    } else {
-                        print("🔵 [ContentView] Opening photo picker without scroll date")
-                    }
-                }
-                .onDisappear {
-                    print("⚠️ [ContentView] PhotosDayPickerHost sheet disappeared!")
-                    print("⚠️ [ContentView] photosSheet value: \(photosSheet != nil ? "still set" : "nil")")
-                }
-            }
             .sheet(item: $contactForDateEdit) { contact in
                 CustomDatePicker(contact: contact)
             }
@@ -486,8 +439,130 @@ struct ContentView: View {
             .sheet(isPresented: $showHomeView) {
                 HomeView(tabSelection: $homeTabSelection)
             }
+            .sheet(isPresented: $showSettings) {
+                SettingsView()
+            }
         }
         
+    }
+    
+    // MARK: - Full Photo Grid View Builder
+    
+    @ViewBuilder
+    private func fullPhotoGridInlineView(payload: PhotosSheetPayload) -> some View {
+        PhotosFullGridInlineView(
+            scope: payload.scope,
+            contactsContext: modelContext,
+            initialScrollDate: payload.initialScrollDate,
+            faceDetectionViewModel: $fullPhotoGridFaceViewModel,
+            onPhotoPicked: { image, date in
+                print("✅ [ContentView] Photo picked from full grid inline view")
+                pickedImageForBatch = image
+                closeFullPhotoGrid()
+            },
+            onDismiss: {
+                closeFullPhotoGrid()
+            },
+            attemptQuickAssign: attemptQuickAssignClosure()
+        )
+        .opacity(showFullPhotoGrid ? 1 : 0)
+        .offset(y: showFullPhotoGrid ? 0 : 32)
+        .allowsHitTesting(showFullPhotoGrid)
+        .zIndex(2)
+        .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showFullPhotoGrid)
+    }
+    
+    private func attemptQuickAssignClosure() -> ((UIImage, Date?) async -> Bool) {
+        return { [modelContext, selectedContact] image, date in
+            guard let contact = selectedContact else {
+                return false
+            }
+            guard let cgImage = image.cgImage else {
+                return false
+            }
+
+            let observations: [VNFaceObservation]
+            do {
+                let request = VNDetectFaceRectanglesRequest()
+                let handler = VNImageRequestHandler(cgImage: cgImage)
+                try handler.perform([request])
+                observations = (request.results as? [VNFaceObservation]) ?? []
+            } catch {
+                print("❌ [ContentView] Face detection failed: \(error)")
+                return false
+            }
+
+            guard observations.count == 1, let face = observations.first else {
+                print("📸 [ContentView] Auto-assign not applicable. Faces: \(observations.count)")
+                return false
+            }
+
+            let imageSize = CGSize(width: CGFloat(cgImage.width), height: CGFloat(cgImage.height))
+            let fullRect = CGRect(origin: .zero, size: imageSize)
+            let scaleFactor: CGFloat = 1.8
+            let bb = face.boundingBox
+            let scaledBox = CGRect(
+                x: bb.origin.x * imageSize.width - (bb.width * imageSize.width * (scaleFactor - 1)) / 2,
+                y: (1 - bb.origin.y - bb.height) * imageSize.height - (bb.height * imageSize.height * (scaleFactor - 1)) / 2,
+                width: bb.width * imageSize.width * scaleFactor,
+                height: bb.height * imageSize.height * scaleFactor
+            ).integral
+            let clipped = scaledBox.intersection(fullRect)
+            guard !clipped.isNull && !clipped.isEmpty, let cropped = cgImage.cropping(to: clipped) else {
+                print("📸 [ContentView] Crop failed")
+                return false
+            }
+            let faceImage = UIImage(cgImage: cropped)
+
+            await MainActor.run {
+                contact.photo = faceImage.jpegData(compressionQuality: 0.92) ?? Data()
+                do {
+                    try modelContext.save()
+                    print("✅ [ContentView] Auto-assigned single face to \(contact.name ?? "contact")")
+                } catch {
+                    print("❌ [ContentView] Save failed: \(error)")
+                }
+            }
+
+            return true
+        }
+    }
+    
+    // MARK: - Helper Methods
+    
+    private func handleFaceSelectedFromCarousel(index: Int) {
+        guard let viewModel = fullPhotoGridFaceViewModel,
+              index >= 0,
+              index < viewModel.faces.count else { return }
+        
+        let faceImage = viewModel.faces[index].image
+        pickedImageForBatch = faceImage
+    }
+    
+    private func openFullPhotoGrid(scope: PhotosPickerScope, initialScrollDate: Date?) {
+        let payload = PhotosSheetPayload(scope: scope, initialScrollDate: initialScrollDate)
+        fullPhotoGridPayload = payload
+        
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+            showFullPhotoGrid = true
+        }
+        
+        print("🔵 [ContentView] Opening full photo grid with scope: \(scope)")
+        if let date = initialScrollDate {
+            print("🔵 [ContentView] Initial scroll date: \(date)")
+        }
+    }
+    
+    private func closeFullPhotoGrid() {
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+            showFullPhotoGrid = false
+        }
+        
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(400))
+            fullPhotoGridPayload = nil
+            fullPhotoGridFaceViewModel = nil
+        }
     }
 
     private func applyGroupDateChange() {
@@ -524,7 +599,6 @@ struct ContentView: View {
         return cal.date(from: merged) ?? date
     }
 
-    // Helper to compute the bottom-most visible item ID, matching list order
     private func bottomMostID() -> PersistentIdentifier? {
         if let lastGroup = groups.last {
             if let id = lastGroup.parsedContacts.last?.id {
@@ -534,7 +608,6 @@ struct ContentView: View {
                 return id
             }
         }
-        // Fallbacks if groups are empty or have no items
         return contacts.last?.id ?? parsedContacts.last?.id
     }
 
@@ -783,12 +856,7 @@ private struct GroupSectionView: View {
                     Button {
                         onEditTag()
                     } label: {
-                        Label("Apply Tag", systemImage: "tag")
-                    }
-                    Button {
-                        onRenameTag()
-                    } label: {
-                        Label("Manage Tags", systemImage: "tag.square")
+                        Label("Tag All in Group...", systemImage: "tag")
                     }
                     Button(role: .destructive) {
                         onDeleteAll()
@@ -812,15 +880,31 @@ private struct ContactTile: View {
             GeometryReader { proxy in
                 let size = proxy.size
                 ZStack{
-                    Image(uiImage: UIImage(data: contact.photo) ?? UIImage())
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: size.width, height: size.height)
-                        .clipped()
-                        .background(Color(uiColor: .secondarySystemGroupedBackground))
-                    
-                    if !contact.photo.isEmpty {
+                    if !contact.photo.isEmpty, let uiImage = UIImage(data: contact.photo) {
+                        Image(uiImage: uiImage)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: size.width, height: size.height)
+                            .clipped()
+                            .background(Color(uiColor: .secondarySystemGroupedBackground))
+                        
                         LinearGradient(gradient: Gradient(colors: [.black.opacity(0.0), .black.opacity(0.0), .black.opacity(0.6)]), startPoint: .top, endPoint: .bottom)
+                    } else {
+                        ZStack {
+                            RadialGradient(
+                                colors: [
+                                    Color(uiColor: .secondarySystemBackground),
+                                    Color(uiColor: .tertiarySystemBackground)
+                                ],
+                                center: .center,
+                                startRadius: 5,
+                                endRadius: size.width * 0.7
+                            )
+                            
+                            Color.clear
+                                .frame(width: size.width, height: size.height)
+                                .liquidGlass(in: RoundedRectangle(cornerRadius: 10), stroke: true)
+                        }
                     }
                     
                     VStack {
@@ -837,7 +921,7 @@ private struct ContactTile: View {
                     }
                 }
             }
-            .frame(height: 88)
+            .aspectRatio(1.0, contentMode: .fit)
             .contentShape(.rect)
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .scrollTransition { content, phase in
@@ -881,12 +965,30 @@ private struct ParsedContactTile: View {
         GeometryReader { proxy in
             let size = proxy.size
             ZStack{
-                Image(uiImage: UIImage(data: contact.photo) ?? UIImage())
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: size.width, height: size.height)
-                    .clipped()
-                    .background(Color(uiColor: .black).opacity(0.05))
+                if !contact.photo.isEmpty, let uiImage = UIImage(data: contact.photo) {
+                    Image(uiImage: uiImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: size.width, height: size.height)
+                        .clipped()
+                        .background(Color(uiColor: .black).opacity(0.05))
+                } else {
+                    ZStack {
+                        RadialGradient(
+                            colors: [
+                                Color(uiColor: .secondarySystemBackground),
+                                Color(uiColor: .tertiarySystemBackground)
+                            ],
+                            center: .center,
+                            startRadius: 5,
+                            endRadius: size.width * 0.7
+                        )
+                        
+                        Color.clear
+                            .frame(width: size.width, height: size.height)
+                            .liquidGlass(in: RoundedRectangle(cornerRadius: 10), stroke: true)
+                    }
+                }
                 
                 VStack {
                     Spacer()
@@ -902,7 +1004,7 @@ private struct ParsedContactTile: View {
                 }
             }
         }
-        .frame(height: 88)
+        .aspectRatio(1.0, contentMode: .fit)
         .contentShape(.rect)
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .draggable(ContactDragRecord(uuid: contact.uuid)) {

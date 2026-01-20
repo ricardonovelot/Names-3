@@ -1,8 +1,6 @@
 import SwiftUI
 import SwiftData
-import PhotosUI
 import UIKit
-import Vision
 
 struct ContactDetailsView: View {
     @Environment(\.modelContext) private var modelContext
@@ -17,19 +15,13 @@ struct ContactDetailsView: View {
     @State var viewState = CGSize.zero
 
     @State private var showPhotosPicker = false
-
-    @State private var selectedItem: PhotosPickerItem?
-
     @State private var showDatePicker = false
     @State private var showTagPicker = false
     @State private var showCropView = false
-    @State private var isLoading = false
     
-    @State private var showReplacePhotoAlert = false
-    @State private var pendingPhotoData: Data?
-    @State private var showFaceAssignment = false
-    @State private var detectedFaces: [FaceAssignmentView.DetectedFaceInfo] = []
-    @State private var pendingSourceImage: UIImage?
+    @State private var pendingPhotoImage: UIImage?
+    @State private var pendingPhotoDate: Date?
+    @State private var faceDetectionViewModel: FaceDetectionViewModel?
 
     @Query private var notes: [Note]
 
@@ -45,185 +37,12 @@ struct ContactDetailsView: View {
     var body: some View {
         GeometryReader { g in
             ScrollView{
-                ZStack(alignment: .bottom){
-                    if image != UIImage() {
-                        GeometryReader {
-                            let size = $0.size
-                            Image(uiImage: image)
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                                .frame(width: size.width, height: size.height)
-                                .overlay {
-                                    LinearGradient(gradient: Gradient(colors: [.black.opacity(0.0), .black.opacity(0.2), .black.opacity(0.8)]), startPoint: .init(x: 0.5, y: 0.05), endPoint: .bottom)
-                                }
-                        }
-                        .contentShape(.rect)
-                        .frame(height: 400)
-                        .clipped()
-                    }
-
-                    VStack{
-                        HStack{
-                            TextField(
-                                "Name",
-                                text: $contact.name ?? "",
-                                prompt: Text("Name")
-                                    .foregroundColor(image != UIImage() ? Color(.white.opacity(0.7)) : Color(uiColor: .placeholderText) ),
-                                axis: .vertical
-                            )
-                            .font(.system(size: 36, weight: .bold))
-                            .lineLimit(4)
-                            .foregroundColor(image != UIImage() ? .white : .primary )
-
-                            Image(systemName: "camera")
-                                .font(.system(size: 18))
-                                .padding(12)
-                                .foregroundColor(image != UIImage() ? .blue.mix(with: .white, by: 0.3) : .blue)
-                                .liquidGlass(in: Circle())
-                                .clipShape(Circle())
-                                .onTapGesture { showPhotosPicker = true }
-                                .padding(.leading, 4)
-
-                            Group{
-                                if !(contact.tags?.isEmpty ?? true) {
-                                    Text((contact.tags ?? []).compactMap { $0.name }.sorted().joined(separator: ", "))
-                                        .foregroundColor(image != UIImage() ? .white : Color(.secondaryLabel) )
-                                        .font(.system(size: 15, weight: .medium))
-                                        .padding(.vertical, 7)
-                                        .padding(.bottom, 1)
-                                        .padding(.horizontal, 13)
-                                        .liquidGlass(in: RoundedRectangle(cornerRadius: 8))
-                                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                                } else {
-                                    Image(systemName: "person.2")
-                                        .font(.system(size: 18))
-                                        .padding(12)
-                                        .foregroundColor(image != UIImage() ? .purple.mix(with: .white, by: 0.3) : .purple)
-                                        .liquidGlass(in: Circle())
-                                        .clipShape(Circle())
-                                        .padding(.leading, 4)
-                                }
-                            }
-                            .onTapGesture { showTagPicker = true }
-                        }
-                        .padding(.horizontal)
-
-                        TextField(
-                            "",
-                            text: $contact.summary ?? "",
-                            prompt: Text("Main Note")
-                                .foregroundColor(image != UIImage() ? Color(uiColor: .lightText).opacity(0.8) : Color(uiColor:.placeholderText)),
-                            axis: .vertical
-                        )
-                        .lineLimit(2...)
-                        .padding(10)
-                        .foregroundStyle(image != UIImage() ? Color(uiColor: .lightText) : Color.primary)
-                        .liquidGlass(in: RoundedRectangle(cornerRadius: 12))
-
-                        .padding(.horizontal).padding(.top, 12)
-                        .onTapGesture {
-                        }
-                        .gesture(
-                            DragGesture()
-                                .onChanged { value in
-                                    viewState = value.translation
-                                }
-                        )
-
-                        HStack{
-                            Spacer()
-                            Text("Met \(contact.timestamp.formatted(date: .abbreviated, time: .omitted))")
-                                .foregroundColor(image != UIImage() ? .white : Color(UIColor.secondaryLabel))
-                                .font(.system(size: 15))
-                                .frame(alignment: .trailing)
-                                .padding(.top, 4)
-                                .padding(.trailing)
-                                .padding(.trailing, 4)
-                                .onTapGesture {
-                                    showDatePicker = true
-                                }
-                                .padding(.bottom)
-                                .onAppear{
-                                }
-                        }
-                    }
+                VStack(spacing: 0) {
+                    headerSection
+                    
+                    notesSection
+                        .padding(.top, 20)
                 }
-
-                List {
-                    Section("Notes") {
-                        Button(action: {
-                            let newNote = Note(content: "", creationDate: Date())
-                            if contact.notes == nil { contact.notes = [] }
-                            contact.notes?.append(newNote)
-                            do {
-                                try modelContext.save()
-                            } catch {
-                                print("Save failed: \(error)")
-                            }
-                        }) {
-                            HStack {
-                                Image(systemName: "plus.circle.fill")
-                                Text("Add Note")
-                            }
-                            .foregroundStyle(.blue)
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                    }
-
-                    let array = (contact.notes ?? []).filter { $0.isArchived == false }
-                    ForEach(array, id: \.self) { note in
-                        Section {
-                            VStack {
-                                TextField(
-                                    "Note Content",
-                                    text: Binding(
-                                        get: { note.content ?? "" },
-                                        set: { newValue in
-                                            note.content = newValue
-                                            do {
-                                                try modelContext.save()
-                                            } catch {
-                                                print("Save failed: \(error)")
-                                            }
-                                        }
-                                    ),
-                                    axis: .vertical
-                                )
-                                .lineLimit(2...)
-
-                                HStack {
-                                    Spacer()
-                                    Text(note.creationDate, style: .date)
-                                        .font(.caption)
-                                        .foregroundColor(.gray)
-                                }
-                            }
-                            .contentShape(Rectangle())
-                            .swipeActions(edge: .trailing) {
-                                Button(role: .destructive) {
-                                    note.isArchived = true
-                                    note.archivedDate = Date()
-                                    do {
-                                        try modelContext.save()
-                                    } catch {
-                                        print("Save failed: \(error)")
-                                    }
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
-                            }
-                            .swipeActions(edge: .leading) {
-                                Button {
-                                    showNoteDatePickerFor(note: note)
-                                } label: {
-                                    Label("Edit Date", systemImage: "calendar")
-                                }
-                                .tint(.blue)
-                            }
-                        }
-                    }
-                }
-                .frame(width: g.size.width, height: g.size.height)
             }
             .padding(.top, image != UIImage() ? 0 : 8 )
             .ignoresSafeArea(image != UIImage() ? .all : [])
@@ -297,7 +116,19 @@ struct ContactDetailsView: View {
             .navigationBarBackButtonHidden(true)
         }
         .toolbarBackground(.hidden)
-        .photosPicker(isPresented: $showPhotosPicker, selection: $selectedItem, matching: .images)
+        .sheet(isPresented: $showPhotosPicker) {
+            PhotosDayPickerView(
+                scope: .all,
+                contactsContext: modelContext,
+                presentationMode: .directSelection,
+                faceDetectionViewModel: $faceDetectionViewModel,
+                onPick: { selectedImage, selectedDate in
+                    pendingPhotoImage = selectedImage
+                    pendingPhotoDate = selectedDate
+                    showCropView = true
+                }
+            )
+        }
         .sheet(isPresented: $showDatePicker) {
             CustomDatePicker(contact: contact)
         }
@@ -339,7 +170,7 @@ struct ContactDetailsView: View {
         }
         .fullScreenCover(isPresented: $showCropView){
             if let image = UIImage(data: contact.photo) {
-                CropView(
+                SimpleCropView(
                     image: image,
                     initialScale: CGFloat(contact.cropScale),
                     initialOffset: CGSize(width: CGFloat(contact.cropOffsetX), height: CGFloat(contact.cropOffsetY))
@@ -348,49 +179,264 @@ struct ContactDetailsView: View {
                 }
             }
         }
-        .sheet(isPresented: $showFaceAssignment) {
-            if let sourceImage = pendingSourceImage {
-                FaceAssignmentView(
-                    sourceImage: sourceImage,
-                    detectedFaces: detectedFaces,
-                    targetContact: contact
-                ) { assignedFaces in
-                    handleMultipleFacesAssigned(assignedFaces)
-                }
+    }
+    
+    // MARK: - Header Section
+    
+    @ViewBuilder
+    private var headerSection: some View {
+        ZStack(alignment: .bottom) {
+            if image != UIImage() {
+                photoHeader
             }
-        }
-        .alert("Replace Photo?", isPresented: $showReplacePhotoAlert) {
-            Button("Cancel", role: .cancel) {
-                pendingPhotoData = nil
-            }
-            Button("Replace") {
-                if let data = pendingPhotoData {
-                    contact.photo = data
-                    showCropView = true
-                    do {
-                        try modelContext.save()
-                    } catch {
-                        print("Save failed: \(error)")
-                    }
-                }
-                pendingPhotoData = nil
-            }
-        } message: {
-            Text("This contact already has a photo. Do you want to replace it?")
-        }
-        .overlay {
-            if isLoading {
-                LoadingOverlay(message: "Processing photo…")
-            }
-        }
-        .onChange(of: selectedItem) {
-            isLoading = true
-            Task {
-                await handlePhotoSelection()
-                isLoading = false
+            
+            VStack(spacing: 0) {
+                headerControls
+                summaryField
+                dateDisplay
             }
         }
     }
+    
+    @ViewBuilder
+    private var photoHeader: some View {
+        GeometryReader { proxy in
+            let size = proxy.size
+            Image(uiImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: size.width, height: size.height)
+                .overlay {
+                    LinearGradient(
+                        gradient: Gradient(colors: [
+                            .black.opacity(0.0),
+                            .black.opacity(0.2),
+                            .black.opacity(0.8)
+                        ]),
+                        startPoint: .init(x: 0.5, y: 0.05),
+                        endPoint: .bottom
+                    )
+                }
+        }
+        .contentShape(.rect)
+        .frame(height: 400)
+        .clipped()
+        .onTapGesture {
+            showPhotosPicker = true
+        }
+    }
+    
+    @ViewBuilder
+    private var headerControls: some View {
+        HStack(alignment: .top, spacing: 12) {
+            TextField(
+                "Name",
+                text: $contact.name ?? "",
+                prompt: Text("Name")
+                    .foregroundColor(image != UIImage() ? Color(.white.opacity(0.7)) : Color(uiColor: .placeholderText)),
+                axis: .vertical
+            )
+            .font(.system(size: 36, weight: .bold))
+            .lineLimit(4)
+            .foregroundColor(image != UIImage() ? .white : .primary)
+            
+            Button {
+                showPhotosPicker = true
+            } label: {
+                Image(systemName: "camera")
+                    .font(.system(size: 18))
+                    .frame(width: 44, height: 44)
+                    .foregroundColor(image != UIImage() ? .blue.mix(with: .white, by: 0.3) : .blue)
+                    .liquidGlass(in: Circle(), stroke: true)
+            }
+            
+            Button {
+                showTagPicker = true
+            } label: {
+                if !(contact.tags?.isEmpty ?? true) {
+                    Text((contact.tags ?? []).compactMap { $0.name }.sorted().joined(separator: ", "))
+                        .foregroundColor(image != UIImage() ? .white : Color(.secondaryLabel))
+                        .font(.system(size: 15, weight: .medium))
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 12)
+                        .frame(minWidth: 44)
+                        .liquidGlass(in: RoundedRectangle(cornerRadius: 10, style: .continuous), stroke: true)
+                } else {
+                    Image(systemName: "person.2")
+                        .font(.system(size: 18))
+                        .frame(width: 44, height: 44)
+                        .foregroundColor(image != UIImage() ? .purple.mix(with: .white, by: 0.3) : .purple)
+                        .liquidGlass(in: Circle(), stroke: true)
+                }
+            }
+        }
+        .padding(.horizontal)
+    }
+    
+    @ViewBuilder
+    private var summaryField: some View {
+        TextField(
+            "",
+            text: $contact.summary ?? "",
+            prompt: Text("Main Note")
+                .foregroundColor(image != UIImage() ? Color(uiColor: .lightText).opacity(0.8) : Color(uiColor:.placeholderText)),
+            axis: .vertical
+        )
+        .lineLimit(2...)
+        .padding(16)
+        .foregroundStyle(image != UIImage() ? Color(uiColor: .lightText) : Color.primary)
+        .liquidGlass(in: RoundedRectangle(cornerRadius: 16, style: .continuous), stroke: true)
+        .padding(.horizontal)
+        .padding(.top, 16)
+    }
+    
+    @ViewBuilder
+    private var dateDisplay: some View {
+        HStack {
+            Spacer()
+            Button {
+                showDatePicker = true
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "calendar")
+                        .font(.system(size: 13, weight: .medium))
+                    Text(formatMetDate(contact.timestamp, isLongAgo: contact.isMetLongAgo))
+                        .font(.system(size: 15, weight: .medium))
+                }
+                .foregroundColor(image != UIImage() ? .white.opacity(0.9) : Color(UIColor.secondaryLabel))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .liquidGlass(in: Capsule(), stroke: true)
+            }
+        }
+        .padding(.horizontal)
+        .padding(.top, 12)
+        .padding(.bottom, 20)
+    }
+    
+    // MARK: - Notes Section
+    
+    @ViewBuilder
+    private var notesSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Notes")
+                    .font(.title2.bold())
+                    .foregroundStyle(.primary)
+                Spacer()
+            }
+            .padding(.horizontal)
+            
+            addNoteButton
+            
+            let activeNotes = (contact.notes ?? []).filter { $0.isArchived == false }
+            ForEach(activeNotes, id: \.self) { note in
+                noteCard(note)
+            }
+        }
+        .padding(.bottom, 40)
+    }
+    
+    @ViewBuilder
+    private var addNoteButton: some View {
+        Button {
+            let newNote = Note(content: "", creationDate: Date())
+            if contact.notes == nil { contact.notes = [] }
+            contact.notes?.append(newNote)
+            do {
+                try modelContext.save()
+            } catch {
+                print("Save failed: \(error)")
+            }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "plus.circle.fill")
+                    .font(.system(size: 22))
+                Text("Add Note")
+                    .font(.body.weight(.medium))
+                Spacer()
+            }
+            .foregroundStyle(.blue)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 16)
+            .liquidGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous), stroke: true)
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal)
+    }
+    
+    @ViewBuilder
+    private func noteCard(_ note: Note) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            TextField(
+                "Note Content",
+                text: Binding(
+                    get: { note.content ?? "" },
+                    set: { newValue in
+                        note.content = newValue
+                        do {
+                            try modelContext.save()
+                        } catch {
+                            print("Save failed: \(error)")
+                        }
+                    }
+                ),
+                axis: .vertical
+            )
+            .font(.body)
+            .lineLimit(2...)
+            
+            HStack {
+                Button {
+                    showNoteDatePickerFor(note: note)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "calendar")
+                            .font(.system(size: 11))
+                        Text(note.creationDate, style: .date)
+                            .font(.caption)
+                    }
+                    .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                
+                Spacer()
+                
+                Menu {
+                    Button {
+                        showNoteDatePickerFor(note: note)
+                    } label: {
+                        Label("Edit Date", systemImage: "calendar")
+                    }
+                    
+                    Button(role: .destructive) {
+                        note.isArchived = true
+                        note.archivedDate = Date()
+                        do {
+                            try modelContext.save()
+                        } catch {
+                            print("Save failed: \(error)")
+                        }
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 16))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(16)
+        .liquidGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous), stroke: true)
+        .padding(.horizontal)
+        .transition(.opacity.combined(with: .scale(scale: 0.95)))
+    }
+
+    // MARK: - Helper Methods
 
     func updateCroppingParameters(croppedImage: UIImage?, scale: CGFloat, offset: CGSize) {
         if let croppedImage = croppedImage {
@@ -405,126 +451,39 @@ struct ContactDetailsView: View {
             print("Save failed: \(error)")
         }
     }
-    
-    @MainActor
-    private func handlePhotoSelection() async {
-        guard let loaded = try? await selectedItem?.loadTransferable(type: Data.self),
-              let selectedImage = UIImage(data: loaded) else {
-            print("Failed to load image")
-            return
-        }
-        
-        let faces = await detectFaces(in: selectedImage)
-        
-        if faces.isEmpty {
-            contact.photo = loaded
-            showCropView = true
-            do {
-                try modelContext.save()
-            } catch {
-                print("Save failed: \(error)")
-            }
-            return
-        }
-        
-        if faces.count == 1 {
-            await handleSingleFace(faces[0], sourceImage: selectedImage, originalData: loaded)
-        } else {
-            pendingSourceImage = selectedImage
-            detectedFaces = faces
-            showFaceAssignment = true
-        }
-    }
-    
-    @MainActor
-    private func handleSingleFace(_ face: FaceAssignmentView.DetectedFaceInfo, sourceImage: UIImage, originalData: Data) {
-        let hasExistingPhoto = !contact.photo.isEmpty
-        
-        if hasExistingPhoto {
-            pendingPhotoData = face.image.jpegData(compressionQuality: 0.92)
-            showReplacePhotoAlert = true
-        } else {
-            contact.photo = face.image.jpegData(compressionQuality: 0.92) ?? Data()
-            showCropView = true
-            do {
-                try modelContext.save()
-            } catch {
-                print("Save failed: \(error)")
-            }
-        }
-    }
-    
-    private func handleMultipleFacesAssigned(_ assignedFaces: [FaceAssignmentView.AssignedFace]) {
-        for assignedFace in assignedFaces {
-            let name = assignedFace.name
-            
-            let fetchDescriptor = FetchDescriptor<Contact>(
-                predicate: #Predicate<Contact> { contact in
-                    contact.name == name && contact.isArchived == false
-                }
-            )
-            
-            if let existingContact = try? modelContext.fetch(fetchDescriptor).first {
-                let hasExistingPhoto = !existingContact.photo.isEmpty
-                if !hasExistingPhoto {
-                    existingContact.photo = assignedFace.image.jpegData(compressionQuality: 0.92) ?? Data()
-                }
-            } else {
-                let newContact = Contact(
-                    name: name,
-                    timestamp: contact.timestamp,
-                    photo: assignedFace.image.jpegData(compressionQuality: 0.92) ?? Data()
-                )
-                modelContext.insert(newContact)
-            }
-        }
-        
-        do {
-            try modelContext.save()
-        } catch {
-            print("Save failed: \(error)")
-        }
-    }
-    
-    private func detectFaces(in image: UIImage) async -> [FaceAssignmentView.DetectedFaceInfo] {
-        guard let cgImage = image.cgImage else { return [] }
-        
-        let request = VNDetectFaceRectanglesRequest()
-        let handler = VNImageRequestHandler(cgImage: cgImage)
-        
-        do {
-            try handler.perform([request])
-            
-            if let observations = request.results as? [VNFaceObservation] {
-                let imageSize = CGSize(width: CGFloat(cgImage.width), height: CGFloat(cgImage.height))
-                let fullRect = CGRect(origin: .zero, size: imageSize)
-                
-                var detectedFaces: [FaceAssignmentView.DetectedFaceInfo] = []
-                
-                for face in observations {
-                    let rect = FaceCrop.expandedRect(for: face, imageSize: imageSize)
-                    if !rect.isNull && !rect.isEmpty {
-                        if let cropped = cgImage.cropping(to: rect) {
-                            let faceImage = UIImage(cgImage: cropped)
-                            detectedFaces.append(FaceAssignmentView.DetectedFaceInfo(
-                                image: faceImage,
-                                boundingBox: rect
-                            ))
-                        }
-                    }
-                }
-                
-                return detectedFaces
-            }
-        } catch {
-            print("Face detection failed: \(error)")
-        }
-        
-        return []
-    }
 
     private func showNoteDatePickerFor(note: Note) {
         noteBeingEdited = note
         showNoteDatePicker = true
+    }
+    
+    private func formatMetDate(_ date: Date, isLongAgo: Bool) -> String {
+        if isLongAgo {
+            return "Met long ago"
+        }
+        
+        let calendar = Calendar.current
+        let now = Date()
+        
+        if calendar.isDateInToday(date) {
+            return "Met today"
+        }
+        
+        if calendar.isDateInYesterday(date) {
+            return "Met yesterday"
+        }
+        
+        let components = calendar.dateComponents([.day], from: date, to: now)
+        
+        if let days = components.day, days > 0 {
+            if days <= 7 {
+                return "Met \(days) days ago"
+            } else if days <= 14 {
+                let weeks = days / 7
+                return weeks == 1 ? "Met 1 week ago" : "Met \(weeks) weeks ago"
+            }
+        }
+        
+        return "Met \(date.formatted(date: .abbreviated, time: .omitted))"
     }
 }

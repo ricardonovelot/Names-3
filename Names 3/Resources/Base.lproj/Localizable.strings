@@ -1,0 +1,33 @@
+/* Onboarding */
+"onboarding.page1.title" = "Never Forget a Face";
+"onboarding.page1.description" = "Keep track of everyone you meet in daily life. Build genuine connections that last.";
+
+"onboarding.page2.title" = "Capture Moments Instantly";
+"onboarding.page2.description" = "Snap a photo and automatically detect faces. Add people you meet with just a tap.";
+
+"onboarding.page3.title" = "Organize by Moments";
+"onboarding.page3.description" = "Group people by places and dates. The gym, coffee shops, gatherings. Keep everything connected.";
+
+"onboarding.page4.title" = "Remember the Details";
+"onboarding.page4.description" = "Jot down what matters. Remember conversations, shared interests, and meaningful connections.";
+
+"onboarding.page5.title" = "Master Names & Faces";
+"onboarding.page5.description" = "Practice with our quiz feature. Turn faces into friendships by remembering who's who.";
+
+"onboarding.button.continue" = "Continue";
+"onboarding.button.getStarted" = "Get Started";
+"onboarding.button.skip" = "Skip";
+
+/* Settings */
+"settings.title" = "Settings";
+"settings.onboarding.header" = "Onboarding";
+"settings.onboarding.showAgain" = "Show Onboarding Again";
+"settings.onboarding.footer" = "View the onboarding tutorial again to learn about all features.";
+"settings.onboarding.reset" = "Reset Onboarding Status";
+"settings.onboarding.resetFooter" = "Debug: Reset the onboarding completion flag. Onboarding will show on next app launch.";
+
+"settings.appInfo.header" = "App Info";
+"settings.appInfo.version" = "Version";
+"settings.appInfo.build" = "Build";
+
+"settings.button.done" = "Done";

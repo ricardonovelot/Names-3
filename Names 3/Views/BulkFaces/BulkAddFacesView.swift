@@ -88,7 +88,11 @@ struct BulkAddFacesView: View {
         }
         .fullScreenCover(isPresented: $showCropper) {
             if let img = currentImage {
-                SimpleCropView(image: img) { cropped in
+                SimpleCropView(
+                    image: img,
+                    initialScale: 1.0,
+                    initialOffset: .zero
+                ) { cropped, scale, offset in
                     if let cropped {
                         viewModel.imageItem = cropped
                         if let b = batch {

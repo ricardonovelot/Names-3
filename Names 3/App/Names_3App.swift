@@ -19,6 +19,7 @@ enum AppTab: Hashable {
 struct Names_3App: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @State private var tabSelection: AppTab = .people
+    @State private var hasCheckedOnboarding = false
     
     private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Names3", category: "SwiftData")
 
@@ -196,7 +197,26 @@ struct Names_3App: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .onAppear {
+                    if !hasCheckedOnboarding {
+                        hasCheckedOnboarding = true
+                        checkAndShowOnboarding()
+                    }
+                }
         }
         .modelContainer(sharedModelContainer)
+    }
+    
+    private func checkAndShowOnboarding() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                  let window = windowScene.windows.first else {
+                print("❌ [App] No window found for onboarding")
+                return
+            }
+            
+            print("🔵 [App] Checking onboarding status")
+            OnboardingCoordinatorManager.shared.showOnboarding(in: window, forced: false)
+        }
     }
 }

@@ -30,6 +30,10 @@ struct QuickInputView: View {
 
     // Optional override for Return key handling (e.g., commit names in PhotoDetail)
     var onReturnOverride: (() -> Void)? = nil
+    
+    // Face carousel integration
+    var faceDetectionViewModel: FaceDetectionViewModel? = nil
+    var onFaceSelected: ((Int) -> Void)? = nil
 
     // People suggestions and selection
     @Query(filter: #Predicate<Contact> { $0.isArchived == false })
@@ -40,6 +44,7 @@ struct QuickInputView: View {
     @FocusState private var fieldIsFocused: Bool
     @State private var bottomInputHeight: CGFloat = 0
     @State private var suggestionsHeight: CGFloat = 0
+    @State private var faceCarouselHeight: CGFloat = 0
     @State private var isLoading = false
 
     // People-mode state
@@ -49,10 +54,13 @@ struct QuickInputView: View {
     @State private var quickNoteActive: Bool = false
     @State private var suppressNextClear: Bool = false
     @State private var showModePicker = false
+    @State private var shouldShowCreateButton: Bool = false
+    @State private var parsedTagNames: [String] = []
 
     // Photo processing state
     @State private var isProcessingPhoto = false
     @State private var lastPickedImage: UIImage?
+    @State private var isCameraPickerPresented = false
 
     // Photo processing callbacks
     var onPhotoPicked: ((UIImage, Date?) -> Void)? = nil
@@ -82,161 +90,187 @@ struct QuickInputView: View {
 
     var body: some View {
         let controlSize: CGFloat = 64
-        VStack {
-            HStack(spacing: 6) {
-                InputBubble {
-                    HStack(spacing: 8) {
-                        if mode == .people, let token = selectedContact {
-                            HStack(spacing: 6) {
-                                Text(token.name ?? "Unnamed")
-                                    .font(.subheadline)
-                                    .foregroundStyle(.blue)
+        VStack(spacing: 0) {
+            // Face carousel - shown above the input when faces are detected
+            if let viewModel = faceDetectionViewModel, !viewModel.faces.isEmpty {
+                PhotoFaceCarouselView(
+                    viewModel: viewModel,
+                    onFaceSelected: { index in
+                        onFaceSelected?(index)
+                    }
+                )
+                .frame(height: 120)
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear
+                            .preference(key: FaceCarouselHeightKey.self, value: proxy.size.height)
+                    }
+                )
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+            
+            VStack {
+                HStack(spacing: 6) {
+                    InputBubble {
+                        HStack(spacing: 8) {
+                            if mode == .people, let token = selectedContact {
+                                HStack(spacing: 6) {
+                                    Text(token.name ?? "Unnamed")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.blue)
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(.ultraThinMaterial, in: Capsule())
+                                .overlay {
+                                    Capsule()
+                                        .fill(Color.blue.opacity(0.15))
+                                }
+                                .clipShape(Capsule())
                             }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(.ultraThinMaterial, in: Capsule())
-                            .overlay {
-                                Capsule()
-                                    .fill(Color.blue.opacity(0.15))
-                            }
-                            .clipShape(Capsule())
-                        }
 
-                        ZStack(alignment: .topLeading) {
-                            GrowingTextView(
-                                text: $text,
-                                isFirstResponder: Binding(
-                                    get: { fieldIsFocused },
-                                    set: { fieldIsFocused = $0 }
-                                ),
-                                minHeight: 22,
-                                maxHeight: 140,
-                                onDeleteWhenEmpty: {
-                                    if text.isEmpty, selectedContact != nil {
-                                        selectedContact = nil
-                                        Task { @MainActor in
-                                            try? await Task.sleep(for: .milliseconds(30))
-                                            fieldIsFocused = true
+                            ZStack(alignment: .topLeading) {
+                                GrowingTextView(
+                                    text: $text,
+                                    isFirstResponder: Binding(
+                                        get: { fieldIsFocused },
+                                        set: { fieldIsFocused = $0 }
+                                    ),
+                                    minHeight: 22,
+                                    maxHeight: 140,
+                                    onDeleteWhenEmpty: {
+                                        if text.isEmpty, selectedContact != nil {
+                                            selectedContact = nil
+                                            Task { @MainActor in
+                                                try? await Task.sleep(for: .milliseconds(30))
+                                                fieldIsFocused = true
+                                            }
+                                        }
+                                    },
+                                    onReturn: {
+                                        if let override = onReturnOverride {
+                                            resetTextAndPreview()
+                                            override()
+                                            return
+                                        }
+                                        if mode == .people && !suggestedContacts.isEmpty {
+                                            selectExistingContact(suggestedContacts[0])
+                                        } else {
+                                            save()
                                         }
                                     }
-                                },
-                                onReturn: {
-                                    if let override = onReturnOverride {
-                                        resetTextAndPreview()
-                                        override()
+                                )
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .onChange(of: text) { oldValue, newValue in
+                                    NotificationCenter.default.post(name: .quickInputTextDidChange, object: nil, userInfo: ["text": newValue])
+
+                                    if let last = newValue.last, last == "\n" {
+                                        text.removeLast()
+                                        if let override = onReturnOverride {
+                                            resetTextAndPreview()
+                                            override()
+                                        } else {
+                                            save()
+                                        }
+                                    } else {
+                                        if mode == .people {
+                                            parseDebounceWork?.cancel()
+                                            let s = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                                            if isQuickNoteCommand(s) && selectedContact == nil {
+                                                parsePeopleInput()
+                                            } else {
+                                                let work = DispatchWorkItem {
+                                                    parsePeopleInput()
+                                                }
+                                                parseDebounceWork = work
+                                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if text.isEmpty {
+                                    Text(mode == .people && selectedContact != nil ? "Add a note…" : "")
+                                        .foregroundStyle(.secondary)
+                                        .padding(.leading, 3)
+                                        .padding(.top, 1)
+                                        .allowsHitTesting(false)
+                                }
+                            }
+
+                            if mode == .people {
+                                Button {
+                                    guard !isCameraPickerPresented else {
+                                        print("⚠️ [QuickInput] Camera picker already presented, ignoring tap")
                                         return
                                     }
-                                    if mode == .people && !suggestedContacts.isEmpty {
-                                        selectExistingContact(suggestedContacts[0])
-                                    } else {
-                                        save()
-                                    }
+                                    isCameraPickerPresented = true
+                                    onCameraTap?()
+                                } label: {
+                                    Image(systemName: "camera")
+                                        .foregroundStyle(.secondary)
                                 }
-                            )
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .onChange(of: text) { oldValue, newValue in
-                                NotificationCenter.default.post(name: .quickInputTextDidChange, object: nil, userInfo: ["text": newValue])
-
-                                if let last = newValue.last, last == "\n" {
-                                    text.removeLast()
-                                    if let override = onReturnOverride {
-                                        resetTextAndPreview()
-                                        override()
-                                    } else {
-                                        save()
-                                    }
-                                } else {
-                                    if mode == .people {
-                                        parseDebounceWork?.cancel()
-                                        let s = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                                        if isQuickNoteCommand(s) && selectedContact == nil {
-                                            parsePeopleInput()
-                                        } else {
-                                            let work = DispatchWorkItem {
-                                                parsePeopleInput()
-                                            }
-                                            parseDebounceWork = work
-                                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
-                                        }
-                                    }
-                                }
+                                .buttonStyle(.plain)
+                                .disabled(isCameraPickerPresented)
                             }
-
-                            if text.isEmpty {
-                                Text(mode == .people && selectedContact != nil ? "Add a note…" : "")
-                                    .foregroundStyle(.secondary)
-                                    .padding(.leading, 3)
-                                    .padding(.top, 1)
-                                    .allowsHitTesting(false)
-                            }
-                        }
-
-                        if mode == .people {
-                            Button {
-                                onCameraTap?()
-                            } label: {
-                                Image(systemName: "camera")
-                                    .foregroundStyle(.secondary)
-                            }
-                            .buttonStyle(.plain)
                         }
                     }
-                }
 
-                if mode == .people {
-                    Button {
-                        let inlineSupported = (onInlinePhotosTap != nil) && (isInlinePhotosActive != nil)
-                        let inlineActive = isInlinePhotosActive?() ?? false
+                    if mode == .people {
+                        Button {
+                            let inlineSupported = (onInlinePhotosTap != nil) && (isInlinePhotosActive != nil)
+                            let inlineActive = isInlinePhotosActive?() ?? false
 
-                        if !inlineSupported {
-                            if isQuickNotesActive {
-                                isQuickNotesActive = false
-                                onQuickNoteCleared?()
-                            } else {
+                            if !inlineSupported {
+                                if isQuickNotesActive {
+                                    isQuickNotesActive = false
+                                    onQuickNoteCleared?()
+                                } else {
+                                    isQuickNotesActive = true
+                                    onQuickNoteDetected?()
+                                }
+                                return
+                            }
+
+                            if !isQuickNotesActive && !inlineActive {
                                 isQuickNotesActive = true
                                 onQuickNoteDetected?()
-                            }
-                            return
-                        }
-
-                        if !isQuickNotesActive && !inlineActive {
-                            isQuickNotesActive = true
-                            onQuickNoteDetected?()
-                        } else if isQuickNotesActive && !inlineActive {
-                            isQuickNotesActive = false
-                            onQuickNoteCleared?()
-                            onInlinePhotosTap?()
-                        } else if inlineActive {
-                            if isQuickNotesActive {
+                            } else if isQuickNotesActive && !inlineActive {
                                 isQuickNotesActive = false
                                 onQuickNoteCleared?()
+                                onInlinePhotosTap?()
+                            } else if inlineActive {
+                                if isQuickNotesActive {
+                                    isQuickNotesActive = false
+                                    onQuickNoteCleared?()
+                                }
+                                onInlinePhotosTap?()
                             }
-                            onInlinePhotosTap?()
-                        }
-                    } label: {
-                        let inlineActive = isInlinePhotosActive?() ?? false
-                        let inlineSupported = (onInlinePhotosTap != nil) && (isInlinePhotosActive != nil)
-                        let symbolName = inlineSupported && inlineActive
-                            ? "person"
-                            : (isQuickNotesActive
-                               ? (inlineSupported ? "photo.on.rectangle" : "person")
-                               : "note.text")
+                        } label: {
+                            let inlineActive = isInlinePhotosActive?() ?? false
+                            let inlineSupported = (onInlinePhotosTap != nil) && (isInlinePhotosActive != nil)
+                            let symbolName = inlineSupported && inlineActive
+                                ? "person"
+                                : (isQuickNotesActive
+                                   ? (inlineSupported ? "photo.on.rectangle" : "person")
+                                   : "note.text")
 
-                        Image(systemName: symbolName)
-                            .font(.system(size: 24, weight: .medium))
-                            .frame(width: controlSize, height: controlSize)
-                            .liquidGlass(in: Circle())
-                            .clipShape(Circle())
+                            Image(systemName: symbolName)
+                                .font(.system(size: 24, weight: .medium))
+                                .frame(width: controlSize, height: controlSize)
+                                .liquidGlass(in: Circle())
+                                .clipShape(Circle())
+                        }
+                        .accessibilityLabel("Cycle input mode")
                     }
-                    .accessibilityLabel("Cycle input mode")
                 }
             }
         }
         .padding(.horizontal)
         .padding(.bottom, 16)
         .overlay(alignment: .bottom) {
-            if mode == .people, selectedContact == nil && !filterString.isEmpty && !suggestedContacts.isEmpty {
+            if mode == .people, selectedContact == nil && !filterString.isEmpty && (!suggestedContacts.isEmpty || shouldShowCreateButton) {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(suggestedContacts) { contact in
@@ -251,14 +285,21 @@ struct QuickInputView: View {
                                             .frame(width: 24, height: 24)
                                             .clipShape(Circle())
                                     } else {
-                                        Circle()
-                                            .fill(Color.gray.opacity(0.3))
-                                            .frame(width: 24, height: 24)
-                                            .overlay {
-                                                Image(systemName: "person.fill")
-                                                    .font(.system(size: 10))
-                                                    .foregroundStyle(.secondary)
-                                            }
+                                        ZStack {
+                                            RadialGradient(
+                                                colors: [
+                                                    Color(uiColor: .secondarySystemBackground),
+                                                    Color(uiColor: .tertiarySystemBackground)
+                                                ],
+                                                center: .center,
+                                                startRadius: 2,
+                                                endRadius: 17
+                                            )
+                                            
+                                            Color.clear
+                                                .frame(width: 24, height: 24)
+                                                .liquidGlass(in: Circle(), stroke: true)
+                                        }
                                     }
                                     
                                     Text(contact.name ?? "Unnamed")
@@ -281,8 +322,44 @@ struct QuickInputView: View {
                                 removal: .scale(scale: 0.9).combined(with: .opacity)
                             ))
                         }
+                        
+                        if shouldShowCreateButton {
+                            Button {
+                                createNewContactFromFilterString()
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Circle()
+                                        .fill(Color.green.opacity(0.3))
+                                        .frame(width: 24, height: 24)
+                                        .overlay {
+                                            Image(systemName: "plus")
+                                                .font(.system(size: 10, weight: .semibold))
+                                                .foregroundStyle(.green)
+                                        }
+                                    
+                                    Text("Create \"\(filterString)\"")
+                                        .font(.subheadline)
+                                        .lineLimit(1)
+                                }
+                                .padding(.leading, 6)
+                                .padding(.trailing, 12)
+                                .padding(.vertical, 6)
+                                .background(
+                                    Color.green.gradient.quinary
+                                )
+                                .background(.ultraThinMaterial)
+                                .foregroundStyle(.primary)
+                                .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .transition(.asymmetric(
+                                insertion: .scale(scale: 0.8).combined(with: .opacity),
+                                removal: .scale(scale: 0.9).combined(with: .opacity)
+                            ))
+                        }
                     }
                     .animation(.spring(response: 0.3, dampingFraction: 0.8), value: suggestedContacts.map(\.id))
+                    .animation(.spring(response: 0.3, dampingFraction: 0.8), value: shouldShowCreateButton)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .frame(minHeight: 44, maxHeight: 60, alignment: .center)
@@ -297,7 +374,7 @@ struct QuickInputView: View {
                 .padding(.horizontal)
                 .offset(y: -(suggestionsHeight + 8))
                 .transition(.opacity.combined(with: .move(edge: .bottom)))
-                .animation(.spring(response: 0.35, dampingFraction: 0.85), value: !suggestedContacts.isEmpty)
+                .animation(.spring(response: 0.35, dampingFraction: 0.85), value: !suggestedContacts.isEmpty || shouldShowCreateButton)
             }
         }
         .background(
@@ -316,7 +393,12 @@ struct QuickInputView: View {
                 suggestionsHeight = height
             }
         }
-        .preference(key: TotalQuickInputHeightKey.self, value: bottomInputHeight + suggestionsHeight + 8)
+        .onPreferenceChange(FaceCarouselHeightKey.self) { height in
+            withAnimation(.spring(response: 0.25, dampingFraction: 1.0)) {
+                faceCarouselHeight = height
+            }
+        }
+        .preference(key: TotalQuickInputHeightKey.self, value: bottomInputHeight + suggestionsHeight + faceCarouselHeight + 8)
         .onReceive(NotificationCenter.default.publisher(for: .quickInputRequestFocus)) { _ in
             print("🎯 [QuickInput] Received focus request notification")
             Task { @MainActor in
@@ -330,11 +412,17 @@ struct QuickInputView: View {
             fieldIsFocused = false
         }
         .onReceive(NotificationCenter.default.publisher(for: .quickInputCameraDidPickPhoto)) { notification in
+            isCameraPickerPresented = false
+            
             if let userInfo = notification.userInfo,
                let image = userInfo["image"] as? UIImage,
                let date = userInfo["date"] as? Date? {
                 handlePhotoPicked(image: image, date: date)
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .quickInputCameraDidDismiss)) { _ in
+            print("📸 [QuickInput] Camera picker dismissed without selection")
+            isCameraPickerPresented = false
         }
     }
 
@@ -375,9 +463,21 @@ struct QuickInputView: View {
         }
 
         if mode == .people {
+            // Use stored parsed tag names instead of re-extracting
+            var globalTags: [Tag] = []
+            
+            for tagName in parsedTagNames {
+                if let tag = Tag.fetchOrCreate(named: tagName, in: modelContext, seedDate: Date()) {
+                    globalTags.append(tag)
+                }
+            }
+            
+            // Assign tags to all parsed contacts
             for contact in parsedContacts {
+                contact.tags = globalTags
                 modelContext.insert(contact)
             }
+            
             if let qn = linkedQuickNote {
                 if qn.linkedContacts == nil { qn.linkedContacts = [] }
                 if qn.linkedNotes == nil { qn.linkedNotes = [] }
@@ -398,6 +498,8 @@ struct QuickInputView: View {
         text = ""
         filterString = ""
         suggestedContacts = []
+        shouldShowCreateButton = false
+        parsedTagNames = []
         withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
             parsedContacts = []
         }
@@ -421,6 +523,8 @@ struct QuickInputView: View {
             }
             filterString = ""
             suggestedContacts = []
+            shouldShowCreateButton = false
+            parsedTagNames = []
             return
         }
 
@@ -436,20 +540,9 @@ struct QuickInputView: View {
                 }
                 filterString = ""
                 suggestedContacts = []
+                shouldShowCreateButton = false
+                parsedTagNames = []
                 return
-            } else {
-                let sanitized = stripQuickNoteMarkers(from: workingInput)
-                workingInput = sanitized
-                text = sanitized
-                trimmed = sanitized.trimmingCharacters(in: .whitespacesAndNewlines)
-                if trimmed.isEmpty {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
-                        parsedContacts = []
-                    }
-                    filterString = ""
-                    suggestedContacts = []
-                    return
-                }
             }
         } else if quickNoteActive {
             quickNoteActive = false
@@ -464,6 +557,8 @@ struct QuickInputView: View {
                 }
                 filterString = ""
                 suggestedContacts = []
+                shouldShowCreateButton = false
+                parsedTagNames = []
                 return
             }
         }
@@ -500,25 +595,12 @@ struct QuickInputView: View {
         }
         cleanedInput = cleanedInput.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        // Store extracted tag names in state
+        parsedTagNames = extractValidTagNames(from: cleanedInput)
+        cleanedInput = removeTagTokens(from: cleanedInput)
+
         let nameEntries = cleanedInput.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
         var previews: [Contact] = []
-        var globalTags: [Tag] = []
-        var globalTagKeys = Set<String>()
-
-        let allWords = cleanedInput.split(separator: " ").map { String($0) }
-        for word in allWords {
-            if word.starts(with: "#") {
-                let raw = String(word.dropFirst())
-                let trimmed = raw.trimmingCharacters(in: .punctuationCharacters)
-                let key = Tag.normalizedKey(trimmed)
-                if !trimmed.isEmpty && !globalTagKeys.contains(key) {
-                    if let tag = Tag.fetchOrCreate(named: trimmed, in: modelContext, seedDate: finalDate) {
-                        globalTags.append(tag)
-                        globalTagKeys.insert(key)
-                    }
-                }
-            }
-        }
 
         for entry in nameEntries {
             if entry.starts(with: "#") { continue }
@@ -563,10 +645,9 @@ struct QuickInputView: View {
                     name = String(name.dropLast())
                 }
 
-                let contact = Contact(name: name, timestamp: finalDate, notes: notes, tags: globalTags, photo: Data())
+                let contact = Contact(name: name, timestamp: finalDate, notes: notes, tags: [], photo: Data())
                 contact.summary = summary
                 contact.isMetLongAgo = longAgoDetected
-                // ensure fresh UUID to prevent collisions before insertion
                 contact.uuid = UUID()
                 previews.append(contact)
             }
@@ -577,10 +658,58 @@ struct QuickInputView: View {
         }
     }
 
+    private func removeTagTokens(from text: String) -> String {
+        var tokens = text.split(whereSeparator: { $0.isWhitespace })
+        tokens.removeAll(where: { $0.hasPrefix("#") })
+        return tokens.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // Pure function to extract valid tag names without creating Tag objects
+    private func extractValidTagNames(from text: String) -> [String] {
+        var tagNames: [String] = []
+        var seenKeys = Set<String>()
+        
+        // Split into tokens with their preceding character context
+        let tokens = text.split(whereSeparator: { $0.isWhitespace })
+        
+        for token in tokens {
+            // Must start with # to be a tag
+            guard token.hasPrefix("#") else { continue }
+            
+            // Extract tag text (remove # and trailing punctuation)
+            let raw = token.dropFirst()
+            let trimmed = raw.trimmingCharacters(in: .punctuationCharacters)
+            
+            // Must have content after #
+            guard !trimmed.isEmpty else { continue }
+            
+            // Check if this exact # position is valid (preceded by whitespace or start of string)
+            let tagString = String(token)
+            if let range = text.range(of: tagString) {
+                let startIndex = range.lowerBound
+                
+                // Valid if at start of string OR preceded by whitespace
+                let isAtStart = startIndex == text.startIndex
+                let isPrecededByWhitespace = !isAtStart && text[text.index(before: startIndex)].isWhitespace
+                
+                if isAtStart || isPrecededByWhitespace {
+                    let key = Tag.normalizedKey(String(trimmed))
+                    if !seenKeys.contains(key) {
+                        tagNames.append(String(trimmed))
+                        seenKeys.insert(key)
+                    }
+                }
+            }
+        }
+        
+        return tagNames
+    }
+
     private func filterContacts() {
         if filterString.isEmpty {
             withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                 suggestedContacts = []
+                shouldShowCreateButton = false
             }
         } else {
             let q = filterString.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -589,9 +718,78 @@ struct QuickInputView: View {
                 if name.localizedStandardContains(q) { return true }
                 return name.lowercased().hasPrefix(q.lowercased())
             }
+            
+            // Show create button when:
+            // 1. There's valid input (at least 2 characters)
+            // 2. Not a quick note command
+            // Note: We allow duplicates since multiple people can have the same name
+            let isValidName = !q.isEmpty && q.count >= 2 && !isQuickNoteCommand(q)
+            
             withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                 suggestedContacts = filtered
+                shouldShowCreateButton = isValidName
             }
+        }
+    }
+
+    private func createNewContactFromFilterString() {
+        // Use the parsed contact if available (which has cleaned name)
+        // Otherwise fall back to filterString
+        let cleanedName: String
+        let contactTags: [Tag]
+        
+        if let firstParsed = parsedContacts.first {
+            cleanedName = firstParsed.name ?? filterString.trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            cleanedName = filterString.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        
+        guard !cleanedName.isEmpty else { return }
+        
+        // Create Tag objects from parsed tag names
+        var tags: [Tag] = []
+        for tagName in parsedTagNames {
+            if let tag = Tag.fetchOrCreate(named: tagName, in: modelContext, seedDate: Date()) {
+                tags.append(tag)
+            }
+        }
+        
+        // Create a new contact with the cleaned name and parsed tags
+        let newContact = Contact(
+            name: cleanedName,
+            timestamp: Date(),
+            notes: [],
+            tags: tags,
+            photo: Data()
+        )
+        newContact.uuid = UUID()
+        
+        // Select this new contact immediately (it will be saved when user adds a note)
+        selectedContact = newContact
+        text = ""
+        filterString = ""
+        suggestedContacts = []
+        shouldShowCreateButton = false
+        parsedTagNames = []
+        
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+            parsedContacts = []
+        }
+        
+        // Insert into context so it's tracked
+        modelContext.insert(newContact)
+        
+        // Save immediately
+        do {
+            try modelContext.save()
+        } catch {
+            print("❌ [QuickInput] Failed to save new contact: \(error)")
+        }
+        
+        // Focus the input field for adding a note
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(50))
+            fieldIsFocused = true
         }
     }
 
@@ -600,6 +798,7 @@ struct QuickInputView: View {
         text = ""
         filterString = ""
         suggestedContacts = []
+        shouldShowCreateButton = false
         withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
             parsedContacts = []
         }
@@ -638,31 +837,30 @@ struct QuickInputView: View {
             }
         }
 
+        // Extract tag names first, validate them properly
+        let tagNames = extractValidTagNames(from: working)
+        
+        // Remove tag tokens from working text
+        var tokens = working.split(whereSeparator: { $0.isWhitespace })
+        tokens.removeAll(where: { $0.hasPrefix("#") })
+        working = tokens.joined(separator: " ")
+
+        // NOW create the Tag objects and assign to contact
         var contactTags = contact.tags ?? []
-        let tokens = working.split(whereSeparator: { $0.isWhitespace })
-        var retainedTokens: [Substring] = []
-        for tok in tokens {
-            if tok.hasPrefix("#") {
-                let raw = tok.dropFirst()
-                let trimmed = raw.trimmingCharacters(in: .punctuationCharacters)
-                if !trimmed.isEmpty {
-                    if let tag = Tag.fetchOrCreate(named: String(trimmed), in: modelContext) {
-                        if !contactTags.contains(where: { $0.normalizedKey == tag.normalizedKey }) {
-                            contactTags.append(tag)
-                        }
-                    }
+        for tagName in tagNames {
+            if let tag = Tag.fetchOrCreate(named: tagName, in: modelContext) {
+                if !contactTags.contains(where: { $0.normalizedKey == tag.normalizedKey }) {
+                    contactTags.append(tag)
                 }
-            } else {
-                retainedTokens.append(tok)
             }
         }
+        
         if !contactTags.isEmpty {
             contact.tags = contactTags
             for t in contactTags {
                 t.updateRange(withSeed: detectedDate ?? Date())
             }
         }
-        working = retainedTokens.joined(separator: " ")
 
         let content = working.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !content.isEmpty else { return nil }
@@ -840,6 +1038,13 @@ private struct SuggestionsHeightKey: PreferenceKey {
     }
 }
 
+private struct FaceCarouselHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 struct TotalQuickInputHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
@@ -853,6 +1058,7 @@ extension Notification.Name {
     static let quickInputRequestFocus = Notification.Name("QuickInputRequestFocus")
     static let quickInputResignFocus = Notification.Name("QuickInputResignFocus")
     static let quickInputCameraDidPickPhoto = Notification.Name("QuickInputCameraDidPickPhoto")
+    static let quickInputCameraDidDismiss = Notification.Name("QuickInputCameraDidDismiss")
 }
 
 private extension View {

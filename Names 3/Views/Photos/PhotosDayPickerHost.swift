@@ -15,17 +15,33 @@ enum PhotosPickerScope: Hashable {
     }
 }
 
+enum PhotoPickerPresentationMode {
+    /// Shows PhotoDetailView for face detection and multi-person naming
+    case detailView
+    /// Directly calls onPick without showing detail view
+    case directSelection
+}
+
 struct PhotosDayPickerHost: View {
     let scope: PhotosPickerScope
     let contactsContext: ModelContext
     let onPick: (UIImage, Date?) -> Void
     let initialScrollDate: Date?
     let attemptQuickAssign: ((UIImage, Date?) async -> Bool)?
+    @Binding var faceDetectionViewModel: FaceDetectionViewModel?
 
-    init(scope: PhotosPickerScope, contactsContext: ModelContext, initialScrollDate: Date? = nil, onPick: @escaping (UIImage, Date?) -> Void, attemptQuickAssign: ((UIImage, Date?) async -> Bool)? = nil) {
+    init(
+        scope: PhotosPickerScope,
+        contactsContext: ModelContext,
+        initialScrollDate: Date? = nil,
+        faceDetectionViewModel: Binding<FaceDetectionViewModel?>,
+        onPick: @escaping (UIImage, Date?) -> Void,
+        attemptQuickAssign: ((UIImage, Date?) async -> Bool)? = nil
+    ) {
         self.scope = scope
         self.contactsContext = contactsContext
         self.initialScrollDate = initialScrollDate ?? scope.initialScrollDate
+        self._faceDetectionViewModel = faceDetectionViewModel
         self.onPick = onPick
         self.attemptQuickAssign = attemptQuickAssign
         
@@ -44,6 +60,7 @@ struct PhotosDayPickerHost: View {
             scope: scope,
             contactsContext: contactsContext,
             initialScrollDate: initialScrollDate,
+            faceDetectionViewModel: $faceDetectionViewModel,
             onPick: onPick,
             attemptQuickAssign: attemptQuickAssign
         )

@@ -54,7 +54,7 @@ final class PhotoLibraryService: PhotoLibraryServiceProtocol {
     
     func fetchAssets(for scope: PhotosPickerScope) -> PHFetchResult<PHAsset> {
         let options = PHFetchOptions()
-        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
         
         switch scope {
         case .day(let date):
@@ -75,7 +75,7 @@ final class PhotoLibraryService: PhotoLibraryServiceProtocol {
     
     func fetchAssets(from startDate: Date, to endDate: Date) -> [PHAsset] {
         let options = PHFetchOptions()
-        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
         options.predicate = NSPredicate(
             format: "creationDate >= %@ AND creationDate < %@",
             startDate as NSDate,

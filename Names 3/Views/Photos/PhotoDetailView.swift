@@ -81,7 +81,11 @@ struct PhotoDetailView: View {
             }
         }
         .fullScreenCover(isPresented: $showCropper) {
-            SimpleCropView(image: currentImage) { cropped in
+            SimpleCropView(
+                image: currentImage,
+                initialScale: 1.0,
+                initialOffset: .zero
+            ) { cropped, scale, offset in
                 if let cropped {
                     currentImage = cropped
                     Task {
@@ -365,55 +369,5 @@ struct FaceCarouselView: View {
 private extension Array {
     subscript(safe index: Index) -> Element? {
         indices.contains(index) ? self[index] : nil
-    }
-}
-
-final class FaceDetectionViewModel: ObservableObject {
-    struct DetectedFace: Identifiable {
-        let id = UUID()
-        let image: UIImage
-        var name: String? = nil
-        var isLocked: Bool = false
-    }
-    
-    @Published var faces: [DetectedFace] = []
-    @Published var isDetecting = false
-    var faceObservations: [VNFaceObservation] = []
-    
-    @MainActor
-    func detectFaces(in image: UIImage) async {
-        guard let cgImage = image.cgImage else { return }
-        
-        isDetecting = true
-        faces.removeAll()
-        faceObservations.removeAll()
-        
-        let request = VNDetectFaceRectanglesRequest()
-        let handler = VNImageRequestHandler(cgImage: cgImage)
-        
-        do {
-            try handler.perform([request])
-            
-            if let observations = request.results as? [VNFaceObservation] {
-                faceObservations = observations
-                
-                let imageSize = CGSize(width: CGFloat(cgImage.width), height: CGFloat(cgImage.height))
-                let fullRect = CGRect(origin: .zero, size: imageSize)
-                
-                for face in observations {
-                    let rect = FaceCrop.expandedRect(for: face, imageSize: imageSize)
-                    if !rect.isNull && !rect.isEmpty {
-                        if let cropped = cgImage.cropping(to: rect) {
-                            let faceImage = UIImage(cgImage: cropped)
-                            faces.append(DetectedFace(image: faceImage))
-                        }
-                    }
-                }
-            }
-        } catch {
-            print("Face detection failed: \(error)")
-        }
-        
-        isDetecting = false
     }
 }

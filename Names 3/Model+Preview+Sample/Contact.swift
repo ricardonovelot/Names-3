@@ -22,6 +22,9 @@ class Contact {
 
     @Relationship(inverse: \QuickNote.linkedContacts)
     var quickNotes: [QuickNote]? = []
+    
+    @Relationship(inverse: \QuizPerformance.contact)
+    var quizPerformance: QuizPerformance?
 
     var timestamp: Date = Date()
     var photo: Data = Data()
@@ -45,7 +48,8 @@ class Contact {
         cropOffsetX: Float = 0.0,
         cropOffsetY: Float = 0.0,
         cropScale: Float = 1.0,
-        quickNotes: [QuickNote]? = nil
+        quickNotes: [QuickNote]? = nil,
+        quizPerformance: QuizPerformance? = nil
     ) {
         self.uuid = uuid
         self.name = name
@@ -62,6 +66,7 @@ class Contact {
         self.cropOffsetY = cropOffsetY
         self.cropScale = cropScale
         self.quickNotes = quickNotes
+        self.quizPerformance = quizPerformance
     }
 }
 

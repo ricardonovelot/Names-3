@@ -9,6 +9,7 @@ final class PhotosDayPickerViewController: UIViewController {
     private let contactsContext: ModelContext
     private let initialScrollDate: Date?
     private let onPick: (UIImage, Date?) -> Void
+    private var faceDetectionViewModel: FaceDetectionViewModel?
     
     private let viewModel: PhotosPickerViewModel
     private let imageManager = PHCachingImageManager()
@@ -16,10 +17,17 @@ final class PhotosDayPickerViewController: UIViewController {
     private var collectionView: UICollectionView!
     private var coordinator: PhotoGridView.Coordinator!
     
-    init(scope: PhotosPickerScope, contactsContext: ModelContext, initialScrollDate: Date? = nil, onPick: @escaping (UIImage, Date?) -> Void) {
+    init(
+        scope: PhotosPickerScope,
+        contactsContext: ModelContext,
+        initialScrollDate: Date? = nil,
+        faceDetectionViewModel: FaceDetectionViewModel? = nil,
+        onPick: @escaping (UIImage, Date?) -> Void
+    ) {
         self.scope = scope
         self.contactsContext = contactsContext
         self.initialScrollDate = initialScrollDate
+        self.faceDetectionViewModel = faceDetectionViewModel
         self.onPick = onPick
         self.viewModel = PhotosPickerViewModel(scope: scope, initialScrollDate: initialScrollDate)
         
@@ -48,14 +56,8 @@ final class PhotosDayPickerViewController: UIViewController {
         super.viewDidAppear(animated)
         print("✅ [PhotosDayPickerVC] View appeared")
         
-        // Check if coordinator is mid-transition before unsuppressing
-        if coordinator?.isTransitioning == true {
-            print("⏸️ [PhotosDayPickerVC] Coordinator transitioning, deferring reload unsuppression")
-            // The coordinator will handle unsuppression after restoration completes
-        } else {
-            // Re-enable reloads when we come back to the grid (only if not transitioning)
-            viewModel.suppressReload(false)
-        }
+        // Re-enable reloads when we come back to the grid
+        viewModel.suppressReload(false)
         
         // Always ensure we're observing when visible
         if !viewModel.isObserving {
@@ -100,9 +102,32 @@ final class PhotosDayPickerViewController: UIViewController {
             imageManager: imageManager,
             contactsContext: contactsContext,
             onPhotoTapped: { [weak self] image, date in
-                print("✅ [PhotosDayPickerVC] Photo tapped")
-                self?.onPick(image, date)
-                self?.dismiss(animated: true)
+                guard let self = self else { return }
+                print("✅ [PhotosDayPickerVC] Photo tapped - presenting detail view")
+                
+                // Present detail view using the wrapper
+                Task { @MainActor in
+                    let detailView = PhotoDetailViewWrapper(
+                        image: image,
+                        date: date,
+                        contactsContext: self.contactsContext,
+                        faceDetectionViewModelBinding: Binding(
+                            get: { self.faceDetectionViewModel },
+                            set: { self.faceDetectionViewModel = $0 }
+                        ),
+                        onComplete: { [weak self] finalImage, finalDate in
+                            self?.onPick(finalImage, finalDate)
+                            self?.dismiss(animated: true)
+                        },
+                        onDismiss: {
+                            // Just dismiss the detail view
+                        }
+                    )
+                    
+                    let hosting = UIHostingController(rootView: detailView)
+                    hosting.modalPresentationStyle = .fullScreen
+                    self.present(hosting, animated: true)
+                }
             },
             onAppearAtIndex: { [weak self] index in
                 guard let self = self else { return }
@@ -113,7 +138,11 @@ final class PhotosDayPickerViewController: UIViewController {
             onDetailVisibilityChanged: { [weak self] visible in
                 print("🔵 [PhotosDayPickerVC] Detail visibility changed: \(visible) -> suppressReload(\(visible))")
                 self?.viewModel.suppressReload(visible)
-            }
+            },
+            faceDetectionViewModelBinding: Binding(
+                get: { [weak self] in self?.faceDetectionViewModel },
+                set: { [weak self] in self?.faceDetectionViewModel = $0 }
+            )
         )
         
         // Create layout and collection view
@@ -153,13 +182,20 @@ struct PhotosDayPickerViewControllerWrapper: UIViewControllerRepresentable {
     let scope: PhotosPickerScope
     let contactsContext: ModelContext
     let initialScrollDate: Date?
+    @Binding var faceDetectionViewModel: FaceDetectionViewModel?
     let onPick: (UIImage, Date?) -> Void
     
     func makeUIViewController(context: Context) -> UINavigationController {
+        let viewModel = faceDetectionViewModel ?? FaceDetectionViewModel()
+        if faceDetectionViewModel == nil {
+            faceDetectionViewModel = viewModel
+        }
+        
         let vc = PhotosDayPickerViewController(
             scope: scope,
             contactsContext: contactsContext,
             initialScrollDate: initialScrollDate,
+            faceDetectionViewModel: viewModel,
             onPick: onPick
         )
         let nav = UINavigationController(rootViewController: vc)

@@ -1,48 +1,78 @@
 import SwiftUI
 import SwiftData
 import Photos
-import os.log
-
-private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Names", category: "PhotosInlineView")
 
 struct PhotosInlineView: View {
-    @Environment(\.modelContext) private var modelContext
     let contactsContext: ModelContext
-    let onPhotoPicked: (UIImage, Date?) -> Void
     let isVisible: Bool
+    let onPhotoPicked: (UIImage, Date?) -> Void
+    
+    @StateObject private var viewModel = InlinePhotosViewModel()
+    @State private var faceDetectionViewModel: FaceDetectionViewModel?
     
     init(contactsContext: ModelContext, isVisible: Bool = true, onPhotoPicked: @escaping (UIImage, Date?) -> Void) {
         self.contactsContext = contactsContext
         self.isVisible = isVisible
         self.onPhotoPicked = onPhotoPicked
-        logger.info("PhotosInlineView init")
     }
     
     var body: some View {
-        PhotosGridViewControllerRepresentable(
-            isVisible: isVisible,
-            onPhotoPicked: onPhotoPicked
-        )
+        ZStack {
+            if viewModel.assets.isEmpty {
+                ProgressView("Loading recent photos...")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                PhotoGridView(
+                    assets: viewModel.assets,
+                    imageManager: PHCachingImageManager(),
+                    contactsContext: contactsContext,
+                    initialScrollDate: nil,
+                    onPhotoTapped: { image, date in
+                        onPhotoPicked(image, date)
+                    },
+                    onAppearAtIndex: { _ in },
+                    onDetailVisibilityChanged: { _ in },
+                    faceDetectionViewModelBinding: $faceDetectionViewModel
+                )
+            }
+        }
         .background(Color(UIColor.systemGroupedBackground))
         .ignoresSafeArea(edges: .bottom)
+        .onAppear {
+            if viewModel.assets.isEmpty {
+                viewModel.loadRecentPhotos()
+            }
+        }
     }
 }
 
-// MARK: - UIViewControllerRepresentable
+// MARK: - Inline Photos ViewModel
 
-struct PhotosGridViewControllerRepresentable: UIViewControllerRepresentable {
-    let isVisible: Bool
-    let onPhotoPicked: (UIImage, Date?) -> Void
+@MainActor
+final class InlinePhotosViewModel: ObservableObject {
+    @Published private(set) var assets: [PHAsset] = []
     
-    func makeUIViewController(context: Context) -> PhotosGridViewController {
-        logger.info("PhotosGridViewControllerRepresentable makeUIViewController")
-        let controller = PhotosGridViewController()
-        controller.onPhotoPicked = onPhotoPicked
-        return controller
-    }
+    private let recentPhotosLimit = 300
     
-    func updateUIViewController(_ uiViewController: PhotosGridViewController, context: Context) {
-        logger.debug("PhotosGridViewControllerRepresentable updateUIViewController isVisible=\(self.isVisible)")
-        uiViewController.onPhotoPicked = onPhotoPicked
+    func loadRecentPhotos() {
+        Task {
+            let status = await PhotoLibraryService.shared.requestAuthorization()
+            guard status == .authorized || status == .limited else { return }
+            
+            let options = PHFetchOptions()
+            options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+            options.fetchLimit = recentPhotosLimit
+            options.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+            
+            let fetchResult = PHAsset.fetchAssets(with: options)
+            var loadedAssets: [PHAsset] = []
+            loadedAssets.reserveCapacity(fetchResult.count)
+            
+            fetchResult.enumerateObjects { asset, _, _ in
+                loadedAssets.append(asset)
+            }
+            
+            assets = loadedAssets.reversed()
+        }
     }
 }

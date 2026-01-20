@@ -30,7 +30,7 @@ final class PhotoDetailViewController: UIViewController {
     private let navigationBar = UINavigationBar()
     private var singleAssignHostingController: UIHostingController<AssignFaceToContactView>?
     
-    private var viewModel = FaceDetectionViewModel()
+    private let viewModel: FaceDetectionViewModel
     private var faceObservations: [VNFaceObservation] = []
     private var selectedFaceIndex: Int? {
         didSet {
@@ -46,10 +46,17 @@ final class PhotoDetailViewController: UIViewController {
         }
     }
     
-    init(image: UIImage, date: Date?, contactsContext: ModelContext, onComplete: ((UIImage, Date?) -> Void)? = nil) {
+    init(
+        image: UIImage,
+        date: Date?,
+        contactsContext: ModelContext,
+        faceDetectionViewModel: FaceDetectionViewModel,
+        onComplete: ((UIImage, Date?) -> Void)? = nil
+    ) {
         self.image = image
         self.date = date
         self.contactsContext = contactsContext
+        self.viewModel = faceDetectionViewModel
         self.onComplete = onComplete
         super.init(nibName: nil, bundle: nil)
     }
@@ -635,7 +642,11 @@ struct PhotoDetailContentView: View {
             saveAll()
         }
         .fullScreenCover(isPresented: $showCropper) {
-            SimpleCropView(image: currentImage) { cropped in
+            SimpleCropView(
+                image: currentImage,
+                initialScale: 1.0,
+                initialOffset: .zero
+            ) { cropped, scale, offset in
                 if let cropped {
                     currentImage = cropped
                     Task {

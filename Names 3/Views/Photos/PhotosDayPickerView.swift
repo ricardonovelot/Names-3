@@ -11,6 +11,10 @@ struct PhotosDayPickerView: View {
     let contactsContext: ModelContext
     let onPick: (UIImage, Date) -> Void
     let attemptQuickAssign: ((UIImage, Date?) async -> Bool)?
+    @Binding var faceDetectionViewModel: FaceDetectionViewModel?
+    
+    let presentationMode: PhotoPickerPresentationMode
+    let onDismiss: (() -> Void)?
 
     @StateObject private var viewModel: PhotosPickerViewModel
     @State private var isPresentingDetail = false
@@ -21,12 +25,24 @@ struct PhotosDayPickerView: View {
     
     // MARK: - Initialization
     
-    init(scope: PhotosPickerScope, contactsContext: ModelContext, initialScrollDate: Date? = nil, onPick: @escaping (UIImage, Date) -> Void, attemptQuickAssign: ((UIImage, Date?) async -> Bool)? = nil) {
+    init(
+        scope: PhotosPickerScope,
+        contactsContext: ModelContext,
+        initialScrollDate: Date? = nil,
+        presentationMode: PhotoPickerPresentationMode = .detailView,
+        faceDetectionViewModel: Binding<FaceDetectionViewModel?>,
+        onPick: @escaping (UIImage, Date) -> Void,
+        attemptQuickAssign: ((UIImage, Date?) async -> Bool)? = nil,
+        onDismiss: (() -> Void)? = nil
+    ) {
         self.scope = scope
         self.contactsContext = contactsContext
         self.initialScrollDate = initialScrollDate
+        self.presentationMode = presentationMode
+        self._faceDetectionViewModel = faceDetectionViewModel
         self.onPick = onPick
         self.attemptQuickAssign = attemptQuickAssign
+        self.onDismiss = onDismiss
         self._viewModel = StateObject(wrappedValue: PhotosPickerViewModel(scope: scope, initialScrollDate: initialScrollDate))
         
         if let scrollDate = initialScrollDate {
@@ -34,6 +50,7 @@ struct PhotosDayPickerView: View {
         } else {
             print("🔵 [PhotosDayPickerView] Initialized without scroll date")
         }
+        print("🔵 [PhotosDayPickerView] Presentation mode: \(presentationMode)")
         print("🔵 [PhotosDayPickerView] Instance created")
     }
     
@@ -42,61 +59,80 @@ struct PhotosDayPickerView: View {
     var body: some View {
         print("🔵 [PhotosDayPickerView] body evaluated - isPresentingDetail: \(isPresentingDetail), state: \(viewModel.state)")
         
-        return NavigationStack {
-            ZStack {
-                switch viewModel.state {
-                case .idle:
-                    ProgressView("Preparing...")
-                case .requestingAuthorization:
-                    requestingAuthorizationView
-                case .loading:
-                    if viewModel.assets.isEmpty {
-                        loadingView
-                    } else {
-                        photosGridView
-                    }
-                case .loaded:
-                    if viewModel.assets.isEmpty {
-                        emptyStateView
-                    } else {
-                        photosGridView
-                    }
-                case .empty:
-                    emptyStateView
-                case .error(let error):
-                    errorView(message: error)
+        return ZStack {
+            switch viewModel.state {
+            case .idle:
+                ProgressView("Preparing...")
+            case .requestingAuthorization:
+                requestingAuthorizationView
+            case .loading:
+                if viewModel.assets.isEmpty {
+                    loadingView
+                } else {
+                    photosGridView
                 }
+            case .loaded:
+                if viewModel.assets.isEmpty {
+                    emptyStateView
+                } else {
+                    photosGridView
+                }
+            case .empty:
+                emptyStateView
+            case .error(let error):
+                errorView(message: error)
             }
-            .navigationTitle(navigationTitle)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+        }
+        .navigationTitle(navigationTitle)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button {
+                    // Post notification that camera picker was dismissed
+                    NotificationCenter.default.post(name: .quickInputCameraDidDismiss, object: nil)
+                    
+                    if let dismissHandler = onDismiss {
+                        dismissHandler()
+                    } else {
                         dismiss()
                     }
-                }
-            }
-            .navigationDestination(item: Binding(
-                get: { selectedImageForDetail != nil ? PhotoDetailDestination(image: selectedImageForDetail!, date: selectedDateForDetail) : nil },
-                set: { newValue in
-                    if newValue == nil {
-                        selectedImageForDetail = nil
-                        selectedDateForDetail = nil
-                        isPresentingDetail = false
-                        viewModel.suppressReload(false)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 16, weight: .semibold))
+                        Text("Back")
+                            .font(.body)
                     }
                 }
-            )) { destination in
+            }
+        }
+        .navigationDestination(item: Binding(
+            get: { selectedImageForDetail != nil ? PhotoDetailDestination(image: selectedImageForDetail!, date: selectedDateForDetail) : nil },
+            set: { newValue in
+                if newValue == nil {
+                    selectedImageForDetail = nil
+                    selectedDateForDetail = nil
+                    isPresentingDetail = false
+                    viewModel.suppressReload(false)
+                }
+            }
+        )) { destination in
+            if presentationMode == .detailView {
                 PhotoDetailViewWrapper(
                     image: destination.image,
                     date: destination.date,
                     contactsContext: contactsContext,
+                    faceDetectionViewModelBinding: $faceDetectionViewModel,
                     onComplete: { finalImage, finalDate in
                         onPick(finalImage, finalDate)
                         selectedImageForDetail = nil
                         selectedDateForDetail = nil
                         isPresentingDetail = false
-                        dismiss()
+                        if let dismissHandler = onDismiss {
+                            dismissHandler()
+                        } else {
+                            dismiss()
+                        }
                     },
                     onDismiss: {
                         selectedImageForDetail = nil
@@ -105,20 +141,20 @@ struct PhotosDayPickerView: View {
                     }
                 )
             }
-            .onAppear {
-                print("🔵 [PhotosDayPickerView] onAppear - start observing + unsuppress")
-                viewModel.startObservingChanges()
-                viewModel.suppressReload(false)
-                viewModel.requestAuthorizationIfNeeded()
-            }
-            .onDisappear {
-                print("🔵 [PhotosDayPickerView] onDisappear - stop observing")
-                viewModel.stopObservingChanges()
-            }
-            .onChange(of: isPresentingDetail) { oldValue, newValue in
-                print("🔵 [PhotosDayPickerView] onDetailVisibilityChanged called - visible: \(newValue), current isPresentingDetail: \(isPresentingDetail)")
-                viewModel.suppressReload(newValue)
-            }
+        }
+        .onAppear {
+            print("🔵 [PhotosDayPickerView] onAppear - start observing + unsuppress")
+            viewModel.startObservingChanges()
+            viewModel.suppressReload(false)
+            viewModel.requestAuthorizationIfNeeded()
+        }
+        .onDisappear {
+            print("🔵 [PhotosDayPickerView] onDisappear - stop observing")
+            viewModel.stopObservingChanges()
+        }
+        .onChange(of: isPresentingDetail) { oldValue, newValue in
+            print("🔵 [PhotosDayPickerView] onDetailVisibilityChanged called - visible: \(newValue), current isPresentingDetail: \(isPresentingDetail)")
+            viewModel.suppressReload(newValue)
         }
     }
     
@@ -135,24 +171,37 @@ struct PhotosDayPickerView: View {
                 initialScrollDate: initialScrollDate,
                 onPhotoTapped: { image, date in
                     print("✅ [PhotosDayPicker] Photo tapped callback received")
-                    if let attempt = attemptQuickAssign {
-                        Task {
-                            let handled = try await attempt(image, date)
-                            await MainActor.run {
-                                if handled {
-                                    print("✅ [PhotosDayPicker] Quick-assign handled. Skipping detail.")
-                                    viewModel.suppressReload(false)
-                                } else {
-                                    selectedImageForDetail = image
-                                    selectedDateForDetail = date
-                                    isPresentingDetail = true
+                    print("✅ [PhotosDayPicker] Presentation mode: \(presentationMode)")
+                    
+                    // Use presentation mode strategy instead of attemptQuickAssign
+                    switch presentationMode {
+                    case .directSelection:
+                        // Direct selection - just call onPick and dismiss
+                        print("✅ [PhotosDayPicker] Direct selection mode - calling onPick and dismissing")
+                        onPick(image, date ?? Date())
+                        dismiss()
+                        
+                    case .detailView:
+                        // Detail view mode with optional quick-assign
+                        if let attempt = attemptQuickAssign {
+                            Task {
+                                let handled = try await attempt(image, date)
+                                await MainActor.run {
+                                    if handled {
+                                        print("✅ [PhotosDayPicker] Quick-assign handled. Dismissing.")
+                                        dismiss()
+                                    } else {
+                                        selectedImageForDetail = image
+                                        selectedDateForDetail = date
+                                        isPresentingDetail = true
+                                    }
                                 }
                             }
+                        } else {
+                            selectedImageForDetail = image
+                            selectedDateForDetail = date
+                            isPresentingDetail = true
                         }
-                    } else {
-                        selectedImageForDetail = image
-                        selectedDateForDetail = date
-                        isPresentingDetail = true
                     }
                 },
                 onAppearAtIndex: { index in
@@ -163,7 +212,8 @@ struct PhotosDayPickerView: View {
                 onDetailVisibilityChanged: { visible in
                     print("🔵 [PhotosDayPickerView] onDetailVisibilityChanged called - visible: \(visible), current isPresentingDetail: \(isPresentingDetail)")
                     viewModel.suppressReload(visible)
-                }
+                },
+                faceDetectionViewModelBinding: $faceDetectionViewModel
             )
             .background(Color(UIColor.systemGroupedBackground))
             .allowsHitTesting(!isPresentingDetail)

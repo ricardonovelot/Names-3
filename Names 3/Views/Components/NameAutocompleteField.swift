@@ -42,14 +42,21 @@ struct NameAutocompleteField: View {
                                             .frame(width: 32, height: 32)
                                             .clipShape(Circle())
                                     } else {
-                                        Circle()
-                                            .fill(Color.gray.opacity(0.3))
-                                            .frame(width: 32, height: 32)
-                                            .overlay {
-                                                Image(systemName: "person.fill")
-                                                    .font(.system(size: 14))
-                                                    .foregroundStyle(.secondary)
-                                            }
+                                        ZStack {
+                                            RadialGradient(
+                                                colors: [
+                                                    Color(uiColor: .secondarySystemBackground),
+                                                    Color(uiColor: .tertiarySystemBackground)
+                                                ],
+                                                center: .center,
+                                                startRadius: 2,
+                                                endRadius: 22
+                                            )
+                                            
+                                            Color.clear
+                                                .frame(width: 32, height: 32)
+                                                .liquidGlass(in: Circle(), stroke: true)
+                                        }
                                     }
                                     
                                     Text(contact.name ?? "Unnamed")

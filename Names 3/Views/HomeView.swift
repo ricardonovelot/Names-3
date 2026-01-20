@@ -125,15 +125,31 @@ private struct RecentTile: View {
         GeometryReader { proxy in
             let size = proxy.size
             ZStack {
-                Image(uiImage: UIImage(data: contact.photo) ?? UIImage())
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: size.width, height: size.height)
-                    .clipped()
-                    .background(Color(uiColor: .secondarySystemGroupedBackground))
-
-                if !contact.photo.isEmpty {
+                if !contact.photo.isEmpty, let uiImage = UIImage(data: contact.photo) {
+                    Image(uiImage: uiImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: size.width, height: size.height)
+                        .clipped()
+                        .background(Color(uiColor: .secondarySystemGroupedBackground))
+                    
                     LinearGradient(gradient: Gradient(colors: [.black.opacity(0.0), .black.opacity(0.7)]), startPoint: .top, endPoint: .bottom)
+                } else {
+                    ZStack {
+                        RadialGradient(
+                            colors: [
+                                Color(uiColor: .secondarySystemBackground),
+                                Color(uiColor: .tertiarySystemBackground)
+                            ],
+                            center: .center,
+                            startRadius: 5,
+                            endRadius: size.width * 0.7
+                        )
+                        
+                        Color.clear
+                            .frame(width: size.width, height: size.height)
+                            .liquidGlass(in: RoundedRectangle(cornerRadius: 10, style: .continuous), stroke: true)
+                    }
                 }
 
                 VStack {
@@ -148,6 +164,7 @@ private struct RecentTile: View {
                 }
             }
         }
+        .aspectRatio(1.0, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .contentShape(.rect)
     }
