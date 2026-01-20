@@ -2,9 +2,6 @@ import TipKit
 import SwiftUI
 
 struct ContactNavigationTip: Tip {
-    static let contactCreated = Event(id: "contact-created")
-    static let contactViewed = Event(id: "contact-viewed")
-    
     var title: Text {
         Text("Tap to View Details")
     }
@@ -19,12 +16,10 @@ struct ContactNavigationTip: Tip {
     
     var rules: [Rule] {
         [
-            // Show after first contact is created
-            #Rule(Self.contactCreated) {
+            #Rule(TipEvents.contactCreated) {
                 $0.donations.count >= 1
             },
-            // But before user has viewed any contact details
-            #Rule(Self.contactViewed) {
+            #Rule(TipEvents.contactViewed) {
                 $0.donations.count == 0
             }
         ]
@@ -32,8 +27,6 @@ struct ContactNavigationTip: Tip {
 }
 
 struct ContactNoteTip: Tip {
-    static let noteAdded = Event(id: "note-added")
-    
     var title: Text {
         Text("Add Context with Notes")
     }
@@ -48,7 +41,7 @@ struct ContactNoteTip: Tip {
     
     var rules: [Rule] {
         [
-            #Rule(Self.noteAdded) {
+            #Rule(TipEvents.noteAdded) {
                 $0.donations.count < 3
             }
         ]
@@ -56,8 +49,6 @@ struct ContactNoteTip: Tip {
 }
 
 struct ContactTagTip: Tip {
-    static let tagAdded = Event(id: "tag-added")
-    
     var title: Text {
         Text("Organize with Tags")
     }
@@ -72,7 +63,7 @@ struct ContactTagTip: Tip {
     
     var rules: [Rule] {
         [
-            #Rule(Self.tagAdded) {
+            #Rule(TipEvents.tagAdded) {
                 $0.donations.count < 2
             }
         ]

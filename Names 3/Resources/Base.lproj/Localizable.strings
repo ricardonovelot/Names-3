@@ -14,6 +14,9 @@
 "onboarding.page5.title" = "Master Names & Faces";
 "onboarding.page5.description" = "Practice with our quiz feature. Turn faces into friendships by remembering who's who.";
 
+"onboarding.page6.title" = "Your Privacy Matters";
+"onboarding.page6.description" = "All your data stays on your device. We never collect, store, or share your information. Everything is 100% private and secure.";
+
 "onboarding.button.continue" = "Continue";
 "onboarding.button.getStarted" = "Get Started";
 "onboarding.button.skip" = "Skip";

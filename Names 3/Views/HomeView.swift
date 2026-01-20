@@ -68,7 +68,7 @@ struct HomeView: View {
             }
         }
         .sheet(isPresented: $showQuizView) {
-            QuizView(contacts: contacts, onComplete: { showQuizView = false })
+            QuizView(contacts: contacts, onComplete: { showQuizView = false }, onRequestExit: .none)
         }
         .sheet(isPresented: $showNotesQuiz) {
             NotesQuizView(contacts: contacts)

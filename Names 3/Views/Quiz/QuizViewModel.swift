@@ -159,7 +159,7 @@ final class QuizViewModel {
             let hasPhoto = !contact.photo.isEmpty && UIImage(data: contact.photo) != nil
             let hasSummary = !(contact.summary?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
             
-            return hasName && hasPhoto && hasSummary
+            return hasName && (hasPhoto || hasSummary)
         }
         
         var items: [QuizItem] = []
@@ -168,12 +168,85 @@ final class QuizViewModel {
             items.append(QuizItem(contact: contact, performance: performance))
         }
         
-        items.sort { $0.performance.dueDate < $1.performance.dueDate }
-        
-        let sessionSize = min(10, items.count)
-        quizItems = Array(items.prefix(sessionSize))
+        let selectedItems = selectQuizItems(from: items)
+        quizItems = selectedItems.shuffled()
         
         saveSessionState()
+    }
+    
+    /// Intelligent quiz item selection that balances spaced repetition with variety
+    private func selectQuizItems(from items: [QuizItem]) -> [QuizItem] {
+        guard !items.isEmpty else { return [] }
+        
+        let now = Date()
+        let sessionSize = min(10, items.count)
+        
+        let due = items.filter { $0.performance.dueDate <= now }
+        let notDue = items.filter { $0.performance.dueDate > now }
+        
+        var selected: [QuizItem] = []
+        
+        if due.count >= sessionSize {
+            let sorted = due.sorted { lhs, rhs in
+                let lhsScore = calculatePriorityScore(for: lhs, now: now)
+                let rhsScore = calculatePriorityScore(for: rhs, now: now)
+                return lhsScore > rhsScore
+            }
+            
+            let topCount = min(sessionSize * 2, sorted.count)
+            let topCandidates = Array(sorted.prefix(topCount))
+            selected = Array(topCandidates.shuffled().prefix(sessionSize))
+        } else {
+            selected.append(contentsOf: due)
+            
+            let remaining = sessionSize - selected.count
+            if remaining > 0 && !notDue.isEmpty {
+                let sorted = notDue.sorted { lhs, rhs in
+                    let lhsScore = calculatePriorityScore(for: lhs, now: now)
+                    let rhsScore = calculatePriorityScore(for: rhs, now: now)
+                    return lhsScore > rhsScore
+                }
+                
+                let candidateCount = min(remaining * 2, sorted.count)
+                let candidates = Array(sorted.prefix(candidateCount))
+                let additionalItems = Array(candidates.shuffled().prefix(remaining))
+                selected.append(contentsOf: additionalItems)
+            }
+        }
+        
+        return selected
+    }
+    
+    /// Calculate priority score for quiz item selection
+    /// Higher score = higher priority for inclusion
+    private func calculatePriorityScore(for item: QuizItem, now: Date) -> Double {
+        var score: Double = 0
+        
+        let daysSinceDue = now.timeIntervalSince(item.performance.dueDate) / 86400
+        if daysSinceDue > 0 {
+            score += daysSinceDue * 10
+        }
+        
+        let inverseEaseFactor = 1.0 / Double(item.performance.easeFactor)
+        score += inverseEaseFactor * 8
+        
+        if let lastQuizzed = item.performance.lastQuizzedDate {
+            let daysSinceLastReview = now.timeIntervalSince(lastQuizzed) / 86400
+            score += daysSinceLastReview * 2
+        } else {
+            score += 20
+        }
+        
+        if item.performance.repetitions == 0 {
+            score += 15
+        } else if item.performance.repetitions < 2 {
+            score += 5
+        }
+        
+        let randomFactor = Double.random(in: 0...10)
+        score += randomFactor
+        
+        return score
     }
     
     // MARK: - Quiz Actions
@@ -217,6 +290,34 @@ final class QuizViewModel {
     func markAsCorrect() {
         guard let item = currentItem else { return }
         
+        showCorrectionSheet = false
+        isCorrect = true
+        
+        hapticManager.success()
+        showFeedback = true
+        
+        if hintLevel < 3 {
+            score += 1
+            let quality = calculateQuality()
+            item.performance.recordSuccess(quality: quality)
+            
+            saveSessionState()
+            
+            let delay = calculateAutoAdvanceDelay()
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                if showFeedback && isCorrect {
+                    advance()
+                }
+            }
+        }
+        
+        saveContext()
+    }
+    
+    func markAsCorrectAndSave() {
+        guard let item = currentItem else { return }
+        
         let trimmedAnswer = potentialCorrectAnswer.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedAnswer.isEmpty {
             var nicks = item.contact.nicknames ?? []
@@ -224,6 +325,47 @@ final class QuizViewModel {
                 nicks.append(trimmedAnswer)
                 item.contact.nicknames = nicks
             }
+        }
+        
+        showCorrectionSheet = false
+        isCorrect = true
+        
+        hapticManager.success()
+        showFeedback = true
+        
+        if hintLevel < 3 {
+            score += 1
+            let quality = calculateQuality()
+            item.performance.recordSuccess(quality: quality)
+            
+            saveSessionState()
+            
+            let delay = calculateAutoAdvanceDelay()
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                if showFeedback && isCorrect {
+                    advance()
+                }
+            }
+        }
+        
+        saveContext()
+    }
+    
+    func markAsCorrectAndSaveAsPrimaryName() {
+        guard let item = currentItem else { return }
+        
+        let trimmedAnswer = potentialCorrectAnswer.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedAnswer.isEmpty {
+            let oldName = item.contact.displayName
+            
+            var nicks = item.contact.nicknames ?? []
+            if !nicks.contains(oldName) {
+                nicks.append(oldName)
+            }
+            
+            item.contact.name = trimmedAnswer
+            item.contact.nicknames = nicks
         }
         
         showCorrectionSheet = false
@@ -292,7 +434,7 @@ final class QuizViewModel {
         skippedCount += 1
         item.performance.dueDate = Date().addingTimeInterval(3600)
         
-        hapticManager.selection()
+        hapticManager.selectionChanged()
         saveSessionState()
         saveContext()
         advanceWithoutFeedback()
@@ -326,7 +468,7 @@ final class QuizViewModel {
         
         if !skippedItems.isEmpty {
             currentIndex = 0
-            quizItems = skippedItems
+            quizItems = skippedItems.shuffled()
             score = 0
             skippedCount = 0
             showFeedback = false

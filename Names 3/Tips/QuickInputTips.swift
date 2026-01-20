@@ -2,8 +2,6 @@ import TipKit
 import SwiftUI
 
 struct QuickInputFormatTip: Tip {
-    static let contactCreated = Event(id: "contact-created")
-    
     var title: Text {
         Text("Quick Add Your First Friend")
     }
@@ -30,7 +28,7 @@ struct QuickInputFormatTip: Tip {
     
     var rules: [Rule] {
         [
-            #Rule(Self.contactCreated) {
+            #Rule(TipEvents.contactCreated) {
                 $0.donations.count == 0
             }
         ]
@@ -38,8 +36,6 @@ struct QuickInputFormatTip: Tip {
 }
 
 struct QuickInputBulkAddTip: Tip {
-    static let contactCreated = Event(id: "contact-created")
-    
     var title: Text {
         Text("Add Multiple People at Once")
     }
@@ -54,7 +50,7 @@ struct QuickInputBulkAddTip: Tip {
     
     var rules: [Rule] {
         [
-            #Rule(Self.contactCreated) {
+            #Rule(TipEvents.contactCreated) {
                 $0.donations.count >= 3
             }
         ]
@@ -62,9 +58,6 @@ struct QuickInputBulkAddTip: Tip {
 }
 
 struct QuickInputTagsTip: Tip {
-    static let tagAdded = Event(id: "tag-added")
-    static let contactCreated = Event(id: "contact-created")
-    
     var title: Text {
         Text("Organize with Tags")
     }
@@ -79,10 +72,10 @@ struct QuickInputTagsTip: Tip {
     
     var rules: [Rule] {
         [
-            #Rule(Self.contactCreated) {
+            #Rule(TipEvents.contactCreated) {
                 $0.donations.count >= 5
             },
-            #Rule(Self.tagAdded) {
+            #Rule(TipEvents.tagAdded) {
                 $0.donations.count == 0
             }
         ]
@@ -90,8 +83,6 @@ struct QuickInputTagsTip: Tip {
 }
 
 struct QuickInputDateParsingTip: Tip {
-    static let contactCreated = Event(id: "contact-created")
-    
     var title: Text {
         Text("Add Dates Naturally")
     }
@@ -106,7 +97,7 @@ struct QuickInputDateParsingTip: Tip {
     
     var rules: [Rule] {
         [
-            #Rule(Self.contactCreated) {
+            #Rule(TipEvents.contactCreated) {
                 $0.donations.count >= 8
             }
         ]

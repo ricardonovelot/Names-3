@@ -43,6 +43,13 @@ struct OnboardingPage {
             imageName: "brain.head.profile",
             backgroundColor: UIColor(red: 0.1, green: 0.12, blue: 0.15, alpha: 1.0),
             imageBackgroundColor: UIColor(red: 0.0, green: 0.8, blue: 0.8, alpha: 1.0)
+        ),
+        OnboardingPage(
+            title: NSLocalizedString("onboarding.page6.title", comment: "Onboarding page 6 title"),
+            description: NSLocalizedString("onboarding.page6.description", comment: "Onboarding page 6 description"),
+            imageName: "lock.shield.fill",
+            backgroundColor: UIColor(red: 0.08, green: 0.1, blue: 0.12, alpha: 1.0),
+            imageBackgroundColor: UIColor(red: 0.2, green: 0.7, blue: 0.4, alpha: 1.0)
         )
     ]
 }

@@ -229,239 +229,309 @@ struct ContentView: View {
         }
     }
     
+    // MARK: - Main Body
+    
     var body: some View {
         NavigationStack {
-            ZStack {
-                if showQuizView {
-                    QuizView(
-                        contacts: contacts,
-                        onComplete: {
-                            withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-                                showQuizView = false
-                            }
-                            quizResetTrigger = UUID()
-                        }
-                    )
-                    .id(quizResetTrigger)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
-                    .zIndex(4)
-                } else if let contact = selectedContact {
-                    ContactDetailsView(contact: contact, onBack: {
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-                            selectedContact = nil
-                        }
+            mainContent
+                .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
+                .onChange(of: pickedImageForBatch) { oldValue, newValue in
+                    handlePickedImageChange(newValue)
+                }
+                .onPreferenceChange(TotalQuickInputHeightKey.self) { height in
+                    handleQuickInputHeightChange(height)
+                }
+                .safeAreaInset(edge: .bottom) {
+                    quickInputSection
+                }
+                .background(Color(uiColor: .systemGroupedBackground))
+                .overlay {
+                    loadingOverlay
+                }
+                .toolbar {
+                    toolbarContent
+                }
+                .toolbarBackground(.hidden)
+                .photosPicker(isPresented: $showPhotosPicker, selection: $selectedItem, matching: .images)
+                .sheet(isPresented: $showRegexHelp) {
+                    RegexShortcutsView()
+                }
+                .sheet(isPresented: $showDeletedView) {
+                    DeletedView()
+                }
+                .sheet(isPresented: $showBulkAddFaces) {
+                    BulkAddFacesView(contactsContext: modelContext)
+                        .modelContainer(BatchModelContainer.shared)
+                }
+                .sheet(isPresented: $showGroupPhotos) {
+                    GroupPhotosListView(contactsContext: modelContext)
+                        .modelContainer(BatchModelContainer.shared)
+                }
+                .sheet(item: $contactForDateEdit) { contact in
+                    CustomDatePicker(contact: contact)
+                }
+                .sheet(isPresented: $showGroupTagPicker) {
+                    TagPickerView(mode: .groupApply { tag in
+                        applyGroupTagChange(tag)
                     })
-                        .transition(.move(edge: .trailing))
-                        .zIndex(3)
-                } else {
-                    listContent
-                        .opacity(showInlinePhotoPicker || showFullPhotoGrid ? 0 : 1)
-                        .offset(y: showInlinePhotoPicker || showFullPhotoGrid ? -16 : 0)
-                        .allowsHitTesting(!showInlinePhotoPicker && !showFullPhotoGrid)
-                        .zIndex(0)
-                        .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showInlinePhotoPicker)
-                        .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showFullPhotoGrid)
-
-                    PhotosInlineView(contactsContext: modelContext, isVisible: showInlinePhotoPicker) { image, date in
-                        print("✅ [ContentView] Photo picked from inline view")
-                        pickedImageForBatch = image
+                }
+                .sheet(isPresented: $showManageTags) {
+                    TagPickerView(mode: .manage)
+                }
+                .sheet(isPresented: $showHomeView) {
+                    HomeView(tabSelection: $homeTabSelection)
+                }
+                .sheet(isPresented: $showSettings) {
+                    SettingsView()
+                }
+                .sheet(isPresented: $showQuickNotesFeed) {
+                    QuickNotesFeedView()
+                }
+                .alert("Exit Quiz?", isPresented: $showExitQuizConfirmation) {
+                    Button("Cancel", role: .cancel) { }
+                    Button("Exit", role: .destructive) {
                         withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-                            showInlinePhotoPicker = false
+                            showQuizView = false
                         }
                     }
-                    .opacity(showInlinePhotoPicker ? 1 : 0)
-                    .offset(y: showInlinePhotoPicker ? 0 : 28)
-                    .allowsHitTesting(showInlinePhotoPicker)
-                    .zIndex(showFullPhotoGrid ? 0 : 1)
-                    .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showInlinePhotoPicker)
-                    
-                    if let payload = fullPhotoGridPayload {
-                        fullPhotoGridInlineView(payload: payload)
-                    }
+                } message: {
+                    Text("You can resume this quiz later from where you left off.")
                 }
-            }
-            .animation(.spring(response: 0.35, dampingFraction: 0.9), value: selectedContact != nil)
-            .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showQuizView)
-            .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
-            .onChange(of: pickedImageForBatch) { oldValue, newValue in
-                if let image = newValue {
-                    showBulkAddFacesWithSeed(image: image, date: Date()) {
-                        pickedImageForBatch = nil
-                    }
-                }
-            }
-            .onPreferenceChange(TotalQuickInputHeightKey.self) { height in
-                withAnimation(.spring(response: 0.25, dampingFraction: 1.0)) {
-                    bottomInputHeight = height
-                }
-            }
-            .safeAreaInset(edge: .bottom) {
-                if !showQuizView {
-                    QuickInputView(
-                        parsedContacts: $parsedContacts,
-                        selectedContact: $selectedContact,
-                        onQuizTap: {
-                            withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-                                showQuizView = true
-                            }
-                        },
-                        faceDetectionViewModel: fullPhotoGridFaceViewModel,
-                        onFaceSelected: { index in
-                            handleFaceSelectedFromCarousel(index: index)
-                        },
-                        onPhotoPicked: { image, date in
-                            print("📸 [ContentView] Photo fallback - opening bulk face view")
-                            pickedImageForBatch = image
-                        }
-                    )
-                    .id(quickInputResetID)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-            }
-            .background(Color(uiColor: .systemGroupedBackground))
-            .overlay {
-                if isLoading {
-                    LoadingOverlay(message: "Loading…")
-                }
-            }
-            .toolbar {
-                if showQuizView {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button {
-                            if let vm = (viewModel as? QuizViewModel), vm.hasAnsweredAnyQuestion {
-                                showExitQuizConfirmation = true
-                            } else {
-                                withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-                                    showQuizView = false
-                                }
-                            }
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "xmark.circle.fill")
-                                    .font(.system(size: 18, weight: .medium))
-                                Text("Exit Quiz")
-                                    .font(.body.weight(.medium))
-                            }
-                            .foregroundStyle(.red)
-                        }
-                    }
-                } else {
-                    ToolbarItemGroup(placement: .navigationBarTrailing) {
-                        Menu {
-                            Button {
-                                showQuickNotesFeed = true
-                            } label: {
-                                Label("Quick Notes", systemImage: "note.text")
-                            }
-                            
-                            Divider()
-                            
-                            Button(action: {
-                            }) {
-                                Label("Export CSV", systemImage: "square.and.arrow.up")
-                            }
-                            Button {
-                                showDeletedView = true
-                            } label: {
-                                Label("Deleted", systemImage: "trash")
-                            }
-                            Button {
-                                showGroupPhotos = true
-                            } label: {
-                                Label("Group Photos", systemImage: "person.3.sequence")
-                            }
-                            Button {
-                                showRegexHelp = true
-                            } label: {
-                                Label("Instructions", systemImage: "info.circle")
-                            }
-
-                            Divider()
-                            
-                            Button {
-                                showManageTags = true
-                            } label: {
-                                Label("Groups & Places", systemImage: "tag")
-                            }
-
-                            Divider()
-
-                            Button {
-                                showHomeView = true
-                            } label: {
-                                Label("Recent", systemImage: "house")
-                            }
-                            
-                            Button {
-                                showSettings = true
-                            } label: {
-                                Label("Settings", systemImage: "gearshape")
-                            }
-
-                            if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited {
-                                Button {
-                                    presentLimitedLibraryPicker()
-                                } label: {
-                                    Label("Manage Photos Selection", systemImage: "plus.circle")
-                                }
-                            }
-                        } label: {
-                            Image(systemName: "ellipsis")
-                                .fontWeight(.medium)
-                                .liquidGlass(in: Capsule())
-                        }
-                    }
-                }
-            }
-            .toolbarBackground(.hidden)
-            
-            .photosPicker(isPresented: $showPhotosPicker, selection: $selectedItem, matching: .images)
-            .sheet(isPresented: $showRegexHelp) {
-                RegexShortcutsView()
-            }
-            .sheet(isPresented: $showDeletedView) {
-                DeletedView()
-            }
-            .sheet(isPresented: $showBulkAddFaces) {
-                BulkAddFacesView(contactsContext: modelContext)
-                    .modelContainer(BatchModelContainer.shared)
-            }
-            .sheet(isPresented: $showGroupPhotos) {
-                GroupPhotosListView(contactsContext: modelContext)
-                    .modelContainer(BatchModelContainer.shared)
-            }
-            .sheet(item: $contactForDateEdit) { contact in
-                CustomDatePicker(contact: contact)
-            }
-            .sheet(isPresented: $showGroupTagPicker) {
-                TagPickerView(mode: .groupApply { tag in
-                    applyGroupTagChange(tag)
-                })
-            }
-            .sheet(isPresented: $showManageTags) {
-                TagPickerView(mode: .manage)
-            }
-            .sheet(isPresented: $showHomeView) {
-                HomeView(tabSelection: $homeTabSelection)
-            }
-            .sheet(isPresented: $showSettings) {
-                SettingsView()
-            }
-            .sheet(isPresented: $showQuickNotesFeed) {
-                QuickNotesFeedView()
-            }
-            .alert("Exit Quiz?", isPresented: $showExitQuizConfirmation) {
-                Button("Cancel", role: .cancel) { }
-                Button("Exit", role: .destructive) {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-                        showQuizView = false
-                    }
-                }
-            } message: {
-                Text("You can resume this quiz later from where you left off.")
+        }
+    }
+    
+    // MARK: - Content Sections
+    
+    @ViewBuilder
+    private var mainContent: some View {
+        ZStack {
+            if showQuizView {
+                quizContent
+            } else if let contact = selectedContact {
+                contactDetailContent(contact: contact)
+            } else {
+                listAndPhotosContent
             }
         }
+        .animation(.spring(response: 0.35, dampingFraction: 0.9), value: selectedContact != nil)
+        .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showQuizView)
+    }
+    
+    @ViewBuilder
+    private var quizContent: some View {
+        QuizView(
+            contacts: contacts,
+            onComplete: {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                    showQuizView = false
+                }
+                quizResetTrigger = UUID()
+            },
+            onRequestExit: {
+                return true
+            }
+        )
+        .id(quizResetTrigger)
+        .transition(.move(edge: .trailing).combined(with: .opacity))
+        .zIndex(4)
+    }
+    
+    @ViewBuilder
+    private func contactDetailContent(contact: Contact) -> some View {
+        ContactDetailsView(contact: contact, onBack: {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                selectedContact = nil
+            }
+        })
+        .transition(.move(edge: .trailing))
+        .zIndex(3)
+    }
+    
+    @ViewBuilder
+    private var listAndPhotosContent: some View {
+        listContent
+            .opacity(showInlinePhotoPicker || showFullPhotoGrid ? 0 : 1)
+            .offset(y: showInlinePhotoPicker || showFullPhotoGrid ? -16 : 0)
+            .allowsHitTesting(!showInlinePhotoPicker && !showFullPhotoGrid)
+            .zIndex(0)
+            .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showInlinePhotoPicker)
+            .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showFullPhotoGrid)
+
+        inlinePhotoPickerContent
         
+        if let payload = fullPhotoGridPayload {
+            fullPhotoGridInlineView(payload: payload)
+        }
+    }
+    
+    @ViewBuilder
+    private var inlinePhotoPickerContent: some View {
+        PhotosInlineView(contactsContext: modelContext, isVisible: showInlinePhotoPicker) { image, date in
+            print("✅ [ContentView] Photo picked from inline view")
+            pickedImageForBatch = image
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                showInlinePhotoPicker = false
+            }
+        }
+        .opacity(showInlinePhotoPicker ? 1 : 0)
+        .offset(y: showInlinePhotoPicker ? 0 : 28)
+        .allowsHitTesting(showInlinePhotoPicker)
+        .zIndex(showFullPhotoGrid ? 0 : 1)
+        .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showInlinePhotoPicker)
+    }
+    
+    @ViewBuilder
+    private var quickInputSection: some View {
+        if !showQuizView {
+            QuickInputView(
+                parsedContacts: $parsedContacts,
+                selectedContact: $selectedContact,
+                onQuizTap: {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                        showQuizView = true
+                    }
+                },
+                faceDetectionViewModel: fullPhotoGridFaceViewModel,
+                onFaceSelected: { index in
+                    handleFaceSelectedFromCarousel(index: index)
+                },
+                onPhotoPicked: { image, date in
+                    print("📸 [ContentView] Photo fallback - opening bulk face view")
+                    pickedImageForBatch = image
+                }
+            )
+            .id(quickInputResetID)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
+    
+    @ViewBuilder
+    private var loadingOverlay: some View {
+        if isLoading {
+            LoadingOverlay(message: "Loading…")
+        }
+    }
+    
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        if !showQuizView {
+            ToolbarItemGroup(placement: .navigationBarTrailing) {
+                menuButton
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private var menuButton: some View {
+        Menu {
+            quickNotesButton
+            
+            Divider()
+            
+            exportButton
+            deletedButton
+            groupPhotosButton
+            instructionsButton
+
+            Divider()
+            
+            manageTagsButton
+
+            Divider()
+
+            homeButton
+            settingsButton
+
+            if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited {
+                limitedLibraryButton
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .fontWeight(.medium)
+                .liquidGlass(in: Capsule())
+        }
+    }
+    
+    // MARK: - Menu Buttons
+    
+    @ViewBuilder
+    private var quickNotesButton: some View {
+        Button {
+            showQuickNotesFeed = true
+        } label: {
+            Label("Quick Notes", systemImage: "note.text")
+        }
+    }
+    
+    @ViewBuilder
+    private var exportButton: some View {
+        Button(action: {
+        }) {
+            Label("Export CSV", systemImage: "square.and.arrow.up")
+        }
+    }
+    
+    @ViewBuilder
+    private var deletedButton: some View {
+        Button {
+            showDeletedView = true
+        } label: {
+            Label("Deleted", systemImage: "trash")
+        }
+    }
+    
+    @ViewBuilder
+    private var groupPhotosButton: some View {
+        Button {
+            showGroupPhotos = true
+        } label: {
+            Label("Group Photos", systemImage: "person.3.sequence")
+        }
+    }
+    
+    @ViewBuilder
+    private var instructionsButton: some View {
+        Button {
+            showRegexHelp = true
+        } label: {
+            Label("Instructions", systemImage: "info.circle")
+        }
+    }
+    
+    @ViewBuilder
+    private var manageTagsButton: some View {
+        Button {
+            showManageTags = true
+        } label: {
+            Label("Groups & Places", systemImage: "tag")
+        }
+    }
+    
+    @ViewBuilder
+    private var homeButton: some View {
+        Button {
+            showHomeView = true
+        } label: {
+            Label("Recent", systemImage: "house")
+        }
+    }
+    
+    @ViewBuilder
+    private var settingsButton: some View {
+        Button {
+            showSettings = true
+        } label: {
+            Label("Settings", systemImage: "gearshape")
+        }
+    }
+    
+    @ViewBuilder
+    private var limitedLibraryButton: some View {
+        Button {
+            presentLimitedLibraryPicker()
+        } label: {
+            Label("Manage Photos Selection", systemImage: "plus.circle")
+        }
     }
     
     // MARK: - Full Photo Grid View Builder
@@ -488,6 +558,22 @@ struct ContentView: View {
         .allowsHitTesting(showFullPhotoGrid)
         .zIndex(2)
         .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showFullPhotoGrid)
+    }
+    
+    // MARK: - Event Handlers
+    
+    private func handlePickedImageChange(_ newImage: UIImage?) {
+        if let image = newImage {
+            showBulkAddFacesWithSeed(image: image, date: Date()) {
+                pickedImageForBatch = nil
+            }
+        }
+    }
+    
+    private func handleQuickInputHeightChange(_ height: CGFloat) {
+        withAnimation(.spring(response: 0.25, dampingFraction: 1.0)) {
+            bottomInputHeight = height
+        }
     }
     
     private func attemptQuickAssignClosure() -> ((UIImage, Date?) async -> Bool) {

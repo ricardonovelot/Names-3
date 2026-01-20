@@ -2,8 +2,6 @@ import TipKit
 import SwiftUI
 
 struct QuizStreakTip: Tip {
-    static let quizCompleted = Event(id: "quiz-completed")
-    
     var title: Text {
         Text("Build Your Memory Streak")
     }
@@ -18,7 +16,7 @@ struct QuizStreakTip: Tip {
     
     var rules: [Rule] {
         [
-            #Rule(Self.quizCompleted) {
+            #Rule(TipEvents.quizCompleted) {
                 $0.donations.count > 0
             }
         ]

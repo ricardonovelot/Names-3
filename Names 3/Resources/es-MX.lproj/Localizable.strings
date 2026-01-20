@@ -14,6 +14,9 @@
 "onboarding.page5.title" = "Domina Nombres y Caras";
 "onboarding.page5.description" = "Practica con nuestro quiz. Convierte caras en amistades recordando quién es quién.";
 
+"onboarding.page6.title" = "Tu Privacidad Importa";
+"onboarding.page6.description" = "Todos tus datos permanecen en tu dispositivo. Nunca recopilamos, almacenamos ni compartimos tu información. Todo es 100% privado y seguro.";
+
 "onboarding.button.continue" = "Continuar";
 "onboarding.button.getStarted" = "Comenzar";
 "onboarding.button.skip" = "Omitir";

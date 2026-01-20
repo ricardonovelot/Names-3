@@ -5,6 +5,8 @@ struct QuizCorrectionSheet: View {
     let expectedAnswer: String
     let allAcceptableAnswers: [String]
     let onMarkCorrect: () -> Void
+    let onMarkCorrectAndSaveAsNickname: () -> Void
+    let onMarkCorrectAndSaveAsPrimaryName: () -> Void
     let onMarkIncorrect: () -> Void
     
     @Environment(\.dismiss) private var dismiss
@@ -54,7 +56,7 @@ struct QuizCorrectionSheet: View {
                 .font(isIPad ? .title.bold() : .title2.bold())
                 .multilineTextAlignment(.center)
             
-            Text("If what you entered is another valid name or nickname for this person, mark it as correct and it will be saved.")
+            Text("Choose how to handle this answer variation.")
                 .font(isIPad ? .body : .subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -109,22 +111,93 @@ struct QuizCorrectionSheet: View {
     
     @ViewBuilder
     private var actionButtons: some View {
-        VStack(spacing: 12) {
-            Button {
-                onMarkCorrect()
-                dismiss()
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "checkmark.circle.fill")
-                    Text("Yes, I Was Correct")
+        VStack(spacing: 16) {
+            VStack(spacing: 12) {
+                Button {
+                    onMarkCorrect()
+                    dismiss()
+                } label: {
+                    VStack(spacing: 6) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "checkmark.circle.fill")
+                            Text("Accept (This Time)")
+                        }
+                        .font(isIPad ? .title3.weight(.semibold) : .body.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                    }
+                    .padding(.vertical, isIPad ? 18 : 16)
+                    .background(Color.green)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
-                .font(isIPad ? .title3.weight(.semibold) : .body.weight(.semibold))
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, isIPad ? 18 : 16)
-                .background(Color.green)
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                
+                Text("Count as correct but don't save")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 4)
             }
+            
+            VStack(spacing: 8) {
+                Text("Save Options")
+                    .font(.caption.weight(.semibold))
+                    .textCase(.uppercase)
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                
+                VStack(spacing: 12) {
+                    Button {
+                        onMarkCorrectAndSaveAsNickname()
+                        dismiss()
+                    } label: {
+                        VStack(spacing: 6) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "person.badge.plus.fill")
+                                Text("Save as Nickname")
+                            }
+                            .font(isIPad ? .title3.weight(.semibold) : .body.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                        }
+                        .padding(.vertical, isIPad ? 18 : 16)
+                        .background(Color.blue)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
+                    
+                    Text("Add '\(userAnswer)' as an alternate name")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 4)
+                    
+                    Button {
+                        onMarkCorrectAndSaveAsPrimaryName()
+                        dismiss()
+                    } label: {
+                        VStack(spacing: 6) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "person.fill.badge.checkmark")
+                                Text("Save as Primary Name")
+                            }
+                            .font(isIPad ? .title3.weight(.semibold) : .body.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                        }
+                        .padding(.vertical, isIPad ? 18 : 16)
+                        .background(Color.purple)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
+                    
+                    Text("Make '\(userAnswer)' the main name (moves '\(expectedAnswer)' to nicknames)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 4)
+                }
+            }
+            
+            Divider()
+                .padding(.vertical, 4)
             
             Button {
                 onMarkIncorrect()
@@ -132,7 +205,7 @@ struct QuizCorrectionSheet: View {
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "xmark.circle.fill")
-                    Text("No, I Was Wrong")
+                    Text("I Was Wrong")
                 }
                 .font(isIPad ? .title3.weight(.semibold) : .body.weight(.semibold))
                 .foregroundStyle(.white)

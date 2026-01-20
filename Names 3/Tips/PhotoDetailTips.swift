@@ -2,8 +2,6 @@ import TipKit
 import SwiftUI
 
 struct PhotoFaceNamingTip: Tip {
-    static let faceAssigned = Event(id: "face-assigned")
-    
     var title: Text {
         Text("Swipe to Name Faces")
     }
@@ -18,7 +16,7 @@ struct PhotoFaceNamingTip: Tip {
     
     var rules: [Rule] {
         [
-            #Rule(Self.faceAssigned) {
+            #Rule(TipEvents.faceAssigned) {
                 $0.donations.count < 2
             }
         ]
@@ -26,8 +24,6 @@ struct PhotoFaceNamingTip: Tip {
 }
 
 struct PhotoMultipleFacesTip: Tip {
-    static let multipleFacesDetected = Event(id: "multiple-faces-detected")
-    
     var title: Text {
         Text("Multiple Faces Detected")
     }
@@ -42,7 +38,7 @@ struct PhotoMultipleFacesTip: Tip {
     
     var rules: [Rule] {
         [
-            #Rule(Self.multipleFacesDetected) {
+            #Rule(TipEvents.multipleFacesDetected) {
                 $0.donations.count >= 1
             }
         ]

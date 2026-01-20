@@ -33,7 +33,7 @@ final class HapticManager {
         impactHeavy.impactOccurred()
     }
     
-    func selection() {
+    func selectionChanged() {
         selectionGenerator.selectionChanged()
     }
     

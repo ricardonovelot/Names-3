@@ -6,19 +6,19 @@ import Foundation
 @MainActor
 enum TipEvents {
     // MARK: - Contact Events
-    static let contactCreated = Event(id: "app.tips.contact.created")
-    static let contactViewed = Event(id: "app.tips.contact.viewed")
+    static let contactCreated = Tips.Event(id: "app.tips.contact.created")
+    static let contactViewed = Tips.Event(id: "app.tips.contact.viewed")
     
     // MARK: - Note Events  
-    static let noteAdded = Event(id: "app.tips.note.added")
+    static let noteAdded = Tips.Event(id: "app.tips.note.added")
     
     // MARK: - Tag Events
-    static let tagAdded = Event(id: "app.tips.tag.added")
+    static let tagAdded = Tips.Event(id: "app.tips.tag.added")
     
     // MARK: - Quiz Events
-    static let quizCompleted = Event(id: "app.tips.quiz.completed")
+    static let quizCompleted = Tips.Event(id: "app.tips.quiz.completed")
     
     // MARK: - Photo Events
-    static let faceAssigned = Event(id: "app.tips.photo.face.assigned")
-    static let multipleFacesDetected = Event(id: "app.tips.photo.faces.multiple")
+    static let faceAssigned = Tips.Event(id: "app.tips.photo.face.assigned")
+    static let multipleFacesDetected = Tips.Event(id: "app.tips.photo.faces.multiple")
 }

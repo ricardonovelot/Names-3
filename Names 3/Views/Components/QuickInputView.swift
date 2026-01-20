@@ -47,6 +47,8 @@ struct QuickInputView: View {
     // Photo processing callbacks
     var onPhotoPicked: ((UIImage, Date?) -> Void)? = nil
 
+    @State private var tipsLoaded = false
+
     private func isQuickNoteCommand(_ input: String) -> Bool {
         let s = input.trimmingCharacters(in: .whitespacesAndNewlines)
         let prefixPattern = #"^(quick\s*note|quick)\b[\s:]*"#
@@ -60,243 +62,18 @@ struct QuickInputView: View {
     var body: some View {
         let controlSize: CGFloat = 64
         VStack(spacing: 0) {
-            // Face carousel - shown above the input when faces are detected
-            if let viewModel = faceDetectionViewModel, !viewModel.faces.isEmpty {
-                PhotoFaceCarouselView(
-                    viewModel: viewModel,
-                    onFaceSelected: { index in
-                        onFaceSelected?(index)
-                    }
-                )
-                .frame(height: 120)
-                .background(
-                    GeometryReader { proxy in
-                        Color.clear
-                            .preference(key: FaceCarouselHeightKey.self, value: proxy.size.height)
-                    }
-                )
-                .transition(.move(edge: .bottom).combined(with: .opacity))
+            faceCarouselSection
+            
+            if tipsLoaded {
+                tipsSection
             }
             
-            VStack(spacing: 12) {
-                TipView(QuickInputFormatTip(), arrowEdge: .bottom)
-                    .padding(.horizontal)
-                
-                TipView(QuickInputBulkAddTip(), arrowEdge: .bottom)
-                    .padding(.horizontal)
-                
-                TipView(QuickInputTagsTip(), arrowEdge: .bottom)
-                    .padding(.horizontal)
-                
-                TipView(QuickInputDateParsingTip(), arrowEdge: .bottom)
-                    .padding(.horizontal)
-                
-                HStack(spacing: 6) {
-                    InputBubble {
-                        HStack(spacing: 8) {
-                            if let token = selectedContact {
-                                HStack(spacing: 6) {
-                                    Text(token.name ?? "Unnamed")
-                                        .font(.subheadline)
-                                        .foregroundStyle(.blue)
-                                }
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .background(.ultraThinMaterial, in: Capsule())
-                                .overlay {
-                                    Capsule()
-                                        .fill(Color.blue.opacity(0.15))
-                                }
-                                .clipShape(Capsule())
-                            }
-
-                            ZStack(alignment: .topLeading) {
-                                GrowingTextView(
-                                    text: $text,
-                                    isFirstResponder: Binding(
-                                        get: { fieldIsFocused },
-                                        set: { fieldIsFocused = $0 }
-                                    ),
-                                    minHeight: 22,
-                                    maxHeight: 140,
-                                    onDeleteWhenEmpty: {
-                                        if text.isEmpty, selectedContact != nil {
-                                            selectedContact = nil
-                                            Task { @MainActor in
-                                                try? await Task.sleep(for: .milliseconds(30))
-                                                fieldIsFocused = true
-                                            }
-                                        }
-                                    },
-                                    onReturn: {
-                                        if let override = onReturnOverride {
-                                            resetTextAndPreview()
-                                            override()
-                                            return
-                                        }
-                                        if !suggestedContacts.isEmpty {
-                                            selectExistingContact(suggestedContacts[0])
-                                        } else {
-                                            save()
-                                        }
-                                    }
-                                )
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .onChange(of: text) { oldValue, newValue in
-                                    NotificationCenter.default.post(name: .quickInputTextDidChange, object: nil, userInfo: ["text": newValue])
-
-                                    if let last = newValue.last, last == "\n" {
-                                        text.removeLast()
-                                        if let override = onReturnOverride {
-                                            resetTextAndPreview()
-                                            override()
-                                        } else {
-                                            save()
-                                        }
-                                    } else {
-                                        parseDebounceWork?.cancel()
-                                        let work = DispatchWorkItem {
-                                            parsePeopleInput()
-                                        }
-                                        parseDebounceWork = work
-                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
-                                    }
-                                }
-
-                                if text.isEmpty {
-                                    Text(selectedContact != nil ? "Add a note…" : "")
-                                        .foregroundStyle(.secondary)
-                                        .padding(.leading, 3)
-                                        .padding(.top, 1)
-                                        .allowsHitTesting(false)
-                                }
-                            }
-                        }
-                    }
-
-                    Button {
-                        onQuizTap?()
-                    } label: {
-                        Image(systemName: "questionmark.circle.fill")
-                            .font(.system(size: 24, weight: .medium))
-                            .frame(width: controlSize, height: controlSize)
-                            .liquidGlass(in: Circle())
-                            .clipShape(Circle())
-                    }
-                    .accessibilityLabel("Open Quiz")
-                }
-            }
+            inputControlsSection(controlSize: controlSize)
         }
         .padding(.horizontal)
         .padding(.bottom, 16)
         .overlay(alignment: .bottom) {
-            if selectedContact == nil && !filterString.isEmpty && (!suggestedContacts.isEmpty || shouldShowCreateButton) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(suggestedContacts) { contact in
-                            Button {
-                                selectExistingContact(contact)
-                            } label: {
-                                HStack(spacing: 6) {
-                                    if !contact.photo.isEmpty, let uiImage = UIImage(data: contact.photo) {
-                                        Image(uiImage: uiImage)
-                                            .resizable()
-                                            .scaledToFill()
-                                            .frame(width: 24, height: 24)
-                                            .clipShape(Circle())
-                                    } else {
-                                        ZStack {
-                                            RadialGradient(
-                                                colors: [
-                                                    Color(uiColor: .secondarySystemBackground),
-                                                    Color(uiColor: .tertiarySystemBackground)
-                                                ],
-                                                center: .center,
-                                                startRadius: 2,
-                                                endRadius: 17
-                                            )
-                                            
-                                            Color.clear
-                                                .frame(width: 24, height: 24)
-                                                .liquidGlass(in: Circle(), stroke: true)
-                                        }
-                                    }
-                                    
-                                    Text(contact.name ?? "Unnamed")
-                                        .font(.subheadline)
-                                }
-                                .padding(.leading, 6)
-                                .padding(.trailing, 12)
-                                .padding(.vertical, 6)
-                                .background(
-                                    Color.blue.gradient.quinary
-                                )
-                                .background(.ultraThinMaterial)
-                                .foregroundStyle(.primary)
-                                
-                                .clipShape(Capsule())
-                            }
-                            .buttonStyle(.plain)
-                            .transition(.asymmetric(
-                                insertion: .scale(scale: 0.8).combined(with: .opacity),
-                                removal: .scale(scale: 0.9).combined(with: .opacity)
-                            ))
-                        }
-                        
-                        if shouldShowCreateButton {
-                            Button {
-                                createNewContactFromFilterString()
-                            } label: {
-                                HStack(spacing: 6) {
-                                    Circle()
-                                        .fill(Color.green.opacity(0.3))
-                                        .frame(width: 24, height: 24)
-                                        .overlay {
-                                            Image(systemName: "plus")
-                                                .font(.system(size: 10, weight: .semibold))
-                                                .foregroundStyle(.green)
-                                        }
-                                    
-                                    Text("Create \"\(filterString)\"")
-                                        .font(.subheadline)
-                                        .lineLimit(1)
-                                }
-                                .padding(.leading, 6)
-                                .padding(.trailing, 12)
-                                .padding(.vertical, 6)
-                                .background(
-                                    Color.green.gradient.quinary
-                                )
-                                .background(.ultraThinMaterial)
-                                .foregroundStyle(.primary)
-                                .clipShape(Capsule())
-                            }
-                            .buttonStyle(.plain)
-                            .transition(.asymmetric(
-                                insertion: .scale(scale: 0.8).combined(with: .opacity),
-                                removal: .scale(scale: 0.9).combined(with: .opacity)
-                            ))
-                        }
-                    }
-                    .animation(.spring(response: 0.3, dampingFraction: 0.8), value: suggestedContacts.map(\.id))
-                    .animation(.spring(response: 0.3, dampingFraction: 0.8), value: shouldShowCreateButton)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .frame(minHeight: 44, maxHeight: 60, alignment: .center)
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-                .background(
-                    GeometryReader { proxy in
-                        Color.clear
-                            .preference(key: SuggestionsHeightKey.self, value: proxy.size.height)
-                    }
-                )
-                .padding(.horizontal)
-                .offset(y: -(suggestionsHeight + 8))
-                .transition(.opacity.combined(with: .move(edge: .bottom)))
-                .animation(.spring(response: 0.35, dampingFraction: 0.85), value: !suggestedContacts.isEmpty || shouldShowCreateButton)
-            }
+            suggestionsOverlay
         }
         .background(
             GeometryReader { proxy in
@@ -320,6 +97,12 @@ struct QuickInputView: View {
             }
         }
         .preference(key: TotalQuickInputHeightKey.self, value: bottomInputHeight + suggestionsHeight + faceCarouselHeight + 8)
+        .onAppear {
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(100))
+                tipsLoaded = true
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .quickInputRequestFocus)) { _ in
             print("🎯 [QuickInput] Received focus request notification")
             Task { @MainActor in
@@ -340,6 +123,267 @@ struct QuickInputView: View {
                     fieldIsFocused = true
                 }
             }
+        }
+    }
+    
+    @ViewBuilder
+    private var faceCarouselSection: some View {
+        if let viewModel = faceDetectionViewModel, !viewModel.faces.isEmpty {
+            PhotoFaceCarouselView(
+                viewModel: viewModel,
+                onFaceSelected: { index in
+                    onFaceSelected?(index)
+                }
+            )
+            .frame(height: 120)
+            .background(
+                GeometryReader { proxy in
+                    Color.clear
+                        .preference(key: FaceCarouselHeightKey.self, value: proxy.size.height)
+                }
+            )
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
+    
+    @ViewBuilder
+    private var tipsSection: some View {
+        VStack(spacing: 12) {
+            TipView(QuickInputFormatTip(), arrowEdge: .bottom)
+            
+            TipView(QuickInputBulkAddTip(), arrowEdge: .bottom)
+            
+            TipView(QuickInputTagsTip(), arrowEdge: .bottom)
+            
+            TipView(QuickInputDateParsingTip(), arrowEdge: .bottom)
+        }
+        .padding(.horizontal)
+    }
+    
+    @ViewBuilder
+    private func inputControlsSection(controlSize: CGFloat) -> some View {
+        HStack(spacing: 6) {
+            InputBubble {
+                inputFieldContent
+            }
+
+            Button {
+                onQuizTap?()
+            } label: {
+                Image(systemName: "questionmark.circle.fill")
+                    .font(.system(size: 24, weight: .medium))
+                    .frame(width: controlSize, height: controlSize)
+                    .liquidGlass(in: Circle())
+                    .clipShape(Circle())
+            }
+            .accessibilityLabel("Open Quiz")
+        }
+    }
+    
+    @ViewBuilder
+    private var inputFieldContent: some View {
+        HStack(spacing: 8) {
+            if let token = selectedContact {
+                HStack(spacing: 6) {
+                    Text(token.name ?? "Unnamed")
+                        .font(.subheadline)
+                        .foregroundStyle(.blue)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay {
+                    Capsule()
+                        .fill(Color.blue.opacity(0.15))
+                }
+                .clipShape(Capsule())
+            }
+
+            ZStack(alignment: .topLeading) {
+                GrowingTextView(
+                    text: $text,
+                    isFirstResponder: Binding(
+                        get: { fieldIsFocused },
+                        set: { fieldIsFocused = $0 }
+                    ),
+                    minHeight: 22,
+                    maxHeight: 140,
+                    onDeleteWhenEmpty: {
+                        if text.isEmpty, selectedContact != nil {
+                            selectedContact = nil
+                            Task { @MainActor in
+                                try? await Task.sleep(for: .milliseconds(30))
+                                fieldIsFocused = true
+                            }
+                        }
+                    },
+                    onReturn: {
+                        handleReturn()
+                    }
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .onChange(of: text) { oldValue, newValue in
+                    handleTextChange(newValue)
+                }
+
+                if text.isEmpty {
+                    Text(selectedContact != nil ? "Add a note…" : "")
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 3)
+                        .padding(.top, 1)
+                        .allowsHitTesting(false)
+                }
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private var suggestionsOverlay: some View {
+        if selectedContact == nil && !filterString.isEmpty && (!suggestedContacts.isEmpty || shouldShowCreateButton) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(suggestedContacts) { contact in
+                        suggestionButton(for: contact)
+                    }
+                    
+                    if shouldShowCreateButton {
+                        createButton
+                    }
+                }
+                .animation(.spring(response: 0.3, dampingFraction: 0.8), value: suggestedContacts.map(\.id))
+                .animation(.spring(response: 0.3, dampingFraction: 0.8), value: shouldShowCreateButton)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .frame(minHeight: 44, maxHeight: 60, alignment: .center)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            .background(
+                GeometryReader { proxy in
+                    Color.clear
+                        .preference(key: SuggestionsHeightKey.self, value: proxy.size.height)
+                }
+            )
+            .padding(.horizontal)
+            .offset(y: -(suggestionsHeight + 8))
+            .transition(.opacity.combined(with: .move(edge: .bottom)))
+            .animation(.spring(response: 0.35, dampingFraction: 0.85), value: !suggestedContacts.isEmpty || shouldShowCreateButton)
+        }
+    }
+    
+    @ViewBuilder
+    private func suggestionButton(for contact: Contact) -> some View {
+        Button {
+            selectExistingContact(contact)
+        } label: {
+            HStack(spacing: 6) {
+                if !contact.photo.isEmpty, let uiImage = UIImage(data: contact.photo) {
+                    Image(uiImage: uiImage)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 24, height: 24)
+                        .clipShape(Circle())
+                } else {
+                    ZStack {
+                        RadialGradient(
+                            colors: [
+                                Color(uiColor: .secondarySystemBackground),
+                                Color(uiColor: .tertiarySystemBackground)
+                            ],
+                            center: .center,
+                            startRadius: 2,
+                            endRadius: 17
+                        )
+                        
+                        Color.clear
+                            .frame(width: 24, height: 24)
+                            .liquidGlass(in: Circle(), stroke: true)
+                    }
+                }
+                
+                Text(contact.name ?? "Unnamed")
+                    .font(.subheadline)
+            }
+            .padding(.leading, 6)
+            .padding(.trailing, 12)
+            .padding(.vertical, 6)
+            .background(Color.blue.gradient.quinary)
+            .background(.ultraThinMaterial)
+            .foregroundStyle(.primary)
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .transition(.asymmetric(
+            insertion: .scale(scale: 0.8).combined(with: .opacity),
+            removal: .scale(scale: 0.9).combined(with: .opacity)
+        ))
+    }
+    
+    @ViewBuilder
+    private var createButton: some View {
+        Button {
+            createNewContactFromFilterString()
+        } label: {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(Color.green.opacity(0.3))
+                    .frame(width: 24, height: 24)
+                    .overlay {
+                        Image(systemName: "plus")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.green)
+                    }
+                
+                Text("Create \"\(filterString)\"")
+                    .font(.subheadline)
+                    .lineLimit(1)
+            }
+            .padding(.leading, 6)
+            .padding(.trailing, 12)
+            .padding(.vertical, 6)
+            .background(Color.green.gradient.quinary)
+            .background(.ultraThinMaterial)
+            .foregroundStyle(.primary)
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .transition(.asymmetric(
+            insertion: .scale(scale: 0.8).combined(with: .opacity),
+            removal: .scale(scale: 0.9).combined(with: .opacity)
+        ))
+    }
+    
+    private func handleReturn() {
+        if let override = onReturnOverride {
+            resetTextAndPreview()
+            override()
+            return
+        }
+        if !suggestedContacts.isEmpty {
+            selectExistingContact(suggestedContacts[0])
+        } else {
+            save()
+        }
+    }
+    
+    private func handleTextChange(_ newValue: String) {
+        NotificationCenter.default.post(name: .quickInputTextDidChange, object: nil, userInfo: ["text": newValue])
+
+        if let last = newValue.last, last == "\n" {
+            text.removeLast()
+            if let override = onReturnOverride {
+                resetTextAndPreview()
+                override()
+            } else {
+                save()
+            }
+        } else {
+            parseDebounceWork?.cancel()
+            let work = DispatchWorkItem {
+                parsePeopleInput()
+            }
+            parseDebounceWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
         }
     }
 

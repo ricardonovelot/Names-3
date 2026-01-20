@@ -4,6 +4,7 @@ import SwiftData
 struct QuizView: View {
     let contacts: [Contact]
     let onComplete: () -> Void
+    let onRequestExit: (() -> Bool)?
     
     @Environment(\.modelContext) private var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -27,43 +28,6 @@ struct QuizView: View {
                     }
             }
         }
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button {
-                    handleExitRequest()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 18, weight: .medium))
-                        Text("Exit Quiz")
-                            .font(.body.weight(.medium))
-                    }
-                    .foregroundStyle(.red)
-                }
-            }
-        }
-        .alert("Exit Quiz?", isPresented: $showExitConfirmation) {
-            Button("Cancel", role: .cancel) { }
-            Button("Exit", role: .destructive) {
-                onComplete()
-            }
-        } message: {
-            Text("You can resume this quiz later from where you left off.")
-        }
-    }
-    
-    private func handleExitRequest() {
-        guard let viewModel else {
-            onComplete()
-            return
-        }
-        
-        if viewModel.hasAnsweredAnyQuestion {
-            showExitConfirmation = true
-        } else {
-            viewModel.clearSession()
-            onComplete()
-        }
     }
     
     @ViewBuilder
@@ -79,6 +43,11 @@ struct QuizView: View {
                             .padding(.top, 80)
                             .transition(cardTransition)
                             .id(item.id)
+                        
+                        if let summary = item.contact.summary, !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            summarySection(text: summary)
+                                .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                        }
                         
                         if !(item.contact.tags?.isEmpty ?? true) {
                             groupSection(for: item.contact)
@@ -110,13 +79,46 @@ struct QuizView: View {
             }
         }
         .overlay(alignment: .top) {
-            if !viewModel.quizItems.isEmpty {
-                QuizProgressBar(
-                    currentIndex: viewModel.currentIndex,
-                    totalQuestions: viewModel.quizItems.count
-                )
+            VStack(spacing: 0) {
+                HStack {
+                    Button {
+                        handleExitRequest()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 15, weight: .semibold))
+                            Text("Exit")
+                                .font(.system(size: 16, weight: .semibold))
+                        }
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial)
+                        .clipShape(Capsule())
+                    }
+                    .accessibilityLabel("Exit quiz")
+                    
+                    Spacer()
+                }
+                .padding(.horizontal, 20)
                 .padding(.top, 12)
+                .padding(.bottom, 8)
+                
+                if !viewModel.quizItems.isEmpty {
+                    QuizProgressBar(
+                        currentIndex: viewModel.currentIndex,
+                        totalQuestions: viewModel.quizItems.count
+                    )
+                }
             }
+        }
+        .alert("Exit Quiz?", isPresented: $showExitConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Exit", role: .destructive) {
+                performExit()
+            }
+        } message: {
+            Text("Your progress will be saved and you can resume later.")
         }
         .sheet(isPresented: Binding(
             get: { viewModel.showCompletionSheet },
@@ -149,6 +151,12 @@ struct QuizView: View {
                 allAcceptableAnswers: viewModel.allAcceptableAnswers,
                 onMarkCorrect: {
                     viewModel.markAsCorrect()
+                },
+                onMarkCorrectAndSaveAsNickname: {
+                    viewModel.markAsCorrectAndSave()
+                },
+                onMarkCorrectAndSaveAsPrimaryName: {
+                    viewModel.markAsCorrectAndSaveAsPrimaryName()
                 },
                 onMarkIncorrect: {
                     viewModel.markAsIncorrect()
@@ -192,6 +200,35 @@ struct QuizView: View {
                     }
             }
         }
+    }
+    
+    @ViewBuilder
+    private func summarySection(text: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label {
+                Text("Note")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .textCase(.uppercase)
+                    .foregroundStyle(.secondary)
+            } icon: {
+                Image(systemName: "note.text")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            
+            Text(text)
+                .font(.system(size: 17, weight: .medium, design: .default))
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .background(Color(UIColor.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.horizontal, 20)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Note: \(text)")
     }
     
     @ViewBuilder
@@ -253,20 +290,14 @@ struct QuizView: View {
                 HintDisplay(text: viewModel.hintText)
             }
             
-            HStack(spacing: 12) {
-                HintButton(
-                    level: viewModel.hintLevel,
-                    action: {
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
-                            viewModel.requestHint()
-                        }
+            HintButton(
+                level: viewModel.hintLevel,
+                action: {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
+                        viewModel.requestHint()
                     }
-                )
-                
-                SkipButton {
-                    viewModel.revealAndFail()
                 }
-            }
+            )
         }
         .padding(.horizontal, 20)
     }
@@ -414,6 +445,27 @@ struct QuizView: View {
             }
         }
     }
+    
+    private func handleExitRequest() {
+        guard let viewModel else { return }
+        
+        if viewModel.hasAnsweredAnyQuestion {
+            showExitConfirmation = true
+        } else {
+            performExit()
+        }
+    }
+    
+    private func performExit() {
+        if let onRequestExit {
+            let shouldExit = onRequestExit()
+            if shouldExit {
+                onComplete()
+            }
+        } else {
+            onComplete()
+        }
+    }
 }
 
 private struct HintDisplay: View {
@@ -463,23 +515,6 @@ private struct HintButton: View {
     }
 }
 
-private struct SkipButton: View {
-    let action: () -> Void
-    
-    var body: some View {
-        Button(action: action) {
-            Label("Skip", systemImage: "flag.fill")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 11)
-                .background(Color(UIColor.secondarySystemGroupedBackground))
-                .clipShape(Capsule())
-        }
-        .accessibilityLabel("Skip and mark as wrong")
-    }
-}
-
 private struct ScoreDisplay: View {
     let score: Int
     let total: Int
@@ -516,6 +551,8 @@ private struct ShakeGestureModifier: ViewModifier {
             }
     }
 }
+
+
 
 extension UIDevice {
     static let deviceDidShakeNotification = Notification.Name(rawValue: "deviceDidShakeNotification")
