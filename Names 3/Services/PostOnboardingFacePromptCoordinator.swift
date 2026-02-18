@@ -113,30 +113,38 @@ final class PostOnboardingFacePromptCoordinator {
         
         options.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
             NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue),
-            NSPredicate(format: "(mediaSubtype & %d) == 0", PHAssetMediaSubtype.photoScreenshot.rawValue),
-            NSPredicate(format: "pixelWidth >= 400"),
-            NSPredicate(format: "pixelHeight >= 400")
+            NSPredicate(format: "(mediaSubtype & %d) == 0", PHAssetMediaSubtype.photoScreenshot.rawValue)
         ])
         
         let fetchResult = PHAsset.fetchAssets(with: options)
-        var prioritizedAssets: [PHAsset] = []
-        var portraitAssets: [PHAsset] = []
-        var landscapeAssets: [PHAsset] = []
+        
+        // Time-based clustering to avoid photos from the same moment
+        // Skip photos taken within this many seconds of the last selected photo
+        let minimumTimeGapSeconds: TimeInterval = 300 // 5 minutes
+        
+        var selectedAssets: [PHAsset] = []
+        var lastSelectedDate: Date?
         
         fetchResult.enumerateObjects { asset, _, _ in
-            if asset.pixelHeight > asset.pixelWidth {
-                portraitAssets.append(asset)
-            } else {
-                landscapeAssets.append(asset)
+            guard let creationDate = asset.creationDate else { return }
+            
+            // Check if this photo is far enough in time from the last selected photo
+            if let lastDate = lastSelectedDate {
+                let timeDifference = abs(lastDate.timeIntervalSince(creationDate))
+                if timeDifference < minimumTimeGapSeconds {
+                    // Skip this photo - it's too close in time to the previous one
+                    return
+                }
             }
+            
+            // This photo passes the time filter
+            selectedAssets.append(asset)
+            lastSelectedDate = creationDate
         }
         
-        prioritizedAssets.append(contentsOf: portraitAssets)
-        prioritizedAssets.append(contentsOf: landscapeAssets)
+        logger.info("Smart selection: filtered \(fetchResult.count) photos → \(selectedAssets.count) time-diverse photos (min gap: \(Int(minimumTimeGapSeconds/60)) minutes)")
         
-        logger.info("Smart selection: \(portraitAssets.count) portrait, \(landscapeAssets.count) landscape → \(prioritizedAssets.count) total photos available")
-        
-        return prioritizedAssets
+        return selectedAssets
     }
     
     private func findTopMostViewController(_ controller: UIViewController) -> UIViewController {

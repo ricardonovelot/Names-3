@@ -35,6 +35,7 @@ final class OnboardingCoordinator {
         onboardingViewController?.dismiss(animated: true) { [weak self] in
             print("✅ [Coordinator] Dismiss completed")
             self?.onboardingViewController = nil
+            OnboardingManager.shared.completeOnboarding()
             self?.completion?()
             self?.completion = nil
         }

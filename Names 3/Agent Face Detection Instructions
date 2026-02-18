@@ -1,0 +1,57 @@
+---
+
+## Similar-faces detection: Apple-style behavior
+
+Face recognition in this app should behave like Apple Photos’ People feature. Below is the target behavior (and what we assume Apple does); implement and refine the code to match.
+
+### 1. Background scanning of the photo library
+
+- The app scans the photo library for faces in the **background**, without blocking the user.
+- We don’t know Apple’s exact implementation, but we assume **smart bookkeeping**, for example:
+  - **Marking photos that are “done” for a contact:** e.g. photos where we already ran Vision and either found a match for that contact or confirmed there is none. We do **not** re-run Vision on the same photo for the same contact (we already do this via `FaceEmbedding.assetIdentifier` and filtering before `processPhotoBatch`).
+  - Optionally, a notion of “photo fully processed for the library” (all faces in that photo already clustered or assigned) so we can skip or deprioritize it in future runs.
+- Use **anchor dates** (contact photo EXIF date + dates of already-detected faces for that contact) to **order** which photos we scan first (prioritize dates near known appearances).
+
+### 2. Continuous, automatic triggers and concurrent scans
+
+- The process runs **continuously** and **without user input**, triggered at **sensitive moments**, for example:
+  - When the user **just created a contact** (with a photo).
+  - When the user **enters the Faces view** from contact details (tap on contact photo → sheet with “Find Similar Faces” and “Detected Faces”).
+- **Multiple people must be scannable at the same time.** Today a single global “analysis in progress” blocks other contacts; change this so we can run **concurrent scans for different contacts** (e.g. per-contact or per-queue processing, not one global `isProcessing`).
+
+### 3. User confirmation and suggested matches (Apple Photos–style)
+
+- **Confirm / reject photos:** The user can **confirm** that a photo is of a contact, or **reject** it (not this person). These confirmations drive what we treat as ground truth.
+- **Confirmed photos become references:** Once the user confirms a photo (or a face in it) as “this contact,” that face is used as a **reference** for further recognition (same as contact photo + existing `FaceEmbedding`s for that contact). Rejected photos must not be used as references and should be removed from that contact’s set if they were auto-assigned.
+- **Suggested-matches view:** Provide a view similar to Apple Photos where the user can **review and confirm suggested matches**. We do **not** need to show every matching face; show the **key representative photos** that “open the certainty” of a group (e.g. one or a few representatives per cluster or per certainty band). The user confirms or denies these; confirmed ones are added to the contact and become references for future runs.
+- **Certainty:** Use confirmations to add more photos with **higher certainty**; the model can then extend recognition to more photos in the same group or with similar embeddings.
+
+---
+
+## Face recognition (contact details)
+
+- **Where it lives:** Detected faces and “Find Similar Faces” are under a view that appears when the user **taps the contact photo** (not in the main scroll). Tapping the photo opens a sheet with:
+  - **Find Similar Faces** – button to start/continue scanning the library for this person.
+  - **Detected Faces** – count and “View X photos” to open the grid of recognized photos; “Delete all recognized photos” when any exist.
+
+- **Button to look for more faces:** In that same tap-on-photo sheet, the primary action is **Find Similar Faces**. Tapping it starts (or continues) library scanning; no separate “look for more” entry point.
+
+- **Find Similar Faces is smart:** It uses **all** faces already detected and confirmed for this contact (contact photo + every `FaceEmbedding` linked to the contact) and **leverages their dates** as good points of entry.
+  - **References:** We match a library face if it is similar to **any** of those references (not just the contact photo). So Name Faces–assigned photos and previously found library photos all act as additional references; we find more of the same person.
+  - **Ordering by dates:** We sort which photos to scan first by proximity to **anchor dates**: the contact photo’s real capture date (EXIF) plus the `photoDate` of each existing `FaceEmbedding` for this contact. Photos nearest to any of those dates are processed first (same person often appears in bursts around events).
+
+- **Avoiding repeated scans of the same photos:** We do **not** re-run Vision on photos we’ve already processed for that contact.
+  - **Stored data:** Each recognized face is stored as a `FaceEmbedding` with `contactUUID` and `assetIdentifier` (the photo’s `PHAsset.localIdentifier`).
+  - **Before each run:** When “Find Similar Faces” runs, we fetch all `FaceEmbedding` rows for that contact and build the set of `assetIdentifier` values (excluding the synthetic `"contact-\(contact.uuid)"` used for the contact’s own photo).
+  - **Filtering:** The library fetch returns assets sorted by proximity to the anchor dates above. We then **filter out** any asset whose `localIdentifier` is in that set, so only **not-yet-processed** photos are passed to `processPhotoBatch` and Vision.
+  - **Result:** Same photo is never scanned twice for the same contact; re-runs only process new or previously unprocessed photos.
+
+- **Alignment with Apple-style behavior:** This UI and flow should follow the “Similar-faces detection: Apple-style behavior” section above: background scanning, trigger when entering this sheet, **concurrent scans** for different contacts (no single global lock), and a **suggested-matches** experience where the user confirms/rejects key representative photos so confirmed ones become references for further recognition.
+
+---
+
+## Name input autocompletion (face naming)
+
+- **Quick Input:** Contact name suggestions are driven by the same logic everywhere: non-archived contacts, filtered by `name.localizedStandardContains(query)` or `name.lowercased().hasPrefix(query.lowercased())`, capped at 5 suggestions.
+- **Quick Input view:** Uses `filterString` + `suggestedContacts`, horizontal suggestion chips, and “Create …” when the query is valid.
+- **Name Faces (WelcomeFaceNamingViewController):** The name text field uses the **same** contact autocompletion: on load we fetch non-archived contacts into `allContacts`; as the user types we filter into `suggestedContacts` and show a table below the field (same filter logic, max 5 rows). Tapping a row sets the name for the current face and hides suggestions. Same behavior as `NameAutocompleteField` / Quick Input.

@@ -1,24 +1,19 @@
 /* Onboarding */
-"onboarding.page1.title" = "Nunca Olvides una Cara";
-"onboarding.page1.description" = "Lleva registro de todas las personas que conoces en tu día a día. Construye conexiones genuinas que perduren.";
+"onboarding.page1.title" = "Recuerda Personas";
+"onboarding.page1.description" = "Toma una foto cuando conozcas a alguien. Detectamos caras para que agregues nombres y los recuerdes.";
 
-"onboarding.page2.title" = "Captura Momentos al Instante";
-"onboarding.page2.description" = "Toma una foto y detecta caras automáticamente. Agrega personas con solo un toque.";
+"onboarding.page2.title" = "Mantente Organizado";
+"onboarding.page2.description" = "Agrega notas y agrupa por fecha o lugar. Encuentra a quien buscas cuando lo necesites.";
 
-"onboarding.page3.title" = "Organiza por Momentos";
-"onboarding.page3.description" = "Agrupa personas por lugares y fechas. El gym, cafeterías, reuniones. Mantén todo conectado.";
+"onboarding.page3.title" = "Privado por Diseño";
+"onboarding.page3.description" = "Todo permanece en tu dispositivo. Sin nube, sin rastreo, sin recolección de datos. Solo tú.";
 
-"onboarding.page4.title" = "Recuerda los Detalles";
-"onboarding.page4.description" = "Anota lo que importa. Recuerda conversaciones, intereses compartidos y conexiones significativas.";
-
-"onboarding.page5.title" = "Domina Nombres y Caras";
-"onboarding.page5.description" = "Practica con nuestro quiz. Convierte caras en amistades recordando quién es quién.";
-
-"onboarding.page6.title" = "Tu Privacidad Importa";
-"onboarding.page6.description" = "Todos tus datos permanecen en tu dispositivo. Nunca recopilamos, almacenamos ni compartimos tu información. Todo es 100% privado y seguro.";
+"onboarding.page4.photos.title" = "Tus Fotos, Tus Recuerdos";
+"onboarding.page4.photos.description" = "Desliza por tus fotos, toca las caras para agregar nombres. Te ayudamos a recordar a todos.";
 
 "onboarding.button.continue" = "Continuar";
 "onboarding.button.getStarted" = "Comenzar";
+"onboarding.button.allowPhotos" = "Permitir Acceso a Fotos";
 "onboarding.button.skip" = "Omitir";
 
 /* Settings */
@@ -34,3 +29,141 @@
 "settings.appInfo.build" = "Build";
 
 "settings.button.done" = "Listo";
+
+/* Tab bar */
+"tab.people" = "Personas";
+"tab.practice" = "Práctica";
+"tab.nameFaces" = "Nombrar Caras";
+
+/* Contacts feed – movement undo */
+"contacts.undo.move" = "Deshacer movimiento";
+
+/* Feed empty state */
+"feed.empty.title" = "Aún no hay personas";
+"feed.empty.subtitle" = "Agrega personas con Nombrar Caras o el botón de cámara abajo.";
+"feed.empty.syncing" = "Sincronizando…";
+"feed.empty.icloud.hint" = "Si usas la app en otro dispositivo, conéctate a Wi‑Fi y deja la app abierta—tu lista puede sincronizarse en un momento.";
+"feed.empty.no_storage.title" = "No se sincroniza — almacenamiento lleno";
+"feed.empty.no_storage.message" = "Libera espacio en este dispositivo para que tu lista se sincronice con iCloud. Ve a Ajustes → General → Almacenamiento del iPhone.";
+
+/* Offline */
+"offline.banner.title" = "Sin conexión";
+"offline.banner.message" = "Algunas funciones pueden estar limitadas.";
+"offline.banner.hint" = "Aviso cuando el dispositivo no tiene conexión a la red.";
+"offline.alert.title" = "Sin conexión";
+"offline.alert.actionUnavailable" = "Esta acción requiere conexión. Conéctate a Wi‑Fi o datos y vuelve a intentar.";
+"offline.alert.ok" = "OK";
+"offline.alert.photosLimited" = "Fotos de iCloud pueden estar limitadas sin conexión. Puedes ver y agregar fotos que ya están en este dispositivo.";
+"settings.connectivity.header" = "Red";
+"settings.connectivity.status" = "Estado";
+"settings.connectivity.online" = "En línea";
+"settings.connectivity.offline" = "Sin conexión";
+
+/* Quiz daily reminder (one notification per day) */
+"quiz_reminder_title" = "Hora de practicar";
+"quiz_reminder_body" = "Mantén tu racha — haz un Face Quiz o Revisión de Memoria.";
+
+/* Settings – Practice / notifications */
+"settings.practice.header" = "Práctica";
+"settings.practice.reminder" = "Recordatorio diario de práctica";
+"settings.practice.reminderFooter" = "Un recordatorio al día para Face Quiz o Revisión de Memoria. Desactívalo para dejar de recibir notificaciones.";
+"settings.practice.openNotificationSettings" = "Abrir en Ajustes";
+
+/* Storage Manager */
+"storage.title" = "Almacenamiento";
+"storage.device.header" = "Dispositivo";
+"storage.device.free" = "Espacio Libre";
+"storage.device.total" = "Capacidad Total";
+"storage.device.lowWarning" = "Poco espacio. Libera espacio para que la app pueda guardar y sincronizar.";
+"storage.app.header" = "Esta App";
+"storage.app.total" = "Total de la App";
+"storage.app.people" = "Personas";
+"storage.app.people.photos" = "Fotos de contactos";
+"storage.app.faces" = "Caras";
+"storage.app.faces.count" = "%d caras";
+"storage.app.faces.previews" = "Vistas previas de caras";
+"storage.app.faces.vectors" = "Vectores de reconocimiento";
+"storage.app.faces.thumbnails" = "Miniaturas de caras";
+"storage.app.faces.embeddings" = "Datos de reconocimiento";
+"storage.app.otherData" = "Otros datos";
+"storage.app.other.notes" = "Notas";
+"storage.app.other.quickNotes" = "Notas rápidas";
+"storage.app.other.tags" = "Etiquetas";
+"storage.app.other.metadata" = "Contactos y metadatos";
+"storage.app.other.metadata.section" = "Base de datos";
+"storage.app.other.metadata.footer" = "Nombres de contactos, historial de quiz y sobrecarga de base de datos. Usa las acciones de arriba para liberar espacio.";
+"storage.app.other.breakdown.header" = "Qué usa este espacio";
+"storage.app.other.breakdown.footer" = "La sobrecarga incluye archivos WAL e índices. Usa Compactar Base de Datos para recuperarla.";
+"storage.app.other.breakdown.contactMetadata" = "Nombres e info de contactos";
+"storage.app.other.breakdown.faceMetadata" = "Referencias de fotos de caras";
+"storage.app.other.breakdown.faceClusters" = "Datos de agrupación de caras";
+"storage.app.other.breakdown.quizHistory" = "Historial de quiz";
+"storage.app.other.breakdown.noteRehearsal" = "Historial de ensayo de notas";
+"storage.app.other.breakdown.quizSessions" = "Sesiones de quiz";
+"storage.app.other.breakdown.deletedPhotos" = "Lista de fotos eliminadas";
+"storage.app.other.breakdown.databaseOverhead" = "Sobrecarga de base de datos";
+"storage.app.peopleAndFaces" = "Personas y Caras";
+"storage.actions.compact" = "Compactar Base de Datos";
+"storage.actions.freed" = "Liberados %.1f MB";
+"storage.actions.shrinkResult" = "Reducidos %d elementos";
+"storage.actions.freeSpace" = "Liberar Espacio";
+"storage.other.actions.footer" = "Compactar fusiona archivos temporales y recupera espacio. Reducir escala fotos grandes. Borrar quiz/rehearsal reinicia el historial de aprendizaje.";
+"storage.other.clearQuiz.title" = "¿Borrar historial de quiz?";
+"storage.other.clearQuiz.action" = "Borrar historial de quiz";
+"storage.other.clearQuiz.message" = "Esto reinicia la repetición espaciada para todos los contactos. Puedes reconstruirlo haciendo quizzes de nuevo.";
+"storage.other.clearRehearsal.title" = "¿Borrar historial de ensayo de notas?";
+"storage.other.clearRehearsal.action" = "Borrar historial de ensayo";
+"storage.other.clearRehearsal.message" = "Esto reinicia la programación de ensayos para todos los contactos. Puedes reconstruirlo ensayando notas de nuevo.";
+"storage.app.batchData" = "Datos por Lotes";
+"storage.app.caches" = "Cachés";
+"storage.app.documents" = "Documentos";
+"storage.app.footer" = "Personas = fotos de contactos. Caras = vistas previas y vectores de reconocimiento. Otros = notas, etiquetas y metadatos.";
+"storage.actions.header" = "Acciones";
+"storage.actions.shrink" = "Reducir Fotos Grandes";
+"storage.actions.clearCache" = "Vaciar Caché de Imágenes";
+"storage.actions.openSettings" = "Abrir Almacenamiento del iPhone";
+"storage.actions.footer" = "Reducir disminuye fotos grandes. Vaciar caché libera memoria; se vuelve a llenar al navegar.";
+"storage.settings.footer" = "Ver uso de almacenamiento y liberar espacio.";
+"storage.shrink.dialog.title" = "Reducir Almacenamiento";
+"storage.shrink.dialog.message" = "Esto reducirá fotos de contactos y miniaturas de caras que sean más grandes de lo necesario. Tus datos se mantienen; solo se reducen las imágenes.";
+
+/* Storage Manager - Identify & Delete */
+"storage.calculating" = "Calculando…";
+"storage.cancel" = "Cancelar";
+"storage.delete" = "Eliminar";
+"storage.unnamed" = "Sin nombre";
+"storage.emptyContent" = "(vacío)";
+
+"storage.people.section.header" = "Fotos de contactos";
+"storage.people.section.footer" = "Toca el menú para borrar una foto (mantiene el contacto) o eliminar el contacto por completo.";
+"storage.people.empty.title" = "Sin fotos de contactos";
+"storage.people.empty.subtitle" = "Las fotos de contactos aparecen aquí cuando las agregas.";
+"storage.people.clearPhoto.title" = "¿Borrar foto?";
+"storage.people.clearPhoto.action" = "Borrar foto";
+"storage.people.clearPhoto.message" = "¿Quitar la foto de perfil de %@? El contacto permanecerá.";
+"storage.people.deleteContact.title" = "¿Eliminar contacto?";
+"storage.people.deleteContact.action" = "Eliminar contacto";
+"storage.people.deleteContact.message" = "¿Eliminar permanentemente a %@? No se puede deshacer.";
+
+"storage.faces.unassigned" = "Caras sin asignar";
+"storage.faces.unassigned.header" = "Caras no vinculadas a nadie";
+"storage.faces.unassigned.footer" = "Estas caras se detectaron pero nunca se asignaron a un contacto. Es seguro eliminarlas.";
+"storage.faces.byContact.header" = "Caras por contacto";
+"storage.faces.byContact.footer" = "Eliminar quita los datos de reconocimiento de ese contacto. El contacto y su foto principal se mantienen.";
+"storage.faces.empty.title" = "Sin datos de caras";
+"storage.faces.empty.subtitle" = "Los datos de caras aparecen cuando usas Nombrar Caras o agregas caras a contactos.";
+"storage.faces.deleteUnassigned.title" = "¿Eliminar caras sin asignar?";
+"storage.faces.deleteUnassigned.action" = "Eliminar %d caras";
+"storage.faces.deleteUnassigned.message" = "¿Eliminar %d caras sin asignar? Esto libera espacio y no se puede deshacer.";
+"storage.faces.deleteForContact.title" = "¿Eliminar caras del contacto?";
+"storage.faces.deleteForContact.action" = "Eliminar caras";
+"storage.faces.deleteForContact.message" = "¿Eliminar %d cara(s) de %@? Se quitarán los datos de reconocimiento.";
+
+"storage.other.empty.title" = "Sin notas ni etiquetas";
+"storage.other.empty.subtitle" = "Las notas y etiquetas aparecen aquí cuando las agregas.";
+"storage.other.deleteNote.title" = "¿Eliminar nota?";
+"storage.other.deleteNote.message" = "Esta nota se eliminará permanentemente.";
+"storage.other.deleteQuickNote.title" = "¿Eliminar nota rápida?";
+"storage.other.deleteQuickNote.message" = "Esta nota rápida se eliminará permanentemente.";
+"storage.other.deleteTag.title" = "¿Eliminar etiqueta?";
+"storage.other.deleteTag.message" = "Esta etiqueta se quitará de todos los contactos.";

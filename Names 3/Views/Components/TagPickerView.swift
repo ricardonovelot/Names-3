@@ -19,7 +19,6 @@ struct TagPickerView: View {
     @State private var renamingTag: Tag?
     @State private var renameText: String = ""
     @State private var isRenaming: Bool = false
-    @State private var isEditingRanges: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -72,13 +71,6 @@ struct TagPickerView: View {
                                     break
                                 }
                             }
-
-                            if isEditingRanges {
-                                TagRangeEditorRow(tag: tag) {
-                                    do { try modelContext.save() } catch { print("Save failed: \(error)") }
-                                }
-                                .padding(.top, 2)
-                            }
                         }
                         .swipeActions {
                             Button {
@@ -105,22 +97,12 @@ struct TagPickerView: View {
             .toolbar {
                 switch mode {
                 case .contactToggle:
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button(isEditingRanges ? "Done" : "Edit") {
-                            withAnimation(.easeInOut) { isEditingRanges.toggle() }
-                        }
-                    }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("Done") { dismiss() }
                     }
                 case .groupApply(let onApply):
                     ToolbarItem(placement: .topBarLeading) {
                         Button("Cancel") { dismiss() }
-                    }
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button(isEditingRanges ? "Done" : "Edit") {
-                            withAnimation(.easeInOut) { isEditingRanges.toggle() }
-                        }
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("Apply") {
@@ -135,11 +117,6 @@ struct TagPickerView: View {
                         .disabled(selectedForGroup == nil && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 case .manage:
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button(isEditingRanges ? "Done" : "Edit") {
-                            withAnimation(.easeInOut) { isEditingRanges.toggle() }
-                        }
-                    }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("Done") { dismiss() }
                     }
@@ -253,95 +230,5 @@ extension Tag {
             do { try context.save() } catch { print("Save failed: \(error)") }
             return tag
         }
-    }
-}
-
-private struct TagRangeEditorRow: View {
-    @Bindable var tag: Tag
-    var onSave: () -> Void
-
-    private var rangeText: String {
-        let df = DateFormatter()
-        df.dateStyle = .medium
-        df.timeStyle = .none
-        if let s = tag.rangeStart, let e = tag.rangeEnd {
-            return "\(df.string(from: s)) – \(df.string(from: e))"
-        } else {
-            return "No range"
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Range")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(rangeText)
-                    .font(.subheadline)
-            }
-
-            if tag.rangeStart == nil || tag.rangeEnd == nil {
-                HStack {
-                    Button {
-                        let (s, e) = Tag.defaultRange(for: Date())
-                        tag.rangeStart = s
-                        tag.rangeEnd = e
-                        onSave()
-                    } label: {
-                        Label("Add range", systemImage: "calendar.badge.plus")
-                    }
-                    .buttonStyle(.bordered)
-                }
-            } else {
-                DatePicker(
-                    "Start",
-                    selection: Binding<Date>(
-                        get: { tag.rangeStart ?? Date() },
-                        set: { newValue in
-                            tag.rangeStart = newValue
-                            if let end = tag.rangeEnd, end < newValue {
-                                tag.rangeEnd = Calendar.current.date(byAdding: .day, value: 1, to: newValue)
-                            }
-                            onSave()
-                        }
-                    ),
-                    displayedComponents: .date
-                )
-                .datePickerStyle(.compact)
-
-                DatePicker(
-                    "End",
-                    selection: Binding<Date>(
-                        get: { tag.rangeEnd ?? (tag.rangeStart ?? Date()) },
-                        set: { newValue in
-                            tag.rangeEnd = newValue
-                            if let start = tag.rangeStart, newValue < start {
-                                tag.rangeStart = newValue
-                            }
-                            onSave()
-                        }
-                    ),
-                    in: (tag.rangeStart ?? Date.distantPast)...,
-                    displayedComponents: .date
-                )
-                .datePickerStyle(.compact)
-
-                HStack {
-                    Spacer()
-                    Button(role: .destructive) {
-                        tag.rangeStart = nil
-                        tag.rangeEnd = nil
-                        onSave()
-                    } label: {
-                        Label("Clear range", systemImage: "trash")
-                    }
-                }
-            }
-        }
-        .padding(10)
-        .background(Color(UIColor.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }

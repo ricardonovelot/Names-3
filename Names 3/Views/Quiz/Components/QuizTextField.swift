@@ -4,8 +4,9 @@ struct QuizTextField: View {
     @Binding var text: String
     @Binding var isFocused: Bool
     
+    /// When true, the submit button is disabled (e.g. while showing feedback). The text field itself stays enabled so the keyboard is not dismissed.
+    let submitDisabled: Bool
     let placeholder: String
-    let isDisabled: Bool
     let onSubmit: () -> Void
     
     @Environment(\.colorScheme) private var colorScheme
@@ -20,7 +21,6 @@ struct QuizTextField: View {
                 .disableAutocorrection(true)
                 .textInputAutocapitalization(.words)
                 .submitLabel(.done)
-                .disabled(isDisabled)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 14)
                 .background(
@@ -48,7 +48,7 @@ struct QuizTextField: View {
             
             SubmitButton(
                 text: text,
-                isDisabled: isDisabled,
+                isDisabled: submitDisabled,
                 action: onSubmit
             )
         }

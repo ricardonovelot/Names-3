@@ -14,6 +14,7 @@ import UIKit
 import UniformTypeIdentifiers
 import Photos
 import TipKit
+import os
 
 // MARK: - Drag & Drop Support
 
@@ -40,11 +41,24 @@ extension UTType {
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.connectivityMonitor) private var connectivityMonitor
+    @Environment(\.cloudKitMirroringResetCoordinator) private var cloudKitResetCoordinator
+    @Environment(\.storageMonitor) private var storageMonitor
     
-    @Query(filter: #Predicate<Contact> { $0.isArchived == false })
-    private var contacts: [Contact]
+    @Query private var contacts: [Contact]
+
+    init() {
+        var descriptor = FetchDescriptor<Contact>(
+            predicate: #Predicate<Contact> { !$0.isArchived },
+            sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
+        )
+        descriptor.fetchLimit = 2000
+        _contacts = Query(descriptor)
+    }
     @State private var parsedContacts: [Contact] = []
     @State private var selectedContact: Contact?
+    /// Path-based navigation for contact detail (avoids duplicate toolbars from NavigationLink).
+    @State private var contactPathIds: [UUID] = []
     
     @State private var selectedItem: PhotosPickerItem?
     
@@ -55,16 +69,14 @@ struct ContentView: View {
 
     @State private var showPhotosPicker = false
     @State private var showQuizView = false
-    @State private var showRegexHelp = false
+    @State private var selectedQuizType: QuizType?
+    @State private var selectedTab: MainTab = .people
+    @State private var isQuickInputExpanded = true  // expanded by default on People tab
     @State private var showBulkAddFaces = false
-    @State private var showGroupPhotos = false
-    
+
     @State private var name = ""
     @State private var hashtag = ""
     
-    @State private var showGroupDatePicker = false
-    @State private var tempGroupDate = Date()
-
     @State private var groupForDateEdit: contactsGroup?
     @State private var isLoading = false
     @State private var showGroupTagPicker = false
@@ -80,13 +92,20 @@ struct ContentView: View {
     @State private var showAllGroupTagDates = false
     @State private var contactForDateEdit: Contact?
     @State private var bottomInputHeight: CGFloat = 0
-    @State private var showHomeView = false
-    @State private var homeTabSelection: AppTab = .home
     @State private var fullPhotoGridFaceViewModel: FaceDetectionViewModel? = nil
     @State private var showSettings = false
     @State private var showQuickNotesFeed = false
     @State private var showExitQuizConfirmation = false
     @State private var quizResetTrigger = UUID()
+    /// When set, Name Faces tab scrolls to this date (e.g. from group header tap); nil when opened from camera button.
+    @State private var faceNamingInitialDate: Date?
+    /// Show "Syncing…" empty state for a short window after launch when feed is empty (likely initial CloudKit sync).
+    @State private var showInitialSyncState = true
+    @State private var offlineBannerDismissed = false
+    @State private var showOfflineActionAlert = false
+    /// Undo stack for contact moves (drag-to-group and date picker). Each entry is one user action and can affect multiple contacts.
+    @State private var movementUndoStack: [[ContactMovementSnapshot]] = []
+    private let maxMovementUndoStackSize = 50
     
     private struct PhotosSheetPayload: Identifiable, Hashable {
         let id = UUID()
@@ -102,6 +121,8 @@ struct ContentView: View {
     
     @State private var showFullPhotoGrid = false
     @State private var fullPhotoGridPayload: PhotosSheetPayload?
+    /// Deferred so first frame shows contacts list only; photo views (ImageCacheService, etc.) load after.
+    @State private var allowPhotoDependentViews = false
 
     var groups: [contactsGroup] {
         let calendar = Calendar.current
@@ -156,28 +177,85 @@ struct ContentView: View {
         GridItem(.flexible(), spacing: 10.0),
         GridItem(.flexible(), spacing: 10.0)
     ]
+
+    /// Shown when there are no contact groups (e.g. no data yet, or after CloudKit sync reset).
+    /// Shows "Syncing…" when mirroring is reset or initial sync; "Not syncing — storage full" when device is out of space.
+    @ViewBuilder
+    private var feedEmptyState: some View {
+        let showSyncing = cloudKitResetCoordinator?.isSyncResetInProgress == true
+            || (groups.isEmpty && showInitialSyncState && !isOffline)
+        let showNoStorage = groups.isEmpty && (storageMonitor?.isLowOnDeviceStorage == true) && !showSyncing
+        VStack(spacing: 16) {
+            Spacer(minLength: 40)
+            if showSyncing {
+                ProgressView()
+                    .scaleEffect(1.2)
+                Text(String(localized: "feed.empty.syncing"))
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            } else if showNoStorage {
+                Image(systemName: "externaldrive.fill.badge.exclamationmark")
+                    .font(.system(size: 44))
+                    .foregroundStyle(.secondary)
+                Text(String(localized: "feed.empty.no_storage.title"))
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                    .multilineTextAlignment(.center)
+                Text(String(localized: "feed.empty.no_storage.message"))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
+            } else {
+                Image(systemName: "person.2.fill")
+                    .font(.system(size: 44))
+                    .foregroundStyle(.secondary)
+                Text(String(localized: "feed.empty.title"))
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                Text(String(localized: "feed.empty.subtitle"))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
+                Text(String(localized: "feed.empty.icloud.hint"))
+                    .font(.footnote)
+                    .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 40)
+                    .padding(.top, 4)
+            }
+            Spacer(minLength: 80)
+        }
+        .frame(maxWidth: .infinity)
+        .padding()
+    }
     
     @ViewBuilder
     private var listContent: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 0) {
+                    if groups.isEmpty {
+                        feedEmptyState
+                    }
                     ForEach(groups) { group in
                         GroupSectionView(
                             group: group,
                             isLast: group.id == groups.last?.id,
+                            useSafeTitle: cloudKitResetCoordinator?.isSyncResetInProgress ?? false,
                             onImport: {
                                 guard !group.isLongAgo else { return }
+                                if isOffline {
+                                    showOfflineActionAlert = true
+                                    return
+                                }
                                 openFullPhotoGrid(scope: .all, initialScrollDate: group.date)
                             },
                             onEditDate: {
                                 guard !group.isLongAgo else { return }
                                 groupForDateEdit = group
-                                Task {
-                                    try? await Task.sleep(for: .milliseconds(150))
-                                    tempGroupDate = group.date
-                                    showGroupDatePicker = true
-                                }
                             },
                             onEditTag: {
                                 guard !group.isLongAgo else { return }
@@ -203,7 +281,8 @@ struct ContentView: View {
                             },
                             onTapHeader: {
                                 guard !group.isLongAgo else { return }
-                                openFullPhotoGrid(scope: .all, initialScrollDate: group.date)
+                                faceNamingInitialDate = group.date
+                                selectedTab = .nameFaces
                             },
                             onDropRecords: { records in
                                 handleDrop(records, to: group)
@@ -211,6 +290,7 @@ struct ContentView: View {
                         )
                     }
                 }
+                .padding(.bottom, 140)
             }
             .scrollIndicators(.hidden)
             .scrollDismissesKeyboard(.interactively)
@@ -231,17 +311,83 @@ struct ContentView: View {
     
     // MARK: - Main Body
     
+    private var isOffline: Bool {
+        connectivityMonitor?.isOffline ?? false
+    }
+
+    private static let launchLogger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Names3", category: "Launch")
+    private static var hasLoggedBodyOnce = false
+
     var body: some View {
-        NavigationStack {
+        let _ = {
+            if !Self.hasLoggedBodyOnce {
+                Self.hasLoggedBodyOnce = true
+                LaunchProfiler.logCheckpoint("ContentView.body evaluated (first time)")
+            }
+        }()
+        return NavigationStack(path: $contactPathIds) {
             mainContent
                 .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
+                .onAppear {
+                    LaunchProfiler.logCheckpoint("ContentView mainContent appeared")
+                    Self.launchLogger.info("🚀 [Launch] Feed state: contacts=\(self.contacts.count) parsed=\(self.parsedContacts.count) groups=\(self.groups.count)")
+                    if groups.isEmpty { storageMonitor?.refreshIfNeeded() }
+                    // Defer photo-dependent views so contacts feed paints first; they init ImageCacheService etc.
+                    DispatchQueue.main.async {
+                        allowPhotoDependentViews = true
+                    }
+                }
+                .onChange(of: contacts.count) { _, newCount in
+                    if newCount > 0 { showInitialSyncState = false }
+                }
+                .onChange(of: groups.isEmpty) { _, isEmpty in
+                    if isEmpty { storageMonitor?.refreshIfNeeded() }
+                }
+                .task {
+                    // Stop showing "Syncing…" after a reasonable initial-sync window (e.g. 2 min)
+                    try? await Task.sleep(for: .seconds(120))
+                    showInitialSyncState = false
+                }
+                .onShake {
+                    performMovementUndo()
+                }
                 .onChange(of: pickedImageForBatch) { oldValue, newValue in
                     handlePickedImageChange(newValue)
+                }
+                .onChange(of: isOffline) { _, newValue in
+                    if newValue == false {
+                        offlineBannerDismissed = false
+                    }
                 }
                 .onPreferenceChange(TotalQuickInputHeightKey.self) { height in
                     handleQuickInputHeightChange(height)
                 }
-                .safeAreaInset(edge: .bottom) {
+                .onReceive(
+                    NotificationCenter.default.publisher(for: NSCloudKitMirroringDelegateWillResetSyncNotificationName)
+                        .receive(on: DispatchQueue.main)
+                ) { _ in
+                    handleCloudKitMirroringWillResetSync()
+                }
+                .onReceive(NotificationCenter.default.publisher(for: .quickInputRequestFocus)) { _ in
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.82)) {
+                        isQuickInputExpanded = true
+                    }
+                }
+                .onChange(of: selectedTab) { _, newTab in
+                    if newTab == .nameFaces || newTab == .people {
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.82)) {
+                            isQuickInputExpanded = true
+                        }
+                    }
+                }
+                .safeAreaInset(edge: .top) {
+                    OfflineBannerView(
+                        isOffline: isOffline,
+                        isDismissed: offlineBannerDismissed,
+                        onDismiss: { offlineBannerDismissed = true }
+                    )
+                }
+                .overlay(alignment: .bottom) {
                     quickInputSection
                 }
                 .background(Color(uiColor: .systemGroupedBackground))
@@ -252,10 +398,8 @@ struct ContentView: View {
                     toolbarContent
                 }
                 .toolbarBackground(.hidden)
+                .offlineActionAlert(showOfflineAlert: $showOfflineActionAlert)
                 .photosPicker(isPresented: $showPhotosPicker, selection: $selectedItem, matching: .images)
-                .sheet(isPresented: $showRegexHelp) {
-                    RegexShortcutsView()
-                }
                 .sheet(isPresented: $showDeletedView) {
                     DeletedView()
                 }
@@ -263,12 +407,15 @@ struct ContentView: View {
                     BulkAddFacesView(contactsContext: modelContext)
                         .modelContainer(BatchModelContainer.shared)
                 }
-                .sheet(isPresented: $showGroupPhotos) {
-                    GroupPhotosListView(contactsContext: modelContext)
-                        .modelContainer(BatchModelContainer.shared)
-                }
                 .sheet(item: $contactForDateEdit) { contact in
-                    CustomDatePicker(contact: contact)
+                    CustomDatePicker(contact: contact, onRecordUndo: pushMovementUndoEntry)
+                }
+                .sheet(item: $groupForDateEdit, onDismiss: { groupForDateEdit = nil }) { group in
+                    let primary = group.contacts.first ?? group.parsedContacts.first
+                    let others = (group.contacts + group.parsedContacts).filter { primary != nil && $0.id != primary!.id }
+                    if let primary = primary {
+                        CustomDatePicker(contact: primary, additionalContactsToApply: others.isEmpty ? nil : others, onRecordUndo: pushMovementUndoEntry)
+                    }
                 }
                 .sheet(isPresented: $showGroupTagPicker) {
                     TagPickerView(mode: .groupApply { tag in
@@ -277,9 +424,6 @@ struct ContentView: View {
                 }
                 .sheet(isPresented: $showManageTags) {
                     TagPickerView(mode: .manage)
-                }
-                .sheet(isPresented: $showHomeView) {
-                    HomeView(tabSelection: $homeTabSelection)
                 }
                 .sheet(isPresented: $showSettings) {
                     SettingsView()
@@ -297,43 +441,65 @@ struct ContentView: View {
                 } message: {
                     Text("You can resume this quiz later from where you left off.")
                 }
+                .navigationDestination(for: UUID.self) { uuid in
+                    if let contact = contacts.first(where: { $0.uuid == uuid }) {
+                        ContactDetailsView(contact: contact, onBack: {
+                            if !contactPathIds.isEmpty { contactPathIds.removeLast() }
+                        })
+                    }
+                }
         }
     }
     
     // MARK: - Content Sections
-    
+
     @ViewBuilder
     private var mainContent: some View {
         ZStack {
-            if showQuizView {
-                quizContent
-            } else if let contact = selectedContact {
-                contactDetailContent(contact: contact)
-            } else {
-                listAndPhotosContent
+            switch selectedTab {
+            case .people:
+                if let contact = selectedContact {
+                    contactDetailContent(contact: contact)
+                } else {
+                    listAndPhotosContent
+                }
+            case .practice:
+                PracticeTabView(
+                    contacts: contacts,
+                    showQuizView: showQuizView,
+                    selectedQuizType: selectedQuizType,
+                    quizResetTrigger: quizResetTrigger,
+                    onSelectQuiz: {
+                        selectedQuizType = $0
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                            showQuizView = true
+                        }
+                    },
+                    onQuizComplete: {
+                        QuizReminderService.shared.maybeRequestPermissionOnQuizExit()
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                            showQuizView = false
+                        }
+                        quizResetTrigger = UUID()
+                        selectedQuizType = nil
+                    },
+                    onClose: {
+                        selectedTab = .people
+                    }
+                )
+            case .nameFaces:
+                NameFacesTabView(
+                    onDismiss: {
+                        faceNamingInitialDate = nil
+                        selectedTab = .people
+                    },
+                    initialScrollDate: faceNamingInitialDate
+                )
             }
         }
+        .animation(.spring(response: 0.35, dampingFraction: 0.9), value: selectedTab)
         .animation(.spring(response: 0.35, dampingFraction: 0.9), value: selectedContact != nil)
         .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showQuizView)
-    }
-    
-    @ViewBuilder
-    private var quizContent: some View {
-        QuizView(
-            contacts: contacts,
-            onComplete: {
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-                    showQuizView = false
-                }
-                quizResetTrigger = UUID()
-            },
-            onRequestExit: {
-                return true
-            }
-        )
-        .id(quizResetTrigger)
-        .transition(.move(edge: .trailing).combined(with: .opacity))
-        .zIndex(4)
     }
     
     @ViewBuilder
@@ -357,51 +523,59 @@ struct ContentView: View {
             .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showInlinePhotoPicker)
             .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showFullPhotoGrid)
 
-        inlinePhotoPickerContent
-        
-        if let payload = fullPhotoGridPayload {
-            fullPhotoGridInlineView(payload: payload)
+        if allowPhotoDependentViews {
+            inlinePhotoPickerContent
+            if let payload = fullPhotoGridPayload {
+                fullPhotoGridInlineView(payload: payload)
+            }
         }
     }
     
     @ViewBuilder
     private var inlinePhotoPickerContent: some View {
-        PhotosInlineView(contactsContext: modelContext, isVisible: showInlinePhotoPicker) { image, date in
-            print("✅ [ContentView] Photo picked from inline view")
-            pickedImageForBatch = image
-            withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-                showInlinePhotoPicker = false
+        // Important for memory: don't mount the photo grid until the user actually opens it.
+        // Keeping a hidden UICollectionView alive will still prefetch/decode/cache images in the background.
+        if showInlinePhotoPicker {
+            PhotosInlineView(contactsContext: modelContext, isVisible: true) { image, date in
+                print("✅ [ContentView] Photo picked from inline view")
+                pickedImageForBatch = image
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                    showInlinePhotoPicker = false
+                }
             }
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .zIndex(showFullPhotoGrid ? 0 : 1)
         }
-        .opacity(showInlinePhotoPicker ? 1 : 0)
-        .offset(y: showInlinePhotoPicker ? 0 : 28)
-        .allowsHitTesting(showInlinePhotoPicker)
-        .zIndex(showFullPhotoGrid ? 0 : 1)
-        .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showInlinePhotoPicker)
     }
     
     @ViewBuilder
     private var quickInputSection: some View {
-        if !showQuizView {
+        QuickInputBottomBar(
+            selectedTab: $selectedTab,
+            isQuickInputExpanded: $isQuickInputExpanded,
+            canShowQuickInput: !showQuizView,
+            showNameFacesButton: selectedTab != .nameFaces,
+            onNameFacesTap: {
+                faceNamingInitialDate = nil
+                selectedTab = .nameFaces
+            }
+        ) {
             QuickInputView(
                 parsedContacts: $parsedContacts,
                 selectedContact: $selectedContact,
-                onQuizTap: {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-                        showQuizView = true
-                    }
+                onQuizTap: { selectedTab = .practice },
+                onNameFacesTap: {
+                    faceNamingInitialDate = nil
+                    selectedTab = .nameFaces
                 },
-                faceDetectionViewModel: fullPhotoGridFaceViewModel,
-                onFaceSelected: { index in
-                    handleFaceSelectedFromCarousel(index: index)
-                },
-                onPhotoPicked: { image, date in
+                showQuizButton: selectedTab != .practice,
+                showNameFacesButton: selectedTab != .nameFaces,
+                faceDetectionViewModel: fullPhotoGridFaceViewModel, onFaceSelected: { handleFaceSelectedFromCarousel(index: $0) }, onPhotoPicked: { image, date in
                     print("📸 [ContentView] Photo fallback - opening bulk face view")
                     pickedImageForBatch = image
-                }
+                }, inlineInBar: true, cameraInSeparateBubble: true, faceNamingMode: selectedTab == .nameFaces
             )
             .id(quickInputResetID)
-            .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
     
@@ -414,7 +588,7 @@ struct ContentView: View {
     
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        if !showQuizView {
+        if !showQuizView, selectedContact == nil, contactPathIds.isEmpty {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
                 menuButton
             }
@@ -424,22 +598,23 @@ struct ContentView: View {
     @ViewBuilder
     private var menuButton: some View {
         Menu {
+            if !movementUndoStack.isEmpty {
+                Button {
+                    performMovementUndo()
+                } label: {
+                    Label(String(localized: "contacts.undo.move"), systemImage: "arrow.uturn.backward")
+                }
+                Divider()
+            }
+            
             quickNotesButton
             
             Divider()
             
-            exportButton
             deletedButton
-            groupPhotosButton
-            instructionsButton
-
-            Divider()
-            
-            manageTagsButton
 
             Divider()
 
-            homeButton
             settingsButton
 
             if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited {
@@ -447,8 +622,6 @@ struct ContentView: View {
             }
         } label: {
             Image(systemName: "ellipsis")
-                .fontWeight(.medium)
-                .liquidGlass(in: Capsule())
         }
     }
     
@@ -464,55 +637,11 @@ struct ContentView: View {
     }
     
     @ViewBuilder
-    private var exportButton: some View {
-        Button(action: {
-        }) {
-            Label("Export CSV", systemImage: "square.and.arrow.up")
-        }
-    }
-    
-    @ViewBuilder
     private var deletedButton: some View {
         Button {
             showDeletedView = true
         } label: {
             Label("Deleted", systemImage: "trash")
-        }
-    }
-    
-    @ViewBuilder
-    private var groupPhotosButton: some View {
-        Button {
-            showGroupPhotos = true
-        } label: {
-            Label("Group Photos", systemImage: "person.3.sequence")
-        }
-    }
-    
-    @ViewBuilder
-    private var instructionsButton: some View {
-        Button {
-            showRegexHelp = true
-        } label: {
-            Label("Instructions", systemImage: "info.circle")
-        }
-    }
-    
-    @ViewBuilder
-    private var manageTagsButton: some View {
-        Button {
-            showManageTags = true
-        } label: {
-            Label("Groups & Places", systemImage: "tag")
-        }
-    }
-    
-    @ViewBuilder
-    private var homeButton: some View {
-        Button {
-            showHomeView = true
-        } label: {
-            Label("Recent", systemImage: "house")
         }
     }
     
@@ -619,11 +748,13 @@ struct ContentView: View {
             let faceImage = UIImage(cgImage: cropped)
 
             await MainActor.run {
-                contact.photo = faceImage.jpegData(compressionQuality: 0.92) ?? Data()
+                contact.photo = jpegDataForStoredContactPhoto(faceImage)
+                ImageAccessibleBackground.updateContactPhotoGradient(contact, image: faceImage)
                 do {
                     try modelContext.save()
                     print("✅ [ContentView] Auto-assigned single face to \(contact.name ?? "contact")")
                 } catch {
+                    StorageMonitor.reportIfENOSPC(error)
                     print("❌ [ContentView] Save failed: \(error)")
                 }
             }
@@ -669,25 +800,6 @@ struct ContentView: View {
         }
     }
 
-    private func applyGroupDateChange() {
-        if let group = groupForDateEdit {
-            updateGroupDate(for: group, newDate: tempGroupDate)
-        }
-        showGroupDatePicker = false
-        groupForDateEdit = nil
-    }
-    
-    private func updateGroupDate(for group: contactsGroup, newDate: Date) {
-        for c in group.contacts {
-            c.isMetLongAgo = false
-            c.timestamp = combine(date: newDate, withTimeFrom: c.timestamp)
-        }
-        for c in group.parsedContacts {
-            c.isMetLongAgo = false
-            c.timestamp = combine(date: newDate, withTimeFrom: c.timestamp)
-        }
-    }
-    
     private func combine(date: Date, withTimeFrom timeSource: Date) -> Date {
         let cal = Calendar.current
         let dateComps = cal.dateComponents([.year, .month, .day], from: date)
@@ -722,13 +834,27 @@ struct ContentView: View {
             }
         }
     }
+
+    /// Call on main queue when CoreData+CloudKit posts WillResetSync. Clears model-backed state so no view holds invalidated Tag/Contact references. Use with .receive(on: DispatchQueue.main).
+    private func handleCloudKitMirroringWillResetSync() {
+        selectedTag = nil
+        groupForTagEdit = nil
+        groupForDateEdit = nil
+        selectedContact = nil
+        contactForDateEdit = nil
+        showGroupTagPicker = false
+        showManageTags = false
+        faceNamingInitialDate = nil
+        showDeletedView = false
+        showBulkAddFaces = false
+    }
     
     private func tagDateOptions() -> [(date: Date, tags: String)] {
-        groups
+        if cloudKitResetCoordinator?.isSyncResetInProgress == true { return [] }
+        return groups
             .filter { !$0.isLongAgo }
             .compactMap { group in
-                let names = group.contacts
-                    .flatMap { ($0.tags ?? []).compactMap { $0.name } }
+                let names = group.contacts.flatMap(\.tagNames)
                 let unique = Array(Set(names)).sorted {
                     $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
                 }
@@ -752,6 +878,7 @@ struct ContentView: View {
         do {
             try modelContext.save()
         } catch {
+            StorageMonitor.reportIfENOSPC(error)
             print("Save failed: \(error)")
         }
         showGroupTagPicker = false
@@ -771,22 +898,91 @@ struct ContentView: View {
         do {
             try modelContext.save()
         } catch {
+            StorageMonitor.reportIfENOSPC(error)
             print("Save failed: \(error)")
+        }
+    }
+    
+    // MARK: - Movement undo
+    
+    private func snapshot(for contact: Contact) -> ContactMovementSnapshot {
+        let tagNames: [String] = (cloudKitResetCoordinator?.isSyncResetInProgress == true)
+            ? []
+            : contact.tagNames
+        return ContactMovementSnapshot(
+            uuid: contact.uuid,
+            isMetLongAgo: contact.isMetLongAgo,
+            timestamp: contact.timestamp,
+            tagNames: tagNames
+        )
+    }
+    
+    private func pushMovementUndoEntry(_ snapshots: [ContactMovementSnapshot]) {
+        guard !snapshots.isEmpty else { return }
+        movementUndoStack.append(snapshots)
+        if movementUndoStack.count > maxMovementUndoStackSize {
+            movementUndoStack.removeFirst()
+        }
+    }
+    
+    private func performMovementUndo() {
+        guard !movementUndoStack.isEmpty else { return }
+        let entry = movementUndoStack.removeLast()
+        var didChangePersisted = false
+        var didChangeParsed = false
+        for s in entry {
+            if let c = contacts.first(where: { $0.uuid == s.uuid }) {
+                c.isMetLongAgo = s.isMetLongAgo
+                c.timestamp = s.timestamp
+                if s.tagNames.isEmpty {
+                    c.tags = nil
+                } else {
+                    c.tags = s.tagNames.compactMap { Tag.fetchOrCreate(named: $0, in: modelContext) }
+                }
+                didChangePersisted = true
+                continue
+            }
+            if let p = parsedContacts.first(where: { $0.uuid == s.uuid }) {
+                p.isMetLongAgo = s.isMetLongAgo
+                p.timestamp = s.timestamp
+                if s.tagNames.isEmpty {
+                    p.tags = nil
+                } else {
+                    p.tags = s.tagNames.compactMap { Tag.fetchOrCreate(named: $0, in: modelContext) }
+                }
+                didChangeParsed = true
+            }
+        }
+        if didChangePersisted {
+            do {
+                try modelContext.save()
+            } catch {
+                StorageMonitor.reportIfENOSPC(error)
+                print("Undo save failed: \(error)")
+            }
+        }
+        if didChangeParsed {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
+                parsedContacts = parsedContacts
+            }
         }
     }
 
     private func handleDrop(_ records: [ContactDragRecord], to group: contactsGroup) {
         var didChangePersisted = false
         var parsedContactsChanged = false
+        var undoSnapshots: [ContactMovementSnapshot] = []
 
-        let destTagNames = (group.contacts + group.parsedContacts)
-            .flatMap { ($0.tags ?? []).compactMap { $0.name } }
+        let destTagNames: [String] = (cloudKitResetCoordinator?.isSyncResetInProgress == true)
+            ? []
+            : (group.contacts + group.parsedContacts).flatMap(\.tagNames)
         let uniqueDestTags = Array(Set(destTagNames)).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
         let chosenTagName = uniqueDestTags.count == 1 ? uniqueDestTags.first : nil
         let chosenTag = chosenTagName.flatMap { Tag.fetchOrCreate(named: $0, in: modelContext) }
 
         for record in records {
             if let persisted = contacts.first(where: { $0.uuid == record.uuid }) {
+                undoSnapshots.append(snapshot(for: persisted))
                 if group.isLongAgo {
                     persisted.isMetLongAgo = true
                 } else {
@@ -801,6 +997,7 @@ struct ContentView: View {
             }
 
             if let parsed = parsedContacts.first(where: { $0.uuid == record.uuid }) {
+                undoSnapshots.append(snapshot(for: parsed))
                 if group.isLongAgo {
                     parsed.isMetLongAgo = true
                 } else {
@@ -815,8 +1012,14 @@ struct ContentView: View {
             }
         }
 
+        pushMovementUndoEntry(undoSnapshots)
+
         if didChangePersisted {
-            try? modelContext.save()
+            do {
+                try modelContext.save()
+            } catch {
+                StorageMonitor.reportIfENOSPC(error)
+            }
         }
         
         if parsedContactsChanged {
@@ -865,6 +1068,8 @@ private extension ContentView {
 private struct GroupSectionView: View {
     let group: contactsGroup
     let isLast: Bool
+    /// When true, show date-only title to avoid reading Tag names (e.g. during CloudKit mirroring reset).
+    let useSafeTitle: Bool
     let onImport: () -> Void
     let onEditDate: () -> Void
     let onEditTag: () -> Void
@@ -924,7 +1129,7 @@ private struct GroupSectionView: View {
     private var header: some View {
         let content = VStack(alignment: .leading) {
             HStack {
-                Text(group.title)
+                Text(useSafeTitle ? group.dateOnlyTitle : group.title)
                     .font(.title)
                     .bold()
                 Spacer()
@@ -936,7 +1141,7 @@ private struct GroupSectionView: View {
                 .foregroundStyle(.secondary)
                 .padding(.horizontal)
         }
-        .padding(.bottom, 4)
+        .padding(.bottom, 12)
         .contentShape(.rect)
 
         if group.isLongAgo {
@@ -979,9 +1184,7 @@ private struct ContactTile: View {
     var showNavigationTip: Bool = false
     
     var body: some View {
-        NavigationLink {
-            ContactDetailsView(contact: contact)
-        } label: {
+        NavigationLink(value: contact.uuid) {
             GeometryReader { proxy in
                 let size = proxy.size
                 ZStack{
@@ -989,6 +1192,7 @@ private struct ContactTile: View {
                         Image(uiImage: uiImage)
                             .resizable()
                             .aspectRatio(contentMode: .fill)
+                            .scaleEffect(1.22)
                             .frame(width: size.width, height: size.height)
                             .clipped()
                             .background(Color(uiColor: .secondarySystemGroupedBackground))
@@ -1075,6 +1279,7 @@ private struct ParsedContactTile: View {
                     Image(uiImage: uiImage)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
+                        .scaleEffect(1.22)
                         .frame(width: size.width, height: size.height)
                         .clipped()
                         .background(Color(uiColor: .black).opacity(0.05))

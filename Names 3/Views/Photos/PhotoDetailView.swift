@@ -122,7 +122,8 @@ struct PhotoDetailView: View {
                     viewModel: viewModel,
                     onFaceTap: selectedContact != nil ? { index in
                         if let faceImage = viewModel.faces[safe: index]?.image, let contact = selectedContact {
-                            contact.photo = faceImage.jpegData(compressionQuality: 0.92) ?? Data()
+                            contact.photo = jpegDataForStoredContactPhoto(faceImage)
+                            ImageAccessibleBackground.updateContactPhotoGradient(contact, image: faceImage)
                             do {
                                 try modelContext.save()
                             } catch {
@@ -257,7 +258,7 @@ struct PhotoDetailView: View {
             let name = face.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard !name.isEmpty else { continue }
             
-            let data = face.image.jpegData(compressionQuality: 0.92) ?? Data()
+            let photoData = jpegDataForStoredContactPhoto(face.image)
             let contact = Contact(
                 name: name,
                 summary: "",
@@ -265,7 +266,7 @@ struct PhotoDetailView: View {
                 timestamp: detectedDate,
                 notes: [],
                 tags: tag == nil ? [] : [tag!],
-                photo: data,
+                photo: photoData,
                 group: "",
                 cropOffsetX: 0,
                 cropOffsetY: 0,
@@ -290,72 +291,83 @@ struct FaceCarouselView: View {
     var onFaceTap: ((Int) -> Void)? = nil
     
     private var faces: [FaceDetectionViewModel.DetectedFace] { viewModel.faces }
+    /// Total width of one carousel cell (avatar + horizontal padding) for centering insets.
+    private let itemTotalWidth: CGFloat = 80 + 8 + 8  // frame 80 + .padding(.horizontal, 8)
     
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 16) {
-                    ForEach(faces.indices, id: \.self) { index in
-                        VStack(spacing: 8) {
-                            ZStack(alignment: .bottomTrailing) {
-                                Image(uiImage: faces[index].image)
-                                    .resizable()
-                                    .scaledToFill()
-                                    .frame(width: 80, height: 80)
-                                    .clipShape(Circle())
-                                    .overlay {
-                                        Circle()
-                                            .strokeBorder(
-                                                selectedIndex == index ? Color.accentColor : Color.white.opacity(0.5),
-                                                lineWidth: selectedIndex == index ? 3 : 2
-                                            )
+        GeometryReader { outerGeo in
+            let horizontalViewPadding: CGFloat = 12 * 2
+            let containerWidth = max(0, outerGeo.size.width - horizontalViewPadding)
+            let centerInset = max(0, (containerWidth - itemTotalWidth) / 2)
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 16) {
+                        ForEach(faces.indices, id: \.self) { index in
+                            VStack(spacing: 8) {
+                                ZStack(alignment: .bottomTrailing) {
+                                    Image(uiImage: faces[index].image)
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(width: 80, height: 80)
+                                        .clipShape(Circle())
+                                        .overlay {
+                                            Circle()
+                                                .strokeBorder(
+                                                    selectedIndex == index ? Color.accentColor : Color.white.opacity(0.5),
+                                                    lineWidth: selectedIndex == index ? 3 : 2
+                                                )
+                                        }
+                                    
+                                    if (faces[index].name ?? "").isEmpty {
+                                        Image(systemName: "questionmark.circle.fill")
+                                            .symbolRenderingMode(.palette)
+                                            .foregroundStyle(Color.white, Color.yellow)
+                                            .font(.title3)
+                                    } else {
+                                        Image(systemName: "checkmark.seal.fill")
+                                            .symbolRenderingMode(.palette)
+                                            .foregroundStyle(Color.white, Color.green)
+                                            .font(.title3)
                                     }
+                                }
                                 
-                                if (faces[index].name ?? "").isEmpty {
-                                    Image(systemName: "questionmark.circle.fill")
-                                        .symbolRenderingMode(.palette)
-                                        .foregroundStyle(Color.white, Color.yellow)
-                                        .font(.title3)
+                                Text(faces[index].name ?? "Unnamed")
+                                    .font(.caption)
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+                                    .frame(width: 80)
+                            }
+                            .frame(width: 80)
+                            .padding(.horizontal, 8)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                if let onFaceTap {
+                                    onFaceTap(index)
                                 } else {
-                                    Image(systemName: "checkmark.seal.fill")
-                                        .symbolRenderingMode(.palette)
-                                        .foregroundStyle(Color.white, Color.green)
-                                        .font(.title3)
+                                    selectedIndex = index
+                                    withAnimation {
+                                        proxy.scrollTo(index, anchor: .center)
+                                    }
                                 }
                             }
-                            
-                            Text(faces[index].name ?? "Unnamed")
-                                .font(.caption)
-                                .foregroundStyle(.white)
-                                .lineLimit(1)
-                                .frame(width: 80)
+                            .id(index)
                         }
-                        .onTapGesture {
-                            if let onFaceTap {
-                                onFaceTap(index)
-                            } else {
-                                selectedIndex = index
-                                withAnimation {
-                                    proxy.scrollTo(index, anchor: .center)
-                                }
-                            }
-                        }
-                        .id(index)
                     }
+                    .padding(.leading, centerInset)
+                    .padding(.trailing, centerInset)
+                    .padding(.vertical, 8)
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-            }
-            .background(
-                Color.black.opacity(0.5)
-                    .blur(radius: 10)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .padding(.horizontal, 12)
-            .onChange(of: selectedIndex) { oldValue, newValue in
-                if let newValue {
-                    withAnimation {
-                        proxy.scrollTo(newValue, anchor: .center)
+                .background(
+                    Color.black.opacity(0.5)
+                        .blur(radius: 10)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .padding(.horizontal, 12)
+                .onChange(of: selectedIndex) { oldValue, newValue in
+                    if let newValue {
+                        withAnimation {
+                            proxy.scrollTo(newValue, anchor: .center)
+                        }
                     }
                 }
             }
@@ -363,8 +375,8 @@ struct FaceCarouselView: View {
     }
 }
 
-private extension Array {
-    subscript(safe index: Index) -> Element? {
-        indices.contains(index) ? self[index] : nil
-    }
-}
+//private extension Array {
+//    subscript(safe index: Index) -> Element? {
+//        indices.contains(index) ? self[index] : nil
+//    }
+//}

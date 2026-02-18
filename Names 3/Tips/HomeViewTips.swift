@@ -11,7 +11,7 @@ struct QuizStreakTip: Tip {
     }
     
     var image: Image? {
-        Image(systemName: "brain.head.profile")
+        Image(systemName: "rectangle.stack.fill")
     }
     
     var rules: [Rule] {
@@ -25,15 +25,15 @@ struct QuizStreakTip: Tip {
 
 struct NotesQuizTip: Tip {
     var title: Text {
-        Text("Test Your Note Memory")
+        Text("Rehearse Social Memories")
     }
     
     var message: Text? {
-        Text("The Notes Quiz helps you recall important details about people")
+        Text("Gently strengthen your memory of what matters in people's lives")
     }
     
     var image: Image? {
-        Image(systemName: "note.text")
+        Image(systemName: "rectangle.stack.fill")
     }
 }
 

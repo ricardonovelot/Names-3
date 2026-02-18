@@ -75,17 +75,31 @@ final class QuizViewModel {
     // MARK: - Session Management
     func hasSavedSession() -> Bool {
         guard let session = fetchCurrentSession() else { return false }
+        
+        // Ignore sessions where user never actually answered anything
+        let answeredCount = session.score + session.wrongAnswers + session.skippedCount
+        guard answeredCount > 0 else {
+            // Clean up zero‑progress sessions so they don't keep triggering checks
+            clearSession()
+            return false
+        }
+        
         let hoursSinceUpdate = Date().timeIntervalSince(session.lastUpdated) / 3600
         return hoursSinceUpdate < 24 && session.currentIndex < session.contactIDs.count
     }
     
     func resumeSession() -> Bool {
         guard let session = fetchCurrentSession() else { return false }
+        guard !session.contactIDs.isEmpty else { return false }
         
-        var descriptor = FetchDescriptor<Contact>()
-        guard let allContacts = try? modelContext.fetch(descriptor) else { return false }
+        let sessionIDs = session.contactIDs
+        var descriptor = FetchDescriptor<Contact>(
+            predicate: #Predicate<Contact> { c in sessionIDs.contains(c.uuid) }
+        )
+        descriptor.fetchLimit = session.contactIDs.count + 10
+        guard let sessionContacts = try? modelContext.fetch(descriptor) else { return false }
         
-        let contactMap = Dictionary(uniqueKeysWithValues: allContacts.map { ($0.uuid, $0) })
+        let contactMap = Dictionary(uniqueKeysWithValues: sessionContacts.map { ($0.uuid, $0) })
         let resumedContacts = session.contactIDs.compactMap { contactMap[$0] }
         
         guard resumedContacts.count == session.contactIDs.count else {
@@ -126,7 +140,7 @@ final class QuizViewModel {
         return try? modelContext.fetch(descriptor).first
     }
     
-    private func saveSessionState() {
+    func saveSessionState() {
         let contactIDs = quizItems.map { $0.contact.uuid }
         
         if let session = currentSession {
@@ -252,8 +266,6 @@ final class QuizViewModel {
     // MARK: - Quiz Actions
     func submitAnswer() {
         guard let item = currentItem else { return }
-        
-        isTextFieldFocused = false
         
         let answerResult = checkAnswer(userAnswer: userInput, acceptableNames: allAcceptableAnswers)
         isCorrect = answerResult.isCorrect
@@ -408,7 +420,6 @@ final class QuizViewModel {
     }
     
     func revealAndFail() {
-        isTextFieldFocused = false
         hintLevel = 3
         isCorrect = false
         wrongAnswers += 1
@@ -452,11 +463,7 @@ final class QuizViewModel {
             hintLevel = 0
             currentIndex += 1
             saveSessionState()
-            
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 600_000_000)
-                isTextFieldFocused = true
-            }
+            // Keyboard stays up: text field is no longer disabled during feedback, so focus is preserved.
         }
     }
     
@@ -612,11 +619,6 @@ final class QuizViewModel {
             hintLevel = 0
             currentIndex += 1
             saveSessionState()
-            
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 300_000_000)
-                isTextFieldFocused = true
-            }
         }
     }
     
@@ -624,7 +626,13 @@ final class QuizViewModel {
         do {
             try modelContext.save()
         } catch {
+            StorageMonitor.reportIfENOSPC(error)
             print("❌ [QuizViewModel] Failed to save context: \(error)")
+            print("   Error details: \(error.localizedDescription)")
+            if let nsError = error as NSError? {
+                print("   Domain: \(nsError.domain), Code: \(nsError.code)")
+                print("   UserInfo: \(nsError.userInfo)")
+            }
         }
     }
 }

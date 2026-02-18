@@ -19,6 +19,7 @@ final class PhotoDetailViewController: UIViewController {
     
     private let image: UIImage
     private let date: Date?
+    private let assetIdentifier: String?
     private let contactsContext: ModelContext
     private let onComplete: ((UIImage, Date?) -> Void)?
     
@@ -49,12 +50,14 @@ final class PhotoDetailViewController: UIViewController {
     init(
         image: UIImage,
         date: Date?,
+        assetIdentifier: String? = nil,
         contactsContext: ModelContext,
         faceDetectionViewModel: FaceDetectionViewModel,
         onComplete: ((UIImage, Date?) -> Void)? = nil
     ) {
         self.image = image
         self.date = date
+        self.assetIdentifier = assetIdentifier
         self.contactsContext = contactsContext
         self.viewModel = faceDetectionViewModel
         self.onComplete = onComplete
@@ -178,6 +181,7 @@ final class PhotoDetailViewController: UIViewController {
         let contentView = PhotoDetailContentView(
             image: image,
             date: date ?? Date(),
+            assetIdentifier: assetIdentifier,
             contactsContext: contactsContext,
             viewModel: viewModel,
             onDismiss: { [weak self] in
@@ -336,7 +340,8 @@ final class PhotoDetailViewController: UIViewController {
                 guard let self = self else { return }
                 if let contact = self.selectedContact, index >= 0, index < self.viewModel.faces.count {
                     let faceImage = self.viewModel.faces[index].image
-                    contact.photo = faceImage.jpegData(compressionQuality: 0.92) ?? Data()
+                    contact.photo = jpegDataForStoredContactPhoto(faceImage)
+                    ImageAccessibleBackground.updateContactPhotoGradient(contact, image: faceImage)
                     do {
                         try self.contactsContext.save()
                     } catch {
@@ -425,7 +430,8 @@ final class PhotoDetailViewController: UIViewController {
                 guard let self = self else { return }
                 guard index >= 0, index < self.viewModel.faces.count else { return }
                 let faceImage = self.viewModel.faces[index].image
-                contact.photo = faceImage.jpegData(compressionQuality: 0.92) ?? Data()
+                contact.photo = jpegDataForStoredContactPhoto(faceImage)
+                ImageAccessibleBackground.updateContactPhotoGradient(contact, image: faceImage)
                 do {
                     try self.contactsContext.save()
                 } catch {
@@ -472,75 +478,95 @@ extension Notification.Name {
     static let photoDetailCommitRequested = Notification.Name("photoDetailCommitRequested")
 }
 
+// MARK: - Scroll-driven preheated carousel
+
 struct PhotoFaceCarouselView: View {
     @ObservedObject var viewModel: FaceDetectionViewModel
     @State private var selectedIndex: Int?
+    
+    // Preheater state
+    @State private var visibleIndices: Set<Int> = []
+    @State private var scrollDirection: CGFloat = 0 // -1 left, +1 right
+    @State private var generation: Int = 0
+    
     let onFaceSelected: (Int) -> Void
     
     private var faces: [FaceDetectionViewModel.DetectedFace] { viewModel.faces }
+    private let itemWidth: CGFloat = 80
+    private let itemSpacing: CGFloat = 16
+    private let preheatLeading: Int = 6
+    private let preheatTrailingFast: Int = 12
+    private let preheatTrailingSlow: Int = 8
     
     var body: some View {
         if faces.isEmpty {
-            Color.clear
-                .frame(height: 0)
+            Color.clear.frame(height: 0)
         } else {
-            ScrollViewReader { proxy in
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 16) {
-                        ForEach(faces.indices, id: \.self) { index in
-                            VStack(spacing: 8) {
-                                ZStack(alignment: .bottomTrailing) {
-                                    Image(uiImage: faces[index].image)
-                                        .resizable()
-                                        .scaledToFill()
-                                        .frame(width: 80, height: 80)
-                                        .clipShape(Circle())
-                                        .overlay {
-                                            Circle()
-                                                .strokeBorder(
-                                                    selectedIndex == index ? Color.accentColor : Color.gray.opacity(0.3),
-                                                    lineWidth: selectedIndex == index ? 3 : 2
-                                                )
-                                        }
-                                    
-                                    if (faces[index].name ?? "").isEmpty {
-                                        Image(systemName: "questionmark.circle.fill")
-                                            .symbolRenderingMode(.palette)
-                                            .foregroundStyle(Color.white, Color.yellow)
-                                            .font(.title3)
-                                    } else {
-                                        Image(systemName: "checkmark.seal.fill")
-                                            .symbolRenderingMode(.palette)
-                                            .foregroundStyle(Color.white, Color.green)
-                                            .font(.title3)
+            GeometryReader { outerGeo in
+                let containerWidth = outerGeo.size.width
+                let centerInset = max(0, (containerWidth - itemWidth) / 2)
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal) {
+                        HStack(spacing: itemSpacing) {
+                            ForEach(faces.indices, id: \.self) { index in
+                                FaceThumbnailItem(
+                                    face: faces[index],
+                                    index: index,
+                                    selectedIndex: selectedIndex,
+                                    diameter: itemWidth
+                                )
+                                .id(index)
+                                .onTapGesture {
+                                    selectedIndex = index
+                                    onFaceSelected(index)
+                                    withAnimation {
+                                        proxy.scrollTo(index, anchor: .center)
                                     }
                                 }
-                                
-                                Text(faces[index].name ?? "Unnamed")
-                                    .font(.caption)
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(1)
-                                    .frame(width: 80)
+                                .background(
+                                    GeometryReader { geo in
+                                        Color.clear
+                                            .preference(key: VisibleItemsPreferenceKey.self, value: [
+                                                VisibleItem(index: index, frame: geo.frame(in: .named("carousel")))
+                                            ])
+                                    }
+                                )
                             }
-                            .onTapGesture {
-                                selectedIndex = index
-                                onFaceSelected(index)
-                                withAnimation {
-                                    proxy.scrollTo(index, anchor: .center)
+                        }
+                        .padding(.leading, centerInset)
+                        .padding(.trailing, centerInset)
+                        .padding(.vertical, 8)
+                    }
+                    .coordinateSpace(name: "carousel")
+                .scrollIndicators(.hidden)
+                .background(
+                    GeometryReader { geo in
+                        // Track horizontal motion to infer direction
+                        let currentMinX = geo.frame(in: .named("carousel")).minX
+                        Color.clear
+                            .onChange(of: currentMinX) { oldVal, newVal in
+                                let delta = newVal - oldVal
+                                if delta != 0 {
+                                    scrollDirection = delta > 0 ? 1 : -1
                                 }
                             }
-                            .id(index)
-                        }
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
+                )
+                .onPreferenceChange(VisibleItemsPreferenceKey.self) { [faces] items in
+                    let indices = Set(items.map { $0.index })
+                    visibleIndices = indices
+                    drivePreheater(with: items.map { $0.index }, faces: faces)
                 }
-                .onChange(of: selectedIndex) { oldValue, newValue in
-                    if let newValue {
+                .onChange(of: selectedIndex) { old, new in
+                    if let new {
                         withAnimation {
-                            proxy.scrollTo(newValue, anchor: .center)
+                            proxy.scrollTo(new, anchor: .center)
                         }
                     }
+                }
+                .onAppear {
+                    generation += 1 // new session
+                }
                 }
             }
         }
@@ -552,12 +578,127 @@ struct PhotoFaceCarouselView: View {
     
     func updateFaceNames() {
     }
+    
+    // MARK: - Preheater driving
+    
+    private func drivePreheater(with visible: [Int], faces: [FaceDetectionViewModel.DetectedFace]) {
+        guard !visible.isEmpty else { return }
+        // Choose middle of sorted visible indices (avoids needing a median extension)
+        let sorted = visible.sorted()
+        let center = sorted[sorted.count / 2]
+        let forward = scrollDirection >= 0 ? 1 : -1
+        
+        // Window sizes
+        let trailing = abs(scrollDirection) > 0 ? preheatTrailingFast : preheatTrailingSlow
+        let leading = preheatLeading
+        
+        // Build preheat index set
+        var preheat: Set<Int> = Set(sorted)
+        if forward >= 0 {
+            let start = center + 1
+            let end = min(faces.count - 1, center + trailing)
+            if start <= end { preheat.formUnion(start...end) }
+            let leadStart = max(0, center - leading)
+            if leadStart < center { preheat.formUnion(leadStart..<(center)) }
+        } else {
+            let start = max(0, center - trailing)
+            let end = center - 1
+            if start <= end { preheat.formUnion(start...end) }
+            let tailEnd = min(faces.count - 1, center + leading)
+            if center + 1 <= tailEnd { preheat.formUnion((center + 1)...tailEnd) }
+        }
+        
+        let diameter = itemWidth
+        let scale = UIScreen.main.scale
+        let currentGen = generation
+        
+        Task.detached(priority: .utility) {
+            await FaceThumbnailPreheater.shared.preheat(
+                faces: faces,
+                indices: Array(preheat.sorted()),
+                diameter: diameter,
+                scale: scale,
+                generation: currentGen
+            )
+        }
+    }
+}
+
+// MARK: - Visible items preference
+
+private struct VisibleItem: Equatable {
+    let index: Int
+    let frame: CGRect
+}
+
+private struct VisibleItemsPreferenceKey: PreferenceKey {
+    static var defaultValue: [VisibleItem] = []
+    static func reduce(value: inout [VisibleItem], nextValue: () -> [VisibleItem]) {
+        let next = nextValue()
+        // Merge by index, keep last (closest to latest layout pass)
+        var dict: [Int: VisibleItem] = Dictionary(uniqueKeysWithValues: value.map { ($0.index, $0) })
+        for item in next { dict[item.index] = item }
+        value = Array(dict.values)
+    }
+}
+
+// MARK: - Thumbnail item cell
+
+private struct FaceThumbnailItem: View {
+    let face: FaceDetectionViewModel.DetectedFace
+    let index: Int
+    let selectedIndex: Int?
+    let diameter: CGFloat
+    
+    @State private var rendered: UIImage?
+    
+    var body: some View {
+        VStack(spacing: 8) {
+            ZStack(alignment: .bottomTrailing) {
+                Image(uiImage: rendered ?? face.image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: diameter, height: diameter)
+                    .clipShape(Circle())
+                    .overlay {
+                        Circle()
+                            .strokeBorder(
+                                selectedIndex == index ? Color.accentColor : Color.gray.opacity(0.3),
+                                lineWidth: selectedIndex == index ? 3 : 2
+                            )
+                    }
+            }
+            Text((face.name ?? "Unnamed"))
+                .font(.caption)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .frame(width: diameter)
+        }
+        .frame(width: diameter)
+        .padding(.horizontal, 8)
+        .task(id: face.id) {
+            await loadThumbnail()
+        }
+        .onAppear {
+            Task { await loadThumbnail() }
+        }
+    }
+    
+    private func loadThumbnail() async {
+        let scale = UIScreen.main.scale
+        if let thumb = await FaceThumbnailPreheater.shared.thumbnail(for: face, diameter: diameter, scale: scale) {
+            await MainActor.run {
+                rendered = thumb
+            }
+        }
+    }
 }
 
 struct PhotoDetailContentView: View {
     let image: UIImage
     @State private var currentImage: UIImage
     @State private var detectedDate: Date
+    let assetIdentifier: String?
     let contactsContext: ModelContext
     @ObservedObject var viewModel: FaceDetectionViewModel
     let onDismiss: () -> Void
@@ -573,6 +714,7 @@ struct PhotoDetailContentView: View {
     init(
         image: UIImage,
         date: Date,
+        assetIdentifier: String? = nil,
         contactsContext: ModelContext,
         viewModel: FaceDetectionViewModel,
         onDismiss: @escaping () -> Void,
@@ -585,6 +727,7 @@ struct PhotoDetailContentView: View {
         self.image = image
         self._currentImage = State(initialValue: image)
         self._detectedDate = State(initialValue: date)
+        self.assetIdentifier = assetIdentifier
         self.contactsContext = contactsContext
         self.viewModel = viewModel
         self.onDismiss = onDismiss
@@ -616,8 +759,31 @@ struct PhotoDetailContentView: View {
         .scrollDismissesKeyboard(.interactively)
         .onAppear {
             Task {
-                await viewModel.detectFaces(in: image)
-                onFacesDetected(viewModel.faceObservations, viewModel.faces)
+                if let id = assetIdentifier, FaceAnalysisCache.hasStoredFaces(forAssetIdentifier: id, in: contactsContext) {
+                    do {
+                        let embeddings = try FaceAnalysisCache.fetchStoredEmbeddings(forAssetIdentifier: id, in: contactsContext)
+                        let contactUUIDs = Set(embeddings.compactMap(\.contactUUID))
+                        guard !contactUUIDs.isEmpty else {
+                            viewModel.setFacesFromStored(embeddings: embeddings, contactsByUUID: [:])
+                            onFacesDetected([], viewModel.faces)
+                            return
+                        }
+                        let uuidArray = Array(contactUUIDs)
+                        var descriptor = FetchDescriptor<Contact>(
+                            predicate: #Predicate<Contact> { c in uuidArray.contains(c.uuid) }
+                        )
+                        let contacts = (try? contactsContext.fetch(descriptor)) ?? []
+                        let contactsByUUID = Dictionary(uniqueKeysWithValues: contacts.map { ($0.uuid, $0) })
+                        viewModel.setFacesFromStored(embeddings: embeddings, contactsByUUID: contactsByUUID)
+                        onFacesDetected([], viewModel.faces)
+                    } catch {
+                        await viewModel.detectFaces(in: image)
+                        onFacesDetected(viewModel.faceObservations, viewModel.faces)
+                    }
+                } else {
+                    await viewModel.detectFaces(in: image)
+                    onFacesDetected(viewModel.faceObservations, viewModel.faces)
+                }
             }
         }
         .onChange(of: readyToAddFaces.count) { oldValue, newValue in
@@ -657,11 +823,12 @@ struct PhotoDetailContentView: View {
         let tag: Tag? = trimmed.isEmpty ? nil : Tag.fetchOrCreate(named: trimmed, in: contactsContext, seedDate: detectedDate)
         
         var anySaved = false
+        var savedFaces: [(Contact, UIImage)] = []
         for i in viewModel.faces.indices {
             guard !viewModel.faces[i].isLocked else { continue }
             let name = viewModel.faces[i].name?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines) ?? ""
             guard !name.isEmpty else { continue }
-            let data = viewModel.faces[i].image.jpegData(compressionQuality: 0.92) ?? Data()
+            let photoData = jpegDataForStoredContactPhoto(viewModel.faces[i].image)
             let contact = Contact(
                 name: name,
                 summary: "",
@@ -669,13 +836,14 @@ struct PhotoDetailContentView: View {
                 timestamp: detectedDate,
                 notes: [],
                 tags: tag == nil ? [] : [tag!],
-                photo: data,
+                photo: photoData,
                 group: "",
                 cropOffsetX: 0,
                 cropOffsetY: 0,
                 cropScale: 1.0
             )
             contactsContext.insert(contact)
+            savedFaces.append((contact, viewModel.faces[i].image))
             viewModel.faces[i].isLocked = true
             anySaved = true
         }
@@ -688,7 +856,12 @@ struct PhotoDetailContentView: View {
             print("❌ Save failed: \(error)")
         }
         
-        // Keep names visible. Request focus so the user can continue typing for remaining faces.
+        if let aid = assetIdentifier, !savedFaces.isEmpty {
+            Task {
+                await persistFaceEmbeddingsForSavedFaces(savedFaces, assetIdentifier: aid, photoDate: detectedDate)
+            }
+        }
+        
         NotificationCenter.default.post(name: .quickInputRequestFocus, object: nil)
     }
     
@@ -727,7 +900,7 @@ struct PhotoDetailContentView: View {
             HStack {
                 Text("Photo Details")
                     .font(.title2)
-                    .fontWeight(.bold)
+                    .bold()
                 
                 Spacer()
                 
@@ -811,12 +984,14 @@ struct PhotoDetailContentView: View {
         let trimmed = globalGroupText.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
         let tag: Tag? = trimmed.isEmpty ? nil : Tag.fetchOrCreate(named: trimmed, in: contactsContext, seedDate: detectedDate)
         
+        var savedFaces: [(Contact, UIImage)] = []
         for i in viewModel.faces.indices {
             guard !viewModel.faces[i].isLocked else { continue }
             let name = viewModel.faces[i].name?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines) ?? ""
             guard !name.isEmpty else { continue }
             
-            let data = viewModel.faces[i].image.jpegData(compressionQuality: 0.92) ?? Data()
+            let faceImage = viewModel.faces[i].image
+            let photoData = jpegDataForStoredContactPhoto(faceImage)
             let contact = Contact(
                 name: name,
                 summary: "",
@@ -824,13 +999,15 @@ struct PhotoDetailContentView: View {
                 timestamp: detectedDate,
                 notes: [],
                 tags: tag == nil ? [] : [tag!],
-                photo: data,
+                photo: photoData,
                 group: "",
                 cropOffsetX: 0,
                 cropOffsetY: 0,
                 cropScale: 1.0
             )
             contactsContext.insert(contact)
+            ImageAccessibleBackground.updateContactPhotoGradient(contact, image: faceImage)
+            savedFaces.append((contact, faceImage))
         }
         
         do {
@@ -839,7 +1016,41 @@ struct PhotoDetailContentView: View {
             print("❌ Save failed: \(error)")
         }
         
-        onComplete(currentImage, detectedDate)
+        if let aid = assetIdentifier, !savedFaces.isEmpty {
+            Task {
+                await persistFaceEmbeddingsForSavedFaces(savedFaces, assetIdentifier: aid, photoDate: detectedDate)
+                onComplete(currentImage, detectedDate)
+            }
+        } else {
+            onComplete(currentImage, detectedDate)
+        }
+    }
+    
+    private func persistFaceEmbeddingsForSavedFaces(_ savedFaces: [(Contact, UIImage)], assetIdentifier: String, photoDate: Date) async {
+        let context = contactsContext
+        for (contact, faceImage) in savedFaces {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                FaceRecognitionService.shared.detectFacesAndGenerateEmbeddings(
+                    in: faceImage,
+                    assetIdentifier: assetIdentifier,
+                    photoDate: photoDate
+                ) { embeddings in
+                    guard let first = embeddings.first else { cont.resume(); return }
+                    first.contactUUID = contact.uuid
+                    first.isManuallyVerified = true
+                    first.isRepresentative = false
+                    Task { @MainActor in
+                        context.insert(first)
+                        do {
+                            try context.save()
+                        } catch {
+                            print("❌ [FaceEmbedding] persist save failed: \(error)")
+                        }
+                        cont.resume()
+                    }
+                }
+            }
+        }
     }
 }
 

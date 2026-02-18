@@ -1,1 +1,2 @@
-use real senior uikit patterns done by apple and pro grade large scale apps, proven methods, not hacks. do as much code changes as needed to make this reliable, nothig is out of question , no amount of code is to much 
+use real senior uikit patterns done by apple and pro grade large scale apps, proven methods, not hacks. do as much code changes as needed to make this reliable, nothig is out of question , no amount of code is to much. DO NOT EDIT THIS AGENT ISNTRUCTIONS FILE.
+---

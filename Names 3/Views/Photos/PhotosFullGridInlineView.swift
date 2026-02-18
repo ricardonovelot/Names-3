@@ -31,6 +31,5 @@ struct PhotosFullGridInlineView: View {
         .background(Color(UIColor.systemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.5 : 0.15), radius: 30, x: 0, y: 10)
-        .ignoresSafeArea(edges: .bottom)
     }
 }

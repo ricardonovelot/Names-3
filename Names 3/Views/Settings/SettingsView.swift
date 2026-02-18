@@ -4,10 +4,28 @@ import SwiftData
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
-    
+    @Environment(\.connectivityMonitor) private var connectivityMonitor
+
     var body: some View {
         NavigationStack {
             List {
+                if let connectivityMonitor {
+                    Section {
+                        HStack {
+                            Image(systemName: connectivityMonitor.isOffline ? "wifi.slash" : "wifi")
+                                .foregroundStyle(connectivityMonitor.isOffline ? .orange : .secondary)
+                            Text(LocalizedStringKey("settings.connectivity.status"))
+                            Spacer()
+                            Text(connectivityMonitor.isOffline
+                                 ? String(localized: "settings.connectivity.offline")
+                                 : String(localized: "settings.connectivity.online"))
+                                .foregroundStyle(.secondary)
+                        }
+                    } header: {
+                        Text(LocalizedStringKey("settings.connectivity.header"))
+                    }
+                }
+
                 Section {
                     Button {
                         showOnboardingManually()
@@ -17,23 +35,29 @@ struct SettingsView: View {
                             Text(LocalizedStringKey("settings.onboarding.showAgain"))
                         }
                     }
-                    
-                    Button {
-                        showFaceNamingPromptManually()
+                } header: {
+                    Text(LocalizedStringKey("settings.onboarding.header"))
+                }
+
+                Section {
+                    NavigationLink {
+                        QuickInputGuideView()
                     } label: {
                         HStack {
-                            Image(systemName: "person.crop.rectangle.stack")
-                                .foregroundStyle(.blue)
-                            Text("Show Face Naming Prompt")
-                                .foregroundStyle(.blue)
+                            Image(systemName: "text.cursor")
+                            Text("Quick Input Guide")
                         }
                     }
                 } header: {
-                    Text(LocalizedStringKey("settings.onboarding.header"))
+                    Text("Usage")
                 } footer: {
-                    Text("Test the welcome face naming flow even with existing contacts")
+                    Text("How to use the quick input bar to add names, tags, dates, and notes in one line.")
                 }
-                
+
+                practiceReminderSection
+
+                storageSection
+
                 Section {
                     HStack {
                         Text(LocalizedStringKey("settings.appInfo.version"))
@@ -51,19 +75,6 @@ struct SettingsView: View {
                 } header: {
                     Text(LocalizedStringKey("settings.appInfo.header"))
                 }
-                
-                Section {
-                    Button(role: .destructive) {
-                        resetAndShowOnboarding()
-                    } label: {
-                        HStack {
-                            Image(systemName: "trash")
-                            Text(LocalizedStringKey("settings.onboarding.reset"))
-                        }
-                    }
-                } footer: {
-                    Text("Reset onboarding status and show the full flow immediately")
-                }
             }
             .navigationTitle(LocalizedStringKey("settings.title"))
             .navigationBarTitleDisplayMode(.inline)
@@ -77,6 +88,58 @@ struct SettingsView: View {
         }
     }
     
+    // MARK: - Storage
+    private var storageSection: some View {
+        Section {
+            NavigationLink {
+                StorageManagerView()
+            } label: {
+                HStack {
+                    Image(systemName: "externaldrive.badge.icloud")
+                    Text("Storage")
+                }
+            }
+        } header: {
+            Text(LocalizedStringKey("storage.title"))
+        } footer: {
+            Text(LocalizedStringKey("storage.settings.footer"))
+        }
+    }
+
+    // MARK: - Practice reminder (one daily notification for Face Quiz or Memory Rehearsal)
+    private var practiceReminderSection: some View {
+        let service = QuizReminderService.shared
+        return Section {
+            Toggle(isOn: Binding(
+                get: { service.isDailyReminderEnabled },
+                set: { newValue in
+                    if newValue {
+                        service.enableAndScheduleDailyReminder()
+                    } else {
+                        service.disableDailyReminder()
+                    }
+                }
+            )) {
+                HStack {
+                    Image(systemName: "bell.badge")
+                    Text(LocalizedStringKey("settings.practice.reminder"))
+                }
+            }
+            Button {
+                service.openAppNotificationSettings()
+            } label: {
+                HStack {
+                    Image(systemName: "gear")
+                    Text(LocalizedStringKey("settings.practice.openNotificationSettings"))
+                }
+            }
+        } header: {
+            Text(LocalizedStringKey("settings.practice.header"))
+        } footer: {
+            Text(LocalizedStringKey("settings.practice.reminderFooter"))
+        }
+    }
+
     private func showOnboardingManually() {
         print("🔵 [Settings] Show onboarding tapped")
         dismiss()
@@ -91,44 +154,6 @@ struct SettingsView: View {
         }
     }
     
-    private func showFaceNamingPromptManually() {
-        print("🔵 [Settings] Show face naming prompt tapped")
-        dismiss()
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
-            print("🔵 [Settings] Showing face naming prompt after delay")
-            
-            if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-               let window = scene.windows.first {
-                OnboardingCoordinatorManager.shared.showFaceNamingPrompt(
-                    in: window,
-                    modelContext: modelContext,
-                    forced: true
-                )
-            }
-        }
-    }
-    
-    private func resetAndShowOnboarding() {
-        print("🔵 [Settings] Reset onboarding tapped")
-        
-        OnboardingManager.shared.resetOnboarding()
-        
-        dismiss()
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
-            print("🔵 [Settings] Showing onboarding after reset")
-            
-            if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-               let window = scene.windows.first {
-                OnboardingCoordinatorManager.shared.showOnboarding(
-                    in: window,
-                    forced: false,
-                    modelContext: modelContext
-                )
-            }
-        }
-    }
 }
 
 #Preview {

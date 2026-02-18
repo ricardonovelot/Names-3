@@ -286,26 +286,33 @@ final class PhotosPickerViewModel: ObservableObject {
         print("✅ [PhotosVM] Day loading complete - final count: \(assets.count)")
     }
     
+    /// Cap when scope is .all so we don't block for minutes on very large libraries.
+    private static let maxAssetsWhenLoadingAll = 5000
+
     private func loadAllAssets() async {
-        print("🔵 [PhotosVM] Loading all assets")
+        print("🔵 [PhotosVM] Loading assets (capped at \(Self.maxAssetsWhenLoadingAll))")
         let fetchResult = photoService.fetchAssets(for: .all)
         self.fetchResult = fetchResult
-        print("🔵 [PhotosVM] Total assets available: \(fetchResult.count)")
+        let totalAvailable = fetchResult.count
+        print("🔵 [PhotosVM] Total assets available: \(totalAvailable)")
         
-        guard fetchResult.count > 0 else {
+        guard totalAvailable > 0 else {
             state = .empty
             print("⚠️ [PhotosVM] No assets in library")
             return
         }
-        
-        print("📦 [PhotosVM] Enumerating all \(fetchResult.count) assets")
+
+        let limit = min(totalAvailable, Self.maxAssetsWhenLoadingAll)
         var allAssets: [PHAsset] = []
-        allAssets.reserveCapacity(fetchResult.count)
-        
-        fetchResult.enumerateObjects { asset, _, _ in
+        allAssets.reserveCapacity(limit)
+
+        fetchResult.enumerateObjects { asset, _, stop in
             allAssets.append(asset)
+            if allAssets.count >= limit {
+                stop.pointee = true
+            }
         }
-        
+
         print("✅ [PhotosVM] Enumerated \(allAssets.count) assets")
         
         guard !Task.isCancelled else {

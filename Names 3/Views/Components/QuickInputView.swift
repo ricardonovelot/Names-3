@@ -12,6 +12,11 @@ struct QuickInputView: View {
     @Binding var parsedContacts: [Contact]
     @Binding var selectedContact: Contact?
     var onQuizTap: (() -> Void)? = nil
+    var onNameFacesTap: (() -> Void)? = nil
+    /// Hide Quiz button when already on Practice tab.
+    var showQuizButton: Bool = true
+    /// Hide Name Faces button when already on Name Faces tab.
+    var showNameFacesButton: Bool = true
     var onQuickNoteAdded: (() -> Void)? = nil
     var onReturnOverride: (() -> Void)? = nil
     
@@ -49,6 +54,13 @@ struct QuickInputView: View {
 
     @State private var tipsLoaded = false
 
+    /// When true, renders only the input row for inline use in the tab bar (single horizontal stack).
+    var inlineInBar: Bool = false
+    /// When true with inlineInBar, camera is rendered by the bar; hide it here.
+    var cameraInSeparateBubble: Bool = false
+    /// Face naming mode: QuickInput replaces the VC's name field; listen for quickInputSetFaceName.
+    var faceNamingMode: Bool = false
+
     private func isQuickNoteCommand(_ input: String) -> Bool {
         let s = input.trimmingCharacters(in: .whitespacesAndNewlines)
         let prefixPattern = #"^(quick\s*note|quick)\b[\s:]*"#
@@ -59,19 +71,22 @@ struct QuickInputView: View {
         return s.range(of: anywhereQN, options: .regularExpression) != nil
     }
 
+    private let inputRowHeight: CGFloat = 56
+
     var body: some View {
-        let controlSize: CGFloat = 64
-        VStack(spacing: 0) {
-            faceCarouselSection
-            
-            if tipsLoaded {
-                tipsSection
+        Group {
+            if inlineInBar {
+                appleMusicStyleInputRow
+            } else {
+                VStack(spacing: 0) {
+                    faceCarouselSection
+                    if tipsLoaded { tipsSection }
+                    inputControlsSection(controlSize: inputRowHeight)
+                }
+                .padding(.horizontal)
+                .padding(.bottom, 16)
             }
-            
-            inputControlsSection(controlSize: controlSize)
         }
-        .padding(.horizontal)
-        .padding(.bottom, 16)
         .overlay(alignment: .bottom) {
             suggestionsOverlay
         }
@@ -124,6 +139,10 @@ struct QuickInputView: View {
                 }
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .quickInputSetFaceName)) { notification in
+            guard faceNamingMode, let name = notification.userInfo?["text"] as? String else { return }
+            text = name
+        }
     }
     
     @ViewBuilder
@@ -149,7 +168,9 @@ struct QuickInputView: View {
     @ViewBuilder
     private var tipsSection: some View {
         VStack(spacing: 12) {
-            TipView(QuickInputFormatTip(), arrowEdge: .bottom)
+            if contacts.isEmpty {
+                TipView(QuickInputFormatTip(), arrowEdge: .bottom)
+            }
             
             TipView(QuickInputBulkAddTip(), arrowEdge: .bottom)
             
@@ -160,23 +181,82 @@ struct QuickInputView: View {
         .padding(.horizontal)
     }
     
+    /// Apple Music–style: pill with leading icon, text field, trailing icon. Single row.
+    @ViewBuilder
+    private var appleMusicStyleInputRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "square.and.pencil")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(.secondary)
+            ZStack(alignment: .leading) {
+                if text.isEmpty {
+                    Text(faceNamingMode ? "Type a name…" : (selectedContact.map { "Note for \($0.name ?? "")…" } ?? "Add note…"))
+                        .foregroundStyle(.secondary)
+                        .font(.subheadline)
+                        .lineLimit(1)
+                }
+                GrowingTextView(
+                    text: $text,
+                    isFirstResponder: Binding(get: { fieldIsFocused }, set: { fieldIsFocused = $0 }),
+                    minHeight: 20,
+                    maxHeight: 80,
+                    onDeleteWhenEmpty: {
+                        if text.isEmpty, selectedContact != nil {
+                            selectedContact = nil
+                            Task { @MainActor in
+                                try? await Task.sleep(for: .milliseconds(30))
+                                fieldIsFocused = true
+                            }
+                        }
+                    },
+                    onReturn: { handleReturn() }
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .onChange(of: text) { _, newValue in handleTextChange(newValue) }
+            }
+            if showNameFacesButton, onNameFacesTap != nil, !cameraInSeparateBubble {
+                Button {
+                    onNameFacesTap?()
+                } label: {
+                    Image(systemName: "camera.fill")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(height: 40)
+        .background {
+            if !inlineInBar {
+                Capsule().fill(.ultraThinMaterial)
+            }
+        }
+    }
+
     @ViewBuilder
     private func inputControlsSection(controlSize: CGFloat) -> some View {
-        HStack(spacing: 6) {
-            InputBubble {
+        HStack(alignment: .center, spacing: 6) {
+            InputBubble(height: controlSize) {
                 inputFieldContent
             }
+            .frame(height: controlSize)
 
-            Button {
-                onQuizTap?()
-            } label: {
-                Image(systemName: "questionmark.circle.fill")
-                    .font(.system(size: 24, weight: .medium))
-                    .frame(width: controlSize, height: controlSize)
-                    .liquidGlass(in: Circle())
-                    .clipShape(Circle())
+            if showQuizButton, onQuizTap != nil {
+                Button {
+                    onQuizTap?()
+                } label: {
+                    Image(systemName: "rectangle.stack.fill")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundStyle(.white)
+                        .frame(width: controlSize, height: controlSize)
+                        .liquidGlass(in: Circle())
+                        .clipShape(Circle())
+                }
+                .accessibilityLabel("Open Quiz")
             }
-            .accessibilityLabel("Open Quiz")
         }
     }
     
@@ -234,6 +314,20 @@ struct QuickInputView: View {
                         .padding(.top, 1)
                         .allowsHitTesting(false)
                 }
+            }
+
+            if showNameFacesButton, onNameFacesTap != nil {
+                Button {
+                    onNameFacesTap?()
+                } label: {
+                    Image(systemName: "camera.fill")
+                        .font(.system(size: 19, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 42, height: 42)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Name Faces")
             }
         }
     }
@@ -354,6 +448,10 @@ struct QuickInputView: View {
     }
     
     private func handleReturn() {
+        if faceNamingMode {
+            NotificationCenter.default.post(name: .quickInputFaceNameSubmit, object: nil)
+            return
+        }
         if let override = onReturnOverride {
             resetTextAndPreview()
             override()
@@ -368,6 +466,10 @@ struct QuickInputView: View {
     
     private func handleTextChange(_ newValue: String) {
         NotificationCenter.default.post(name: .quickInputTextDidChange, object: nil, userInfo: ["text": newValue])
+
+        if faceNamingMode {
+            return
+        }
 
         if let last = newValue.last, last == "\n" {
             text.removeLast()
@@ -802,6 +904,10 @@ extension Notification.Name {
     static let quickInputResignFocus = Notification.Name("QuickInputResignFocus")
     static let quickInputShowExample = Notification.Name("QuickInputShowExample")
     static let quickInputCameraDidDismiss = Notification.Name("QuickInputCameraDidDismiss")
+    /// Face naming mode: VC sets QuickInput text when face selection changes. userInfo["text": String]
+    static let quickInputSetFaceName = Notification.Name("QuickInputSetFaceName")
+    /// Face naming mode: user pressed Return; VC should advance to next face.
+    static let quickInputFaceNameSubmit = Notification.Name("QuickInputFaceNameSubmit")
 }
 
 private extension View {
@@ -816,15 +922,16 @@ private extension View {
 } 
 
 private struct InputBubble<Content: View>: View {
+    var height: CGFloat = 56
     @ViewBuilder var content: () -> Content
     var body: some View {
         HStack(spacing: 8) {
             content()
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 16)
-        .liquidGlass(in: .rect(cornerRadius: 32))
-        .fixedSize(horizontal: false, vertical: true)
-        .frame(minHeight: 64, alignment: .center)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .center)
+        .liquidGlass(in: .rect(cornerRadius: height / 2))
+        .clipped()
     }
 }

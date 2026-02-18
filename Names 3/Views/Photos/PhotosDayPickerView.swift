@@ -6,6 +6,7 @@ import SwiftData
 @MainActor
 struct PhotosDayPickerView: View {
     @Environment(\.dismiss) private var dismiss
+    @Query(sort: \DeletedPhoto.deletedDate, order: .reverse) private var deletedPhotos: [DeletedPhoto]
     let scope: PhotosPickerScope
     let initialScrollDate: Date?
     let contactsContext: ModelContext
@@ -20,6 +21,7 @@ struct PhotosDayPickerView: View {
     @State private var isPresentingDetail = false
     @State private var selectedImageForDetail: UIImage?
     @State private var selectedDateForDetail: Date?
+    @State private var selectedAssetIdentifier: String?
     
     private let imageManager = PHCachingImageManager()
     
@@ -134,15 +136,16 @@ struct PhotosDayPickerView: View {
     
     private var navigationDestinationBinding: Binding<PhotoDetailDestination?> {
         Binding(
-            get: { 
-                selectedImageForDetail != nil 
-                    ? PhotoDetailDestination(image: selectedImageForDetail!, date: selectedDateForDetail) 
-                    : nil 
+            get: {
+                selectedImageForDetail != nil
+                    ? PhotoDetailDestination(image: selectedImageForDetail!, date: selectedDateForDetail, assetIdentifier: selectedAssetIdentifier)
+                    : nil
             },
             set: { newValue in
                 if newValue == nil {
                     selectedImageForDetail = nil
                     selectedDateForDetail = nil
+                    selectedAssetIdentifier = nil
                     isPresentingDetail = false
                     viewModel.suppressReload(false)
                 }
@@ -156,6 +159,7 @@ struct PhotosDayPickerView: View {
             PhotoDetailViewWrapper(
                 image: destination.image,
                 date: destination.date,
+                assetIdentifier: destination.assetIdentifier,
                 contactsContext: contactsContext,
                 faceDetectionViewModelBinding: $faceDetectionViewModel,
                 onComplete: { finalImage, finalDate in
@@ -181,16 +185,18 @@ struct PhotosDayPickerView: View {
     // MARK: - State Views
     
     private var photosGridView: some View {
-        ZStack {
+        let deletedIDs = Set(deletedPhotos.map(\.assetLocalIdentifier))
+        let filteredAssets = viewModel.assets.filter { !deletedIDs.contains($0.localIdentifier) }
+        return ZStack {
             PhotoGridView(
-                assets: viewModel.assets,
+                assets: filteredAssets,
                 imageManager: imageManager,
                 contactsContext: contactsContext,
                 initialScrollDate: initialScrollDate,
-                onPhotoTapped: handlePhotoTapped,
+                onPhotoTapped: { image, date, assetId in handlePhotoTapped(image: image, date: date, assetIdentifier: assetId) },
                 onAppearAtIndex: { index in
-                    if index < viewModel.assets.count {
-                        viewModel.handlePagination(for: viewModel.assets[index])
+                    if index < filteredAssets.count {
+                        viewModel.handlePagination(for: filteredAssets[index])
                     }
                 },
                 onDetailVisibilityChanged: { visible in
@@ -204,7 +210,7 @@ struct PhotosDayPickerView: View {
         }
     }
     
-    private func handlePhotoTapped(image: UIImage, date: Date?) {
+    private func handlePhotoTapped(image: UIImage, date: Date?, assetIdentifier: String?) {
         print("✅ [PhotosDayPicker] Photo tapped callback received")
         print("✅ [PhotosDayPicker] Presentation mode: \(presentationMode)")
         
@@ -224,6 +230,7 @@ struct PhotosDayPickerView: View {
                             dismiss()
                         } else {
                             selectedImageForDetail = image
+                            selectedAssetIdentifier = assetIdentifier
                             selectedDateForDetail = date
                             isPresentingDetail = true
                         }
@@ -232,6 +239,7 @@ struct PhotosDayPickerView: View {
             } else {
                 selectedImageForDetail = image
                 selectedDateForDetail = date
+                selectedAssetIdentifier = assetIdentifier
                 isPresentingDetail = true
             }
         }
@@ -363,6 +371,7 @@ private struct PhotoDetailDestination: Identifiable, Hashable {
     let id = UUID()
     let image: UIImage
     let date: Date?
+    let assetIdentifier: String?
     
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)

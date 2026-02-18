@@ -1,8 +1,13 @@
 import SwiftUI
 import SwiftData
+import Photos
 
 struct CustomDatePicker: View {
     @Bindable var contact: Contact
+    /// When non-nil (e.g. when changing date for a whole group), the same date/tag changes are applied to these contacts when the user confirms.
+    var additionalContactsToApply: [Contact]? = nil
+    /// Called before applying date/group changes so the host can push an undo entry. Receives snapshots of all affected contacts’ previous state.
+    var onRecordUndo: (([ContactMovementSnapshot]) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
 
@@ -12,21 +17,30 @@ struct CustomDatePicker: View {
     @State private var showAllTagOptions = false
     @State private var selectedQuickOption: QuickDateOption.ID?
     @State private var customDate: Date
-    
-    init(contact: Contact) {
+    @State private var libraryThumbnailsForCalendar: [Date: Data] = [:]
+    @State private var libraryThumbnailsCache: [Date: [Date: Data]] = [:]
+    @State private var displayedMonthForThumbnails: Date?
+    @State private var calendarLibraryLoadTask: Task<Void, Never>?
+
+    init(contact: Contact, additionalContactsToApply: [Contact]? = nil, onRecordUndo: (([ContactMovementSnapshot]) -> Void)? = nil) {
         self.contact = contact
+        self.additionalContactsToApply = additionalContactsToApply
+        self.onRecordUndo = onRecordUndo
         _customDate = State(initialValue: contact.timestamp)
     }
 
     var body: some View {
         NavigationStack {
-            List {
-                quickSelectSection
-                
-                tagBasedSection
-                
-                customDateSection
+            ScrollView {
+                VStack(spacing: 24) {
+                    customDateSectionContent
+                    quickSelectSectionContent
+                    tagBasedSectionContent
+                }
+                .padding(.top, 8)
+                .padding(.bottom, 24)
             }
+            .scrollIndicators(.hidden)
             .navigationTitle("Change Date")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -38,7 +52,11 @@ struct CustomDatePicker: View {
                 
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") {
-                        applyCustomDate()
+                        // Only apply custom date if no quick option was selected and "Long Ago" is not set
+                        // This preserves the "Long Ago" selection even if user interacted with date picker
+                        if selectedQuickOption == nil && !contact.isMetLongAgo {
+                            applyCustomDate()
+                        }
                         dismiss()
                     }
                     .fontWeight(.semibold)
@@ -49,15 +67,32 @@ struct CustomDatePicker: View {
     }
     
     // MARK: - Quick Select Section
-    
-    private var quickSelectSection: some View {
-        Section {
-            ForEach(QuickDateOption.allOptions) { option in
-                quickSelectRow(for: option)
-            }
-        } header: {
+
+    private var quickSelectSectionContent: some View {
+        VStack(alignment: .leading, spacing: 8) {
             Text("Quick Select")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+                .padding(.horizontal, 20)
+            VStack(spacing: 0) {
+                ForEach(QuickDateOption.allOptions) { option in
+                    quickSelectRow(for: option)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                    if option.id != QuickDateOption.allOptions.last?.id {
+                        Divider()
+                            .padding(.leading, 56)
+                    }
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(uiColor: .secondarySystemGroupedBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
     }
     
     private func quickSelectRow(for option: QuickDateOption) -> some View {
@@ -96,47 +131,66 @@ struct CustomDatePicker: View {
     }
     
     // MARK: - Tag-Based Section
-    
-    private var tagBasedSection: some View {
-        Section {
-            let options = tagDateOptions()
-            let limited = showAllTagOptions ? options : Array(options.prefix(3))
 
-            if options.isEmpty {
-                HStack {
-                    Image(systemName: "tag.slash")
-                        .foregroundStyle(.tertiary)
-                    Text("No recent places or groups")
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                ForEach(limited) { opt in
-                    tagDateRow(for: opt)
-                }
-
-                if !showAllTagOptions && options.count > 3 {
-                    Button {
-                        withAnimation {
-                            showAllTagOptions = true
+    private var tagBasedSectionContent: some View {
+        let options = tagDateOptions()
+        let limited = showAllTagOptions ? options : Array(options.prefix(3))
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("Recent Places & Groups")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+                .padding(.horizontal, 20)
+            VStack(spacing: 0) {
+                if options.isEmpty {
+                    HStack {
+                        Image(systemName: "tag.slash")
+                            .foregroundStyle(.tertiary)
+                        Text("No recent places or groups")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    .padding()
+                } else {
+                    ForEach(Array(limited.enumerated()), id: \.element.id) { index, opt in
+                        tagDateRow(for: opt)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
+                        if index < limited.count - 1 || (!showAllTagOptions && options.count > 3) {
+                            Divider()
+                                .padding(.leading, 56)
                         }
-                    } label: {
-                        HStack {
-                            Spacer()
-                            Text("Show All \(options.count)")
-                                .font(.subheadline)
-                            Spacer()
+                    }
+                    if !showAllTagOptions && options.count > 3 {
+                        Button {
+                            withAnimation {
+                                showAllTagOptions = true
+                            }
+                        } label: {
+                            HStack {
+                                Spacer()
+                                Text("Show All \(options.count)")
+                                    .font(.subheadline)
+                                Spacer()
+                            }
                         }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 16)
                     }
                 }
             }
-        } header: {
-            Text("Recent Places & Groups")
-        } footer: {
-            if !tagDateOptions().isEmpty {
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(uiColor: .secondarySystemGroupedBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            if !options.isEmpty {
                 Text("Select from your existing places and group events")
                     .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 20)
             }
         }
+        .padding(.horizontal, 20)
     }
     
     private func tagDateRow(for option: TagDateOption) -> some View {
@@ -184,29 +238,100 @@ struct CustomDatePicker: View {
     
     // MARK: - Custom Date Section
     
-    private var customDateSection: some View {
-        Section {
-            DatePicker(
-                "Select Date",
+    /// Calendar placed outside List to avoid UICollectionView self-sizing feedback loop (section 2-0).
+    private var customDateSectionContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Custom Date")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
+            PhotoCalendarView(
                 selection: $customDate,
-                in: ...Date(),
-                displayedComponents: .date
+                thumbnailForDay: { dayStart in
+                    thumbnailForDay(dayStart)
+                },
+                maxSelectableDate: Date(),
+                onDisplayedMonthChange: { monthStart in
+                    loadLibraryThumbnailsForMonth(monthStart)
+                }
             )
-            .datePickerStyle(.graphical)
             .onChange(of: customDate) { oldValue, newValue in
                 selectedQuickOption = nil
             }
-        } header: {
-            Text("Custom Date")
-        } footer: {
-            Text("Choose any specific date up to today")
+            .padding(.horizontal, 20)
+            Text("Choose any specific date up to today. Days show a photo from your library or someone you met that day.")
                 .font(.footnote)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 20)
+                .padding(.top, 4)
+                .padding(.bottom, 16)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(uiColor: .secondarySystemGroupedBackground))
+    }
+
+    /// Prefer library thumbnail for the day; fall back to contact photo if no library photo for that day.
+    private func thumbnailForDay(_ dayStart: Date) -> Data? {
+        if let library = libraryThumbnailsForCalendar[dayStart], !library.isEmpty {
+            return library
+        }
+        return contactPhotoForDay(dayStart)
+    }
+
+    /// Returns contact photo data for the given day (start-of-day date) if any contact has that timestamp.
+    private func contactPhotoForDay(_ dayStart: Date) -> Data? {
+        let calendar = Calendar.current
+        let contactsToConsider = activeContacts + (activeContacts.contains(where: { $0.id == contact.id }) ? [] : [contact])
+        return contactsToConsider
+            .first(where: { calendar.isDate($0.timestamp, inSameDayAs: dayStart) && !$0.photo.isEmpty })
+            .map { $0.photo }
+    }
+
+    private func loadLibraryThumbnailsForMonth(_ monthStart: Date) {
+        let calendar = Calendar.current
+        let monthKey = calendar.startOfDay(for: calendar.date(from: calendar.dateComponents([.year, .month], from: monthStart)) ?? monthStart)
+        displayedMonthForThumbnails = monthKey
+        if let cached = libraryThumbnailsCache[monthKey] {
+            libraryThumbnailsForCalendar = cached
+            return
+        }
+        calendarLibraryLoadTask?.cancel()
+        calendarLibraryLoadTask = Task {
+            guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized ||
+                  PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited else { return }
+            let result = await PhotoLibraryService.shared.loadThumbnailsForCalendarMonth(monthStart: monthStart)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                libraryThumbnailsCache[monthKey] = result.thumbnails
+                if displayedMonthForThumbnails == monthKey {
+                    libraryThumbnailsForCalendar = result.thumbnails
+                }
+            }
         }
     }
     
     // MARK: - Actions
     
+    private func movementSnapshot(for c: Contact) -> ContactMovementSnapshot {
+        ContactMovementSnapshot(
+            uuid: c.uuid,
+            isMetLongAgo: c.isMetLongAgo,
+            timestamp: c.timestamp,
+            tagNames: (c.tags ?? []).compactMap { $0.name }
+        )
+    }
+    
+    private func affectedContacts() -> [Contact] {
+        [contact] + (additionalContactsToApply ?? [])
+    }
+    
     private func applyQuickOption(_ option: QuickDateOption) {
+        let snapshots = affectedContacts().map { movementSnapshot(for: $0) }
+        onRecordUndo?(snapshots)
+        
         contact.isMetLongAgo = option.isLongAgo
         
         if !option.isLongAgo {
@@ -216,24 +341,44 @@ struct CustomDatePicker: View {
             contact.timestamp = .distantPast
         }
         
+        applyToAdditionalContacts(copyTags: false)
         saveContact()
     }
     
     private func applyTagOption(_ option: TagDateOption) {
+        let snapshots = affectedContacts().map { movementSnapshot(for: $0) }
+        onRecordUndo?(snapshots)
+        
         contact.isMetLongAgo = false
         contact.timestamp = option.date
         contact.tags = [option.tag]
         customDate = option.date
         selectedQuickOption = nil
         
+        applyToAdditionalContacts(copyTags: true)
         saveContact()
         dismiss()
     }
     
     private func applyCustomDate() {
+        let snapshots = affectedContacts().map { movementSnapshot(for: $0) }
+        onRecordUndo?(snapshots)
+        
         contact.isMetLongAgo = false
         contact.timestamp = customDate
+        applyToAdditionalContacts(copyTags: false)
         saveContact()
+    }
+    
+    private func applyToAdditionalContacts(copyTags: Bool) {
+        guard let others = additionalContactsToApply, !others.isEmpty else { return }
+        for c in others {
+            c.isMetLongAgo = contact.isMetLongAgo
+            c.timestamp = contact.timestamp
+            if copyTags {
+                c.tags = contact.tags
+            }
+        }
     }
     
     private func saveContact() {

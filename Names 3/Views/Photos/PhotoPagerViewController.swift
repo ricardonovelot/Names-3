@@ -214,9 +214,11 @@ final class PhotoPagerViewController: UIViewController {
             faceViewModels[index] = viewModel
         }
         
+        let assetId = index < assets.count ? assets[index].localIdentifier : nil
         let detailVC = PhotoDetailViewController(
             image: image,
             date: date,
+            assetIdentifier: assetId,
             contactsContext: contactsContext,
             faceDetectionViewModel: viewModel
         )

@@ -7,7 +7,21 @@ final class OnboardingCoordinatorManager {
     private var activeCoordinator: OnboardingCoordinator?
     private var facePromptCoordinator: PostOnboardingFacePromptCoordinator?
     
-    private init() {}
+    private init() {
+        ProcessReportCoordinator.shared.register(name: "OnboardingCoordinatorManager") { [weak self] in
+            let onboarding = self?.activeCoordinator != nil
+            let facePrompt = self?.facePromptCoordinator != nil
+            return ProcessReportSnapshot(
+                name: "OnboardingCoordinatorManager",
+                payload: [
+                    "onboardingActive": onboarding ? "yes" : "no",
+                    "facePromptActive": facePrompt ? "yes" : "no"
+                ]
+            )
+        }
+    }
+    
+    private static let shouldShowNameFacesKey = "Names3.shouldShowNameFacesAfterOnboarding"
     
     func showOnboarding(in window: UIWindow, forced: Bool = false, modelContext: ModelContext? = nil) {
         print("🔵 [CoordinatorManager] showOnboarding called, forced: \(forced)")
@@ -25,18 +39,18 @@ final class OnboardingCoordinatorManager {
         let coordinator = OnboardingCoordinator(window: window)
         self.activeCoordinator = coordinator
         
-        coordinator.start { [weak self, weak window] in
+        coordinator.start { [weak self] in
             print("✅ [CoordinatorManager] Onboarding completed, clearing coordinator")
             self?.activeCoordinator = nil
-            
-            guard !forced, let window = window, let modelContext = modelContext else {
-                print("🔵 [CoordinatorManager] Skipping face prompt - forced onboarding or missing context")
-                return
-            }
-            
-            print("🔵 [CoordinatorManager] Starting post-onboarding face prompt")
-            self?.showFaceNamingPrompt(in: window, modelContext: modelContext, forced: false)
+            self?.maybeShowFaceNamingPrompt(window: window, modelContext: modelContext)
         }
+    }
+    
+    private func maybeShowFaceNamingPrompt(window: UIWindow, modelContext: ModelContext?) {
+        guard UserDefaults.standard.bool(forKey: Self.shouldShowNameFacesKey) else { return }
+        UserDefaults.standard.set(false, forKey: Self.shouldShowNameFacesKey)
+        guard let modelContext else { return }
+        showFaceNamingPrompt(in: window, modelContext: modelContext, forced: true)
     }
     
     func showFaceNamingPrompt(in window: UIWindow, modelContext: ModelContext, forced: Bool = false) {

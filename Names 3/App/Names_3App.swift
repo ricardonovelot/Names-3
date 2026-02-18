@@ -10,26 +10,36 @@ import SwiftData
 import UIKit
 import os
 import TipKit
-
-enum AppTab: Hashable {
-    case people
-    case home
-}
+import os.signpost
 
 @main
 struct Names_3App: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @State private var tabSelection: AppTab = .people
-    @State private var hasCheckedOnboarding = false
-    
+    @Environment(\.scenePhase) private var scenePhase
+
     private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Names3", category: "SwiftData")
+    private static let launchLogger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Names3", category: "Launch")
+
+    init() {
+        LaunchProfiler.markProcessStart()
+        Self.launchLogger.info("🚀 [Launch] [+\(LaunchProfiler.elapsedSinceProcessStart())s] App init (\(LaunchProfiler.mainThreadTag))")
+    }
 
     var sharedModelContainer: ModelContainer = {
+        let t0 = CFAbsoluteTimeGetCurrent()
+        let signpostState = LaunchProfiler.beginPhase("ModelContainerCreation")
+        Names_3App.launchLogger.info("🚀 [Launch] ModelContainer creation started (\(LaunchProfiler.mainThreadTag))")
         let schema = Schema([
             Contact.self,
             Note.self,
             Tag.self,
             QuickNote.self,
+            QuizSession.self,
+            QuizPerformance.self,
+            NoteRehearsalPerformance.self,
+            FaceEmbedding.self,
+            FaceCluster.self,
+            DeletedPhoto.self,
         ])
 
         let cloudConfig = ModelConfiguration(
@@ -41,8 +51,14 @@ struct Names_3App: App {
 
         do {
             Names_3App.logger.info("Initializing SwiftData container with CloudKit")
-            let container = try ModelContainer(for: schema, configurations: [cloudConfig])
-            Self.ensureUniqueUUIDs(in: container)
+            let container = try ModelContainer(
+                for: schema,
+                migrationPlan: Names3SchemaMigrationPlan.self,
+                configurations: [cloudConfig]
+            )
+            let elapsed = CFAbsoluteTimeGetCurrent() - t0
+            LaunchProfiler.endPhase("ModelContainerCreation", signpostState)
+            Names_3App.launchLogger.info("🚀 [Launch] ModelContainer (CloudKit) created in \(String(format: "%.3f", elapsed))s")
             return container
         } catch {
             Names_3App.logger.error("CloudKit ModelContainer init failed: \(error, privacy: .public). Falling back to local store.")
@@ -52,181 +68,70 @@ struct Names_3App: App {
                 isStoredInMemoryOnly: false
             )
             do {
-                let container = try ModelContainer(for: schema, configurations: [localConfig])
-                Self.ensureUniqueUUIDs(in: container)
+                let container = try ModelContainer(
+                    for: schema,
+                    migrationPlan: Names3SchemaMigrationPlan.self,
+                    configurations: [localConfig]
+                )
+                let elapsed = CFAbsoluteTimeGetCurrent() - t0
+                LaunchProfiler.endPhase("ModelContainerCreation", signpostState)
+                Names_3App.launchLogger.info("🚀 [Launch] ModelContainer (local fallback) created in \(String(format: "%.3f", elapsed))s")
                 return container
             } catch {
+                LaunchProfiler.endPhase("ModelContainerCreation", signpostState)
                 fatalError("Could not create local fallback ModelContainer: \(error)")
             }
         }
     }()
 
-    // Synchronous uniqueness migration (preserves data) without generic/keyPath
+    /// One-time UUID migration. Not used in the main path — UUID migration runs in AppLaunchCoordinator (off main).
+    /// Kept for tests or legacy callers that may invoke it explicitly.
     @MainActor
     private static func ensureUniqueUUIDs(in container: ModelContainer) {
-        let context = ModelContext(container)
-        let zeroUUIDString = "00000000-0000-0000-0000-000000000000"
-        let defaultsKey = "Names3.didFixUUIDs.v1"
-        if UserDefaults.standard.bool(forKey: defaultsKey) {
+        let t0 = CFAbsoluteTimeGetCurrent()
+        let signpostState = LaunchProfiler.beginPhase("EnsureUniqueUUIDs")
+        launchLogger.info("🚀 [Launch] ensureUniqueUUIDs started (\(LaunchProfiler.mainThreadTag))")
+        if UserDefaults.standard.bool(forKey: UUIDMigrationService.defaultsKey) {
+            LaunchProfiler.endPhase("EnsureUniqueUUIDs", signpostState)
+            launchLogger.info("🚀 [Launch] ensureUniqueUUIDs skipped (already done)")
             return
         }
-
-        var anyFixed = false
-
-        func fixContacts() {
-            do {
-                let all = try context.fetch(FetchDescriptor<Contact>())
-                var seen = Set<UUID>()
-                var fixed = 0
-                for c in all {
-                    var u = c.uuid
-                    if u.uuidString == zeroUUIDString || seen.contains(u) {
-                        var newU = UUID()
-                        while seen.contains(newU) {
-                            newU = UUID()
-                        }
-                        c.uuid = newU
-                        u = newU
-                        fixed += 1
-                    }
-                    seen.insert(u)
-                }
-                if fixed > 0 {
-                    try context.save()
-                    anyFixed = true
-                    logger.info("🔧 Fixed \(fixed) duplicate/zero UUIDs in Contact")
-                }
-            } catch {
-                logger.error("❌ Failed UUID fix for Contact: \(error, privacy: .public)")
-            }
-        }
-
-        func fixNotes() {
-            do {
-                let all = try context.fetch(FetchDescriptor<Note>())
-                var seen = Set<UUID>()
-                var fixed = 0
-                for n in all {
-                    var u = n.uuid
-                    if u.uuidString == zeroUUIDString || seen.contains(u) {
-                        var newU = UUID()
-                        while seen.contains(newU) {
-                            newU = UUID()
-                        }
-                        n.uuid = newU
-                        u = newU
-                        fixed += 1
-                    }
-                    seen.insert(u)
-                }
-                if fixed > 0 {
-                    try context.save()
-                    anyFixed = true
-                    logger.info("🔧 Fixed \(fixed) duplicate/zero UUIDs in Note")
-                }
-            } catch {
-                logger.error("❌ Failed UUID fix for Note: \(error, privacy: .public)")
-            }
-        }
-
-        func fixTags() {
-            do {
-                let all = try context.fetch(FetchDescriptor<Tag>())
-                var seen = Set<UUID>()
-                var fixed = 0
-                for t in all {
-                    var u = t.uuid
-                    if u.uuidString == zeroUUIDString || seen.contains(u) {
-                        var newU = UUID()
-                        while seen.contains(newU) {
-                            newU = UUID()
-                        }
-                        t.uuid = newU
-                        u = newU
-                        fixed += 1
-                    }
-                    seen.insert(u)
-                }
-                if fixed > 0 {
-                    try context.save()
-                    anyFixed = true
-                    logger.info("🔧 Fixed \(fixed) duplicate/zero UUIDs in Tag")
-                }
-            } catch {
-                logger.error("❌ Failed UUID fix for Tag: \(error, privacy: .public)")
-            }
-        }
-
-        func fixQuickNotes() {
-            do {
-                let all = try context.fetch(FetchDescriptor<QuickNote>())
-                var seen = Set<UUID>()
-                var fixed = 0
-                for q in all {
-                    var u = q.uuid
-                    if u.uuidString == zeroUUIDString || seen.contains(u) {
-                        var newU = UUID()
-                        while seen.contains(newU) {
-                            newU = UUID()
-                        }
-                        q.uuid = newU
-                        u = newU
-                        fixed += 1
-                    }
-                    seen.insert(u)
-                }
-                if fixed > 0 {
-                    try context.save()
-                    anyFixed = true
-                    logger.info("🔧 Fixed \(fixed) duplicate/zero UUIDs in QuickNote")
-                }
-            } catch {
-                logger.error("❌ Failed UUID fix for QuickNote: \(error, privacy: .public)")
-            }
-        }
-
-        fixContacts()
-        fixNotes()
-        fixTags()
-        fixQuickNotes()
-
+        let context = ModelContext(container)
+        let anyFixed = UUIDMigrationService.runMigration(context: context)
         if anyFixed {
-            UserDefaults.standard.set(true, forKey: defaultsKey)
+            UserDefaults.standard.set(true, forKey: UUIDMigrationService.defaultsKey)
         }
+        let elapsed = CFAbsoluteTimeGetCurrent() - t0
+        LaunchProfiler.endPhase("EnsureUniqueUUIDs", signpostState)
+        launchLogger.info("🚀 [Launch] ensureUniqueUUIDs completed in \(String(format: "%.3f", elapsed))s, anyFixed=\(anyFixed)")
     }
 
     var body: some Scene {
-        WindowGroup {
-            ContentView()
-                .task {
-                    TipManager.shared.configure()
-                }
-                .onAppear {
-                    if !hasCheckedOnboarding {
-                        hasCheckedOnboarding = true
-                        checkAndShowOnboarding()
-                    }
-                }
+        Self.launchLogger.info("🚀 [Launch] App.body evaluated")
+        return WindowGroup {
+            LaunchRootView(
+                modelContainer: sharedModelContainer,
+                appDelegate: appDelegate
+            )
+            .environment(\.connectivityMonitor, ConnectivityMonitor.shared)
+            .environment(\.cloudKitMirroringResetCoordinator, CloudKitMirroringResetCoordinator.shared)
+            .environment(\.storageMonitor, StorageMonitor.shared)
+            .preferredColorScheme(.dark)
         }
         .modelContainer(sharedModelContainer)
-    }
-    
-    private func checkAndShowOnboarding() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                  let window = windowScene.windows.first else {
-                print("❌ [App] No window found for onboarding")
-                return
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                // Run post-launch as soon as the scene is active so it isn't starved by the
+                // view's .task when the main thread is busy with Core Data / SwiftUI.
+                Task { @MainActor in
+                    await AppLaunchCoordinator.shared.runPostLaunchPhases(
+                        modelContainer: sharedModelContainer,
+                        appDelegate: appDelegate
+                    )
+                }
+                StorageMonitor.shared.refreshIfNeeded()
+                QuizReminderService.shared.ensureScheduledIfEnabledAndAuthorized()
             }
-            
-            print("🔵 [App] Checking onboarding status")
-            
-            let modelContext = ModelContext(self.sharedModelContainer)
-            OnboardingCoordinatorManager.shared.showOnboarding(
-                in: window,
-                forced: false,
-                modelContext: modelContext
-            )
         }
     }
 }

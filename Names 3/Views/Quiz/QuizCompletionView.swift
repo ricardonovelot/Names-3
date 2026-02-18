@@ -118,7 +118,7 @@ struct QuizCompletionView: View {
             }
             .safeAreaInset(edge: .bottom) {
                 actionButtons
-                    .background(.ultraThinMaterial)
+                    .background(.thinMaterial)
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

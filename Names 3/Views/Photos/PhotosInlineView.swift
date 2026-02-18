@@ -27,7 +27,7 @@ struct PhotosInlineView: View {
                     imageManager: PHCachingImageManager(),
                     contactsContext: contactsContext,
                     initialScrollDate: nil,
-                    onPhotoTapped: { image, date in
+                    onPhotoTapped: { image, date, _ in
                         onPhotoPicked(image, date)
                     },
                     onAppearAtIndex: { _ in },

@@ -5,6 +5,7 @@ import SwiftData
 
 @MainActor
 struct PhotosDayPickerContentView: View {
+    @Query(sort: \DeletedPhoto.deletedDate, order: .reverse) private var deletedPhotos: [DeletedPhoto]
     let scope: PhotosPickerScope
     let initialScrollDate: Date?
     let contactsContext: ModelContext
@@ -82,6 +83,7 @@ struct PhotosDayPickerContentView: View {
                 PhotoDetailViewWrapper(
                     image: destination.image,
                     date: destination.date,
+                    assetIdentifier: destination.assetIdentifier,
                     contactsContext: contactsContext,
                     faceDetectionViewModelBinding: $faceDetectionViewModel,
                     onComplete: { finalImage, finalDate in
@@ -122,15 +124,17 @@ struct PhotosDayPickerContentView: View {
     }
     
     private var photosGridView: some View {
-        let _ = print("🔵 [PhotosDayPickerContentView] photosGridView body - assets count: \(viewModel.assets.count), isEmpty: \(viewModel.assets.isEmpty)")
+        let deletedIDs = Set(deletedPhotos.map(\.assetLocalIdentifier))
+        let filteredAssets = viewModel.assets.filter { !deletedIDs.contains($0.localIdentifier) }
+        let _ = print("🔵 [PhotosDayPickerContentView] photosGridView body - assets count: \(viewModel.assets.count), filtered: \(filteredAssets.count)")
         
         return ZStack {
             PhotoGridView(
-                assets: viewModel.assets,
+                assets: filteredAssets,
                 imageManager: imageManager,
                 contactsContext: contactsContext,
                 initialScrollDate: initialScrollDate,
-                onPhotoTapped: { image, date in
+                onPhotoTapped: { image, date, assetIdentifier in
                     print("✅ [PhotosDayPicker] Photo tapped callback received")
                     print("✅ [PhotosDayPicker] Presentation mode: \(presentationMode)")
                     
@@ -150,7 +154,7 @@ struct PhotosDayPickerContentView: View {
                                         } else {
                                             selectedImageForDetail = image
                                             selectedDateForDetail = date
-                                            navigationDestination = PhotoDetailDestination(image: image, date: date)
+                                            navigationDestination = PhotoDetailDestination(image: image, assetIdentifier: assetIdentifier, date: date)
                                             isPresentingDetail = true
                                         }
                                     }
@@ -159,7 +163,7 @@ struct PhotosDayPickerContentView: View {
                                     await MainActor.run {
                                         selectedImageForDetail = image
                                         selectedDateForDetail = date
-                                        navigationDestination = PhotoDetailDestination(image: image, date: date)
+                                        navigationDestination = PhotoDetailDestination(image: image, assetIdentifier: assetIdentifier, date: date)
                                         isPresentingDetail = true
                                     }
                                 }
@@ -167,14 +171,14 @@ struct PhotosDayPickerContentView: View {
                         } else {
                             selectedImageForDetail = image
                             selectedDateForDetail = date
-                            navigationDestination = PhotoDetailDestination(image: image, date: date)
+                            navigationDestination = PhotoDetailDestination(image: image, assetIdentifier: assetIdentifier, date: date)
                             isPresentingDetail = true
                         }
                     }
                 },
                 onAppearAtIndex: { index in
-                    guard index >= 0, index < viewModel.assets.count else { return }
-                    viewModel.handlePagination(for: viewModel.assets[index])
+                    guard index >= 0, index < filteredAssets.count else { return }
+                    viewModel.handlePagination(for: filteredAssets[index])
                 },
                 onDetailVisibilityChanged: { visible in
                     print("🔵 [PhotosDayPickerContentView] onDetailVisibilityChanged called - visible: \(visible), current isPresentingDetail: \(isPresentingDetail)")
@@ -268,6 +272,7 @@ struct PhotosDayPickerContentView: View {
 private struct PhotoDetailDestination: Identifiable, Hashable {
     let id = UUID()
     let image: UIImage
+    let assetIdentifier: String?
     let date: Date?
     
     func hash(into hasher: inout Hasher) {

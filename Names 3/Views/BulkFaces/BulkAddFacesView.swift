@@ -369,7 +369,7 @@ struct BulkAddFacesView: View {
             let newFaces: [FaceBatchFace] = viewModel.faces.enumerated().map { idx, fe in
                 FaceBatchFace(
                     assignedName: fe.assignedName ?? "",
-                    thumbnail: fe.image.jpegData(compressionQuality: 0.88) ?? Data(),
+                    thumbnail: jpegDataForStoredFaceThumbnail(fe.image),
                     exported: false,
                     batch: b,
                     uuid: UUID(),
@@ -455,6 +455,9 @@ struct BulkAddFacesView: View {
                     cropScale: 1.0
                 )
                 contactsContext.insert(contact)
+                if let img = UIImage(data: thumbData) {
+                    ImageAccessibleBackground.updateContactPhotoGradient(contact, image: img)
+                }
                 faces[idx].exported = true
             }
         }
@@ -476,7 +479,7 @@ struct BulkAddFacesView: View {
         for face in readyToAddFaces {
             let name = face.assignedName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard !name.isEmpty else { continue }
-            let data = face.image.jpegData(compressionQuality: 0.92) ?? Data()
+            let photoData = jpegDataForStoredContactPhoto(face.image)
             let contact = Contact(
                 name: name,
                 summary: "",
@@ -484,13 +487,14 @@ struct BulkAddFacesView: View {
                 timestamp: globalDate,
                 notes: [],
                 tags: tag == nil ? [] : [tag!],
-                photo: data,
+                photo: photoData,
                 group: "",
                 cropOffsetX: 0,
                 cropOffsetY: 0,
                 cropScale: 1.0
             )
             contactsContext.insert(contact)
+            ImageAccessibleBackground.updateContactPhotoGradient(contact, image: face.image)
         }
 
         do {

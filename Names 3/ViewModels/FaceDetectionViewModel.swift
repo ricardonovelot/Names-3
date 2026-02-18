@@ -1,12 +1,14 @@
 import SwiftUI
 import Vision
+import SwiftData
 
 @MainActor
 final class FaceDetectionViewModel: ObservableObject {
     struct DetectedFace: Identifiable {
         let id = UUID()
         let image: UIImage
-        let observation: VNFaceObservation
+        /// Non-nil when face came from Vision detection; nil when loaded from stored FaceEmbedding.
+        var observation: VNFaceObservation?
         var name: String? = nil
         var isLocked: Bool = false
     }
@@ -15,12 +17,15 @@ final class FaceDetectionViewModel: ObservableObject {
     @Published var isDetecting = false
     var faceObservations: [VNFaceObservation] = []
     
+    /// Capped to avoid unbounded memory growth; each entry holds UIImages (cropped faces).
+    private let detectionCacheMaxCount = 12
     private var detectionCache: [String: [DetectedFace]] = [:]
+    private var detectionCacheOrder: [String] = []
     
     func detectFaces(in image: UIImage, cacheKey: String? = nil) async {
         if let cacheKey, let cached = detectionCache[cacheKey] {
             faces = cached
-            faceObservations = cached.map { $0.observation }
+            faceObservations = cached.compactMap { $0.observation }
             return
         }
         
@@ -55,7 +60,10 @@ final class FaceDetectionViewModel: ObservableObject {
                 faces = detectedFaces
                 
                 if let cacheKey {
+                    evictDetectionCacheIfNeeded()
                     detectionCache[cacheKey] = detectedFaces
+                    detectionCacheOrder.removeAll { $0 == cacheKey }
+                    detectionCacheOrder.append(cacheKey)
                 }
             }
         } catch {
@@ -65,8 +73,40 @@ final class FaceDetectionViewModel: ObservableObject {
         isDetecting = false
     }
     
+    /// Populate faces from stored FaceEmbedding data so we skip Vision and show known contacts immediately.
+    /// Call when opening Name Faces for an asset that already has embeddings.
+    func setFacesFromStored(
+        embeddings: [FaceEmbedding],
+        contactsByUUID: [UUID: Contact]
+    ) {
+        faceObservations = []
+        faces = embeddings.map { embed in
+            let image: UIImage
+            if !embed.thumbnailData.isEmpty, let ui = UIImage(data: embed.thumbnailData) {
+                image = ui
+            } else {
+                image = UIImage()
+            }
+            let name = embed.contactUUID.flatMap { contactsByUUID[$0]?.displayName }
+            return DetectedFace(image: image, observation: nil, name: name, isLocked: !(name?.isEmpty ?? true))
+        }
+        isDetecting = false
+    }
+    
+    /// For process reporting only; safe to call from any queue.
+    var reportedFacesCount: Int { faces.count }
+    var reportedCacheCount: Int { detectionCache.count }
+
     func clearCache() {
         detectionCache.removeAll()
+        detectionCacheOrder.removeAll()
+    }
+    
+    private func evictDetectionCacheIfNeeded() {
+        while detectionCache.count >= detectionCacheMaxCount, let oldest = detectionCacheOrder.first {
+            detectionCacheOrder.removeFirst()
+            detectionCache.removeValue(forKey: oldest)
+        }
     }
 }
 

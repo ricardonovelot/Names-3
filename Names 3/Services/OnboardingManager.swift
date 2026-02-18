@@ -27,6 +27,7 @@ final class OnboardingManager {
     func resetOnboarding() {
         UserDefaults.standard.removeObject(forKey: hasCompletedOnboardingKey)
         UserDefaults.standard.removeObject(forKey: onboardingVersionKey)
+        UserDefaults.standard.removeObject(forKey: "Names3.hasShownSyncTransition")
     }
     
     func completeOnboarding() {

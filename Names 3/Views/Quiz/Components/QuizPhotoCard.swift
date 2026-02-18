@@ -2,6 +2,10 @@ import SwiftUI
 
 struct QuizPhotoCard: View {
     let contact: Contact
+    /// When set, card height adapts to available space (keyboard-always-visible layout). Nil = default 280pt.
+    var preferredHeight: CGFloat? = nil
+    /// When true, uses tighter styling (smaller radius, shadow) for compact layouts.
+    var compact: Bool = false
     
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var imageScale: CGFloat = 0.95
@@ -10,6 +14,9 @@ struct QuizPhotoCard: View {
         guard !contact.photo.isEmpty else { return nil }
         return UIImage(data: contact.photo)
     }
+    
+    private var cornerRadius: CGFloat { compact ? 14 : 20 }
+    private var shadowRadius: CGFloat { compact ? 6 : 10 }
     
     var body: some View {
         GeometryReader { geometry in
@@ -22,16 +29,30 @@ struct QuizPhotoCard: View {
                         .clipped()
                         .overlay(photoGradient)
                 } else {
-                    placeholderView
+                    placeholderView(compact: compact)
                         .frame(width: geometry.size.width, height: geometry.size.height)
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .shadow(color: .black.opacity(0.1), radius: 10, x: 0, y: 5)
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.2),
+                                Color.white.opacity(0.05)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 0.5
+                    )
+            )
+            .shadow(color: .black.opacity(compact ? 0.12 : 0.15), radius: shadowRadius, x: 0, y: compact ? 3 : 5)
             .scaleEffect(imageScale)
         }
-        .frame(height: 280)
-        .padding(.horizontal, 20)
+        .frame(height: preferredHeight ?? 280)
+        .padding(.horizontal, compact ? 16 : 20)
         .onAppear {
             if !reduceMotion {
                 withAnimation(.spring(response: 0.6, dampingFraction: 0.7)) {
@@ -58,25 +79,17 @@ struct QuizPhotoCard: View {
         )
     }
     
-    private var placeholderView: some View {
-        ZStack {
-            RadialGradient(
-                colors: [
-                    Color(uiColor: .secondarySystemBackground),
-                    Color(uiColor: .tertiarySystemBackground)
-                ],
-                center: .center,
-                startRadius: 20,
-                endRadius: 200
-            )
-            
-            VStack(spacing: 12) {
+    private func placeholderView(compact: Bool) -> some View {
+        let iconSize: CGFloat = compact ? 40 : 56
+        return ZStack {
+            Color(uiColor: .secondarySystemGroupedBackground).opacity(0.6)
+            VStack(spacing: compact ? 6 : 12) {
                 Image(systemName: "person.crop.square.filled.and.at.rectangle")
-                    .font(.system(size: 56, weight: .light))
+                    .font(.system(size: iconSize, weight: .light))
                     .foregroundStyle(.quaternary)
                 
                 Text("No Photo")
-                    .font(.caption)
+                    .font(compact ? .caption2 : .caption)
                     .fontWeight(.medium)
                     .foregroundStyle(.tertiary)
             }

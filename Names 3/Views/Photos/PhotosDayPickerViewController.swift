@@ -103,7 +103,7 @@ final class PhotosDayPickerViewController: UIViewController {
         coordinator = PhotoGridView.Coordinator(
             imageManager: imageManager,
             contactsContext: contactsContext,
-            onPhotoTapped: { [weak self] image, date in
+            onPhotoTapped: { [weak self] image, date, assetIdentifier in
                 guard let self = self else { return }
                 print("✅ [PhotosDayPickerVC] Photo tapped - presenting detail view")
                 
@@ -112,6 +112,7 @@ final class PhotosDayPickerViewController: UIViewController {
                     let detailView = PhotoDetailViewWrapper(
                         image: image,
                         date: date,
+                        assetIdentifier: assetIdentifier,
                         contactsContext: self.contactsContext,
                         faceDetectionViewModelBinding: Binding(
                             get: { self.faceDetectionViewModel },

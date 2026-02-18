@@ -3,6 +3,7 @@ import UIKit
 import Photos
 import SwiftData
 import Vision
+import AVFoundation
 
 // MARK: - PhotoGridView
 
@@ -11,7 +12,7 @@ struct PhotoGridView: UIViewRepresentable {
     let imageManager: PHCachingImageManager
     let contactsContext: ModelContext
     let initialScrollDate: Date?
-    let onPhotoTapped: (UIImage, Date?) -> Void
+    let onPhotoTapped: (UIImage, Date?, String?) -> Void
     let onAppearAtIndex: (Int) -> Void
     let onDetailVisibilityChanged: (Bool) -> Void
     @Binding var faceDetectionViewModelBinding: FaceDetectionViewModel?
@@ -31,6 +32,7 @@ struct PhotoGridView: UIViewRepresentable {
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         collectionView.register(PhotoCell.self, forCellWithReuseIdentifier: PhotoCell.reuseIdentifier)
         collectionView.register(PhotoFullscreenCell.self, forCellWithReuseIdentifier: PhotoFullscreenCell.reuseIdentifier)
+        collectionView.register(VideoCell.self, forCellWithReuseIdentifier: VideoCell.reuseIdentifier)
 
         context.coordinator.configureDataSource(for: collectionView)
 
@@ -89,7 +91,6 @@ struct PhotoGridView: UIViewRepresentable {
         if context.coordinator.parentViewController == nil {
             context.coordinator.parentViewController = Self.findViewController(from: uiView)
         }
-        
         uiView.setNeedsLayout()
     }
 
@@ -113,7 +114,7 @@ struct PhotoGridView: UIViewRepresentable {
     final class Coordinator: NSObject {
         let imageManager: PHCachingImageManager
         let contactsContext: ModelContext
-        let onPhotoTapped: (UIImage, Date?) -> Void
+        let onPhotoTapped: (UIImage, Date?, String?) -> Void
         let onAppearAtIndex: (Int) -> Void
         let onDetailVisibilityChanged: (Bool) -> Void
         
@@ -149,10 +150,18 @@ struct PhotoGridView: UIViewRepresentable {
         private var carouselHostingController: UIHostingController<PhotoFaceCarouselView>?
         weak var parentViewController: UIViewController?
 
+        private let reportLock = NSLock()
+        private var cachedReportedFacesCount: Int = 0
+        private var cachedReportedCacheCount: Int = 0
+
+        // Video prefetch cache (small, to avoid repeated iCloud fetches)
+        private let videoItemCache = NSCache<NSString, AVPlayerItem>()
+        private let maxPrefetchedVideos = 6
+
         init(
             imageManager: PHCachingImageManager,
             contactsContext: ModelContext,
-            onPhotoTapped: @escaping (UIImage, Date?) -> Void,
+            onPhotoTapped: @escaping (UIImage, Date?, String?) -> Void,
             onAppearAtIndex: @escaping (Int) -> Void,
             onDetailVisibilityChanged: @escaping (Bool) -> Void,
             faceDetectionViewModelBinding: Binding<FaceDetectionViewModel?>
@@ -171,6 +180,27 @@ struct PhotoGridView: UIViewRepresentable {
             }
             
             super.init()
+            
+            ProcessReportCoordinator.shared.register(name: "PhotoGridView") { [weak self] in
+                guard let self else {
+                    return ProcessReportSnapshot(name: "PhotoGridView", payload: ["state": "released"])
+                }
+                let assetsCount = self.sortedAssets.count
+                let columns = self.availableColumns[self.currentColumnIndex]
+                self.reportLock.lock()
+                let facesCount = self.cachedReportedFacesCount
+                let faceCacheCount = self.cachedReportedCacheCount
+                self.reportLock.unlock()
+                return ProcessReportSnapshot(
+                    name: "PhotoGridView",
+                    payload: [
+                        "assetsCount": "\(assetsCount)",
+                        "columns": "\(columns)",
+                        "faceViewModelFaces": "\(facesCount)",
+                        "faceViewModelCacheCount": "\(faceCacheCount)"
+                    ]
+                )
+            }
             
             Task { @MainActor in
                 self.currentFaceViewModel = FaceDetectionViewModel()
@@ -264,38 +294,28 @@ struct PhotoGridView: UIViewRepresentable {
             let columns = availableColumns[currentColumnIndex]
             
             if columns == 1 {
-                // Fullscreen mode - disable paging, we'll handle snapping manually
                 collectionView.isPagingEnabled = false
                 collectionView.alwaysBounceVertical = true
                 collectionView.decelerationRate = .fast
                 floatingHeader?.alpha = 0
-                
-                // Update the current visible index
                 updateCurrentVisibleFullscreenIndex()
-                
                 showCarousel()
             } else {
-                // Grid mode
                 collectionView.isPagingEnabled = false
                 collectionView.alwaysBounceVertical = true
                 collectionView.decelerationRate = .normal
                 floatingHeader?.alpha = 1.0
-                
-                // Clear current visible index
                 currentVisibleFullscreenIndex = nil
-                
                 hideCarousel()
-                
-                // Clear face detection when leaving fullscreen
                 Task { @MainActor in
                     self.currentFaceViewModel.faces = []
+                    self.updateReportedFaceCounts()
                 }
             }
         }
         
         private func showCarousel() {
             guard let carouselContainer = carouselContainer else { return }
-            
             UIView.animate(withDuration: 0.35, delay: 0, usingSpringWithDamping: 0.9, initialSpringVelocity: 0) {
                 carouselContainer.alpha = 1.0
             }
@@ -303,7 +323,6 @@ struct PhotoGridView: UIViewRepresentable {
         
         private func hideCarousel() {
             guard let carouselContainer = carouselContainer else { return }
-            
             UIView.animate(withDuration: 0.25) {
                 carouselContainer.alpha = 0.0
             }
@@ -338,7 +357,7 @@ struct PhotoGridView: UIViewRepresentable {
                                 if let visibleIndices = self.collectionView?.indexPathsForVisibleItems.map({ $0.item }).sorted().first,
                                    visibleIndices < self.sortedAssets.count {
                                     let asset = self.sortedAssets[visibleIndices]
-                                    self.onPhotoTapped(faceImage, asset.creationDate)
+                                    self.onPhotoTapped(faceImage, asset.creationDate, asset.localIdentifier)
                                 }
                             }
                         }
@@ -383,85 +402,112 @@ struct PhotoGridView: UIViewRepresentable {
         
         private func cellProvider(collectionView: UICollectionView, indexPath: IndexPath, identifier: String) -> UICollectionViewCell {
             let columns = self.availableColumns[self.currentColumnIndex]
+            guard indexPath.item < self.sortedAssets.count else { return UICollectionViewCell() }
+            let asset = self.sortedAssets[indexPath.item]
+            let scale = UIScreen.main.scale
             
             if columns == 1 {
-                guard let cell = collectionView.dequeueReusableCell(
-                    withReuseIdentifier: PhotoFullscreenCell.reuseIdentifier,
-                    for: indexPath
-                ) as? PhotoFullscreenCell else {
-                    return UICollectionViewCell()
-                }
-
-                guard indexPath.item < self.sortedAssets.count else { return cell }
-                let asset = self.sortedAssets[indexPath.item]
-                let assetID = asset.localIdentifier
-                
-                let targetSize = CGSize(width: 1200, height: 1200)
-                
-                cell.configure(
-                    with: asset,
-                    imageManager: self.imageManager,
-                    targetSize: targetSize
-                )
-                
-                cell.onFaceTapped = { [weak self] observation, image, faceIndex in
-                    self?.handleFaceTapped(observation: observation, image: image, asset: asset, faceIndex: faceIndex)
-                }
-                
-                cell.onPhotoTapped = { [weak self] in
-                    self?.zoomOutFromFullscreen()
-                }
-                
-                cell.onPhotoLongPress = { [weak self] asset in
-                    self?.handlePhotoLongPress(asset: asset)
-                }
-                
-                cell.onFacesDetected = { [weak self] image, observations, detectedAssetID in
-                    guard let self = self else { return }
-                    guard detectedAssetID == assetID else {
-                        print("⚠️ [PhotoGrid] Ignoring stale face detection for \(detectedAssetID), current asset is \(assetID)")
-                        return
+                // Fullscreen: choose photo vs video
+                if asset.mediaType == .video {
+                    guard let cell = collectionView.dequeueReusableCell(
+                        withReuseIdentifier: VideoCell.reuseIdentifier,
+                        for: indexPath
+                    ) as? VideoCell else {
+                        return UICollectionViewCell()
                     }
-                    self.handleFacesDetectedInCell(image: image, observations: observations, fromIndex: indexPath.item)
-                }
+                    let target = fullscreenPixelSize(in: collectionView.bounds.size, scale: scale)
+                    cell.configure(
+                        with: asset,
+                        imageManager: self.imageManager,
+                        posterTargetSize: target,
+                        autoplay: true
+                    )
+                    return cell
+                } else {
+                    guard let cell = collectionView.dequeueReusableCell(
+                        withReuseIdentifier: PhotoFullscreenCell.reuseIdentifier,
+                        for: indexPath
+                    ) as? PhotoFullscreenCell else {
+                        return UICollectionViewCell()
+                    }
 
-                return cell
+                    let assetID = asset.localIdentifier
+                    let target = fullscreenPixelSize(in: collectionView.bounds.size, scale: scale)
+                    
+                    cell.configure(
+                        with: asset,
+                        imageManager: self.imageManager,
+                        targetSize: target
+                    )
+                    
+                    cell.onFaceTapped = { [weak self] observation, image, faceIndex in
+                        self?.handleFaceTapped(observation: observation, image: image, asset: asset, faceIndex: faceIndex)
+                    }
+                    
+                    cell.onPhotoTapped = { [weak self] in
+                        self?.zoomOutFromFullscreen()
+                    }
+                    
+                    cell.onPhotoLongPress = { [weak self] asset in
+                        self?.handlePhotoLongPress(asset: asset)
+                    }
+                    
+                    cell.onFacesDetected = { [weak self] image, observations, detectedAssetID in
+                        guard let self = self else { return }
+                        guard detectedAssetID == assetID else {
+                            print("⚠️ [PhotoGrid] Ignoring stale face detection for \(detectedAssetID), current asset is \(assetID)")
+                            return
+                        }
+                        self.handleFacesDetectedInCell(image: image, observations: observations, fromIndex: indexPath.item)
+                    }
+
+                    return cell
+                }
             } else {
-                guard let cell = collectionView.dequeueReusableCell(
-                    withReuseIdentifier: PhotoCell.reuseIdentifier,
-                    for: indexPath
-                ) as? PhotoCell else {
-                    return UICollectionViewCell()
+                // Grid cell: photo or video thumbnail
+                if asset.mediaType == .video {
+                    guard let cell = collectionView.dequeueReusableCell(
+                        withReuseIdentifier: VideoCell.reuseIdentifier,
+                        for: indexPath
+                    ) as? VideoCell else {
+                        return UICollectionViewCell()
+                    }
+                    let cellSide = self.cellSizeForCurrentColumns()
+                    let targetSize = self.pixelTargetSize(for: cellSide, scale: scale)
+                    cell.configure(
+                        with: asset,
+                        imageManager: self.imageManager,
+                        posterTargetSize: targetSize,
+                        autoplay: false
+                    )
+                    return cell
+                } else {
+                    guard let cell = collectionView.dequeueReusableCell(
+                        withReuseIdentifier: PhotoCell.reuseIdentifier,
+                        for: indexPath
+                    ) as? PhotoCell else {
+                        return UICollectionViewCell()
+                    }
+                    
+                    let cellSide = self.cellSizeForCurrentColumns()
+                    let targetSize = self.pixelTargetSize(for: cellSide, scale: scale)
+
+                    cell.configure(
+                        with: asset,
+                        imageManager: self.imageManager,
+                        cache: self.imageCache,
+                        targetSize: targetSize
+                    )
+
+                    return cell
                 }
-
-                guard indexPath.item < self.sortedAssets.count else { return cell }
-                let asset = self.sortedAssets[indexPath.item]
-                
-                let cellSize = self.cellSizeForCurrentColumns()
-                let targetSize = self.optimalTargetSize(for: cellSize)
-
-                cell.configure(
-                    with: asset,
-                    imageManager: self.imageManager,
-                    cache: self.imageCache,
-                    targetSize: targetSize
-                )
-
-                return cell
             }
         }
 
         func updateAssets(_ newAssets: [PHAsset], initialScrollDate: Date?) {
-            // Don't update if we're dismissing
-            if isPreparedForDismissal {
-                return
-            }
-            
-            if isZooming {
-                return
-            }
+            if isPreparedForDismissal { return }
+            if isZooming { return }
 
-            // Filter out deleted assets and sort by date ASCENDING (oldest first, newest at bottom)
             let validAssets = newAssets.filter { !deletedAssetIDs.contains($0.localIdentifier) }
             sortedAssets = validAssets.sorted { ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast) }
 
@@ -487,15 +533,11 @@ struct PhotoGridView: UIViewRepresentable {
                     self.hasPerformedInitialScroll = true
                     self.pendingScrollDate = nil
                 } else if shouldScrollToBottom {
-                    // Perform layout immediately
                     collectionView.performBatchUpdates(nil) { _ in
-                        // After batch updates complete, layout is guaranteed to be calculated
                         let lastIndex = self.sortedAssets.count - 1
                         let indexPath = IndexPath(item: lastIndex, section: 0)
                         collectionView.scrollToItem(at: indexPath, at: .bottom, animated: false)
                         self.hasPerformedInitialScroll = true
-                        
-                        print("📍 [PhotoGrid] Scrolled to bottom after performBatchUpdates - index \(lastIndex)")
                     }
                 }
             }
@@ -504,22 +546,12 @@ struct PhotoGridView: UIViewRepresentable {
         private func scrollToBottomSynchronously() {
             guard let collectionView = collectionView else { return }
             guard !sortedAssets.isEmpty else { return }
-            
-            // Schedule scroll for the next run loop iteration after layout is complete
             DispatchQueue.main.async {
-                // Force layout calculation
                 collectionView.layoutIfNeeded()
-                
-                // Now layout is complete, calculate bottom offset
                 let contentHeight = collectionView.contentSize.height
                 let boundsHeight = collectionView.bounds.height
                 let contentInsets = collectionView.adjustedContentInset
-                
                 let maxOffsetY = max(0, contentHeight - boundsHeight + contentInsets.bottom)
-                
-                print("📍 [PhotoGrid] Scrolling to bottom - contentHeight: \(contentHeight), boundsHeight: \(boundsHeight), offset: \(maxOffsetY)")
-                
-                // Set content offset directly
                 collectionView.setContentOffset(CGPoint(x: 0, y: maxOffsetY), animated: false)
             }
         }
@@ -527,10 +559,8 @@ struct PhotoGridView: UIViewRepresentable {
         private func scrollToBottom() {
             guard let collectionView = collectionView else { return }
             guard !sortedAssets.isEmpty else { return }
-            
             let lastIndex = sortedAssets.count - 1
             let indexPath = IndexPath(item: lastIndex, section: 0)
-            
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 collectionView.scrollToItem(at: indexPath, at: .bottom, animated: false)
             }
@@ -554,21 +584,31 @@ struct PhotoGridView: UIViewRepresentable {
             }
 
             let indexPath = IndexPath(item: closestIndex, section: 0)
-
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 collectionView.scrollToItem(at: indexPath, at: .centeredVertically, animated: true)
             }
         }
 
         func cleanup() {
+            ProcessReportCoordinator.shared.unregister(name: "PhotoGridView")
             imageManager.stopCachingImagesForAllAssets()
-            
             if let hosting = carouselHostingController {
                 hosting.willMove(toParent: nil)
                 hosting.view.removeFromSuperview()
                 hosting.removeFromParent()
                 carouselHostingController = nil
             }
+            videoItemCache.removeAllObjects()
+        }
+
+        @MainActor
+        private func updateReportedFaceCounts() {
+            let faces = currentFaceViewModel.reportedFacesCount
+            let cache = currentFaceViewModel.reportedCacheCount
+            reportLock.lock()
+            cachedReportedFacesCount = faces
+            cachedReportedCacheCount = cache
+            reportLock.unlock()
         }
 
         private func updateFloatingHeader() {
@@ -593,37 +633,30 @@ struct PhotoGridView: UIViewRepresentable {
             }
         }
 
-        private func optimalTargetSize(for cellSize: CGFloat) -> CGSize {
-            let scale = UIScreen.main.scale
-            let columns = availableColumns[currentColumnIndex]
-            
-            let targetPixels: CGFloat
-            
-            switch columns {
-            case 1:
-                targetPixels = 1200
-            case 3:
-                targetPixels = 600
-            case 5:
-                targetPixels = 400
-            default:
-                targetPixels = 400
-            }
-            
-            return CGSize(width: targetPixels, height: targetPixels)
+        // MARK: - Target sizes (pixel-accurate)
+
+        private func pixelTargetSize(for cellSidePoints: CGFloat, scale: CGFloat) -> CGSize {
+            // Square thumbnails: compute pixel side = points * scale, clamp to >= 1
+            let px = max(1, floor(cellSidePoints * scale))
+            return CGSize(width: px, height: px)
+        }
+        
+        private func fullscreenPixelSize(in bounds: CGSize, scale: CGFloat) -> CGSize {
+            // Request roughly the screen-pixel resolution for aspectFit display
+            let w = max(1, floor(bounds.width * scale))
+            let h = max(1, floor(bounds.height * scale))
+            return CGSize(width: w, height: h)
         }
 
         // MARK: - Face Handling
 
         private func handleFaceTapped(observation: VNFaceObservation, image: UIImage, asset: PHAsset, faceIndex: Int) {
             guard let cgImage = image.cgImage else { return }
-            
             let imageSize = CGSize(width: CGFloat(cgImage.width), height: CGFloat(cgImage.height))
             let faceRect = FaceCrop.expandedRect(for: observation, imageSize: imageSize)
-            
             if let cropped = cgImage.cropping(to: faceRect) {
                 let faceImage = UIImage(cgImage: cropped)
-                onPhotoTapped(faceImage, asset.creationDate)
+                onPhotoTapped(faceImage, asset.creationDate, asset.localIdentifier)
             }
         }
         
@@ -633,57 +666,41 @@ struct PhotoGridView: UIViewRepresentable {
                 message: "Hide this photo?",
                 preferredStyle: .actionSheet
             )
-            
             alert.addAction(UIAlertAction(title: "Hide Photo", style: .destructive) { [weak self] _ in
                 self?.hideAsset(asset)
             })
-            
             alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
             
             if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
                let window = scene.windows.first,
                let rootVC = window.rootViewController {
-                
                 var presentingVC = rootVC
-                while let presented = presentingVC.presentedViewController {
-                    presentingVC = presented
-                }
-                
+                while let presented = presentingVC.presentedViewController { presentingVC = presented }
                 presentingVC.present(alert, animated: true)
             }
         }
         
         private func handleFacesDetectedInCell(image: UIImage, observations: [VNFaceObservation], fromIndex: Int) {
-            // Only process faces from the currently visible/centered fullscreen item
             guard availableColumns[currentColumnIndex] == 1 else {
                 print("⚠️ [PhotoGrid] Ignoring face detection - not in fullscreen mode")
                 return
             }
-            
-            // Get the currently centered index
             let centeredIndex = getCenterVisibleItemIndex()
-            
             guard fromIndex == centeredIndex else {
                 print("⚠️ [PhotoGrid] Ignoring face detection from index \(fromIndex), centered index is \(centeredIndex ?? -1)")
                 return
             }
-            
             print("✅ [PhotoGrid] Processing face detection from centered index \(fromIndex)")
-            
             guard !observations.isEmpty else {
-                Task { @MainActor in
-                    self.hideCarousel()
-                }
+                Task { @MainActor in self.hideCarousel() }
                 return
             }
-            
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 await self.currentFaceViewModel.detectFaces(in: image)
-                
                 self.faceDetectionViewModelSetter(self.currentFaceViewModel)
-                
                 self.setupCarousel(with: self.currentFaceViewModel)
+                self.updateReportedFaceCounts()
             }
         }
         
@@ -692,7 +709,6 @@ struct PhotoGridView: UIViewRepresentable {
                 currentVisibleFullscreenIndex = nil
                 return
             }
-            
             currentVisibleFullscreenIndex = getCenterVisibleItemIndex()
             print("📍 [PhotoGrid] Current visible fullscreen index: \(currentVisibleFullscreenIndex ?? -1)")
         }
@@ -700,15 +716,15 @@ struct PhotoGridView: UIViewRepresentable {
         private func hideAsset(_ asset: PHAsset) {
             let assetID = asset.localIdentifier
             deletedAssetIDs.insert(assetID)
-            
-            // Remove from sorted assets
+            let deletedPhoto = DeletedPhoto(assetLocalIdentifier: assetID, deletedDate: Date())
+            contactsContext.insert(deletedPhoto)
+            do { try contactsContext.save() } catch {
+                print("[PhotoGrid] Failed to persist DeletedPhoto: \(error)")
+            }
             sortedAssets.removeAll { $0.localIdentifier == assetID }
-            
-            // Update snapshot
             var snapshot = NSDiffableDataSourceSnapshot<Int, String>()
             snapshot.appendSections([0])
             snapshot.appendItems(sortedAssets.map { $0.localIdentifier }, toSection: 0)
-            
             dataSource?.apply(snapshot, animatingDifferences: true) { [weak self] in
                 if self?.availableColumns[self?.currentColumnIndex ?? 0] == 1 {
                     self?.zoomOutFromFullscreen()
@@ -719,31 +735,22 @@ struct PhotoGridView: UIViewRepresentable {
         // MARK: - Zoom Controls
 
         private func zoomOutFromFullscreen() {
-            let targetColumnIndex = 1 // Back to 3 columns
+            let targetColumnIndex = 1
             guard targetColumnIndex != currentColumnIndex else { return }
-            
             guard let collectionView = collectionView else { return }
-            
-            // Get center visible item
             let centerIndex = getCenterVisibleItemIndex()
-            
             currentColumnIndex = targetColumnIndex
-            
             CATransaction.begin()
             CATransaction.setDisableActions(false)
             CATransaction.setAnimationDuration(0.35)
-            
             updateScrollBehavior()
             compositionalLayout?.invalidateLayout()
             collectionView.layoutIfNeeded()
-            
             if let centerIndex = centerIndex {
                 let indexPath = IndexPath(item: centerIndex, section: 0)
                 collectionView.scrollToItem(at: indexPath, at: .centeredVertically, animated: false)
             }
-            
             CATransaction.commit()
-
             if let snapshot = dataSource?.snapshot() {
                 dataSource?.apply(snapshot, animatingDifferences: false)
             }
@@ -751,16 +758,13 @@ struct PhotoGridView: UIViewRepresentable {
         
         private func getCenterVisibleItemIndex() -> Int? {
             guard let collectionView = collectionView else { return nil }
-            
             let centerPoint = CGPoint(
                 x: collectionView.bounds.midX,
                 y: collectionView.contentOffset.y + collectionView.bounds.height / 2
             )
-            
             if let indexPath = collectionView.indexPathForItem(at: centerPoint) {
                 return indexPath.item
             }
-            
             return collectionView.indexPathsForVisibleItems.sorted().first?.item
         }
 
@@ -773,76 +777,51 @@ struct PhotoGridView: UIViewRepresentable {
 
         @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
             guard let collectionView = collectionView else { return }
-
             switch gesture.state {
             case .began:
                 isZooming = true
                 onDetailVisibilityChanged(true)
-                
-                // Get the item under the pinch gesture, not the center item
                 let pinchLocation = gesture.location(in: collectionView)
                 if let indexPath = collectionView.indexPathForItem(at: pinchLocation) {
                     anchorIndex = indexPath.item
-                    print("📍 [Pinch] Anchor set to item \(indexPath.item) at pinch location")
                 } else {
-                    // Fallback to center if pinch location doesn't hit an item
                     anchorIndex = getCenterVisibleItemIndex()
-                    print("📍 [Pinch] Fallback to center item")
                 }
-
             case .changed:
                 guard let anchor = anchorIndex else { return }
-                
                 let scale = gesture.scale
-                
                 var targetColumnIndex: Int
                 if scale > 1.2 {
-                    // Pinching out = zoom in = fewer columns
                     targetColumnIndex = max(0, currentColumnIndex - 1)
                 } else if scale < 0.8 {
-                    // Pinching in = zoom out = more columns
                     targetColumnIndex = min(availableColumns.count - 1, currentColumnIndex + 1)
                 } else {
                     return
                 }
-                
                 guard targetColumnIndex != currentColumnIndex else { return }
                 guard anchor < sortedAssets.count else { return }
-                
-                print("🔄 [Pinch] Zoom: \(availableColumns[currentColumnIndex]) → \(availableColumns[targetColumnIndex]) columns on item \(anchor)")
-                
                 currentColumnIndex = targetColumnIndex
-                
                 CATransaction.begin()
                 CATransaction.setDisableActions(true)
-                
                 UIView.performWithoutAnimation {
                     self.updateScrollBehavior()
                     self.compositionalLayout?.invalidateLayout()
                     collectionView.layoutIfNeeded()
-                    
                     let indexPath = IndexPath(item: anchor, section: 0)
                     collectionView.scrollToItem(at: indexPath, at: .centeredVertically, animated: false)
-                    
                     if let snapshot = self.dataSource?.snapshot() {
                         self.dataSource?.apply(snapshot, animatingDifferences: false)
                     }
                 }
-                
                 CATransaction.commit()
-                
                 gesture.scale = 1.0
-
             case .ended, .cancelled, .failed:
-                print("📍 [Pinch] Ended at \(availableColumns[currentColumnIndex]) columns")
                 anchorIndex = nil
                 isZooming = false
-                
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                     guard let self = self, !self.isZooming else { return }
                     self.onDetailVisibilityChanged(false)
                 }
-
             default:
                 break
             }
@@ -850,13 +829,10 @@ struct PhotoGridView: UIViewRepresentable {
         
         func prepareForDismissal() {
             isPreparedForDismissal = true
-            
-            // Immediately hide carousel without animation
             carouselContainer?.alpha = 0
-            
-            // Clean up face detection
             Task { @MainActor in
                 self.currentFaceViewModel.faces = []
+                self.updateReportedFaceCounts()
             }
         }
     }
@@ -869,32 +845,33 @@ extension PhotoGridView.Coordinator: UICollectionViewDelegate {
         Task { @MainActor in
             onAppearAtIndex(indexPath.item)
         }
+        // Autoplay videos when visible
+        if let videoCell = cell as? VideoCell {
+            videoCell.playIfReady()
+        }
     }
 
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         let columns = availableColumns[currentColumnIndex]
-        
-        if columns == 1 {
-            return
-        }
-        
+        if columns == 1 { return }
         anchorIndex = indexPath.item
         currentColumnIndex = 0 // Zoom to fullscreen
-        
         CATransaction.begin()
         CATransaction.setDisableActions(false)
         CATransaction.setAnimationDuration(0.35)
-        
         updateScrollBehavior()
         compositionalLayout?.invalidateLayout()
         collectionView.layoutIfNeeded()
-        
         collectionView.scrollToItem(at: indexPath, at: .centeredVertically, animated: false)
-        
         CATransaction.commit()
-        
         if let snapshot = dataSource?.snapshot() {
             dataSource?.apply(snapshot, animatingDifferences: false)
+        }
+    }
+    
+    func collectionView(_ collectionView: UICollectionView, didEndDisplaying cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
+        if let videoCell = cell as? VideoCell {
+            videoCell.stop()
         }
     }
 }
@@ -903,25 +880,29 @@ extension PhotoGridView.Coordinator: UICollectionViewDelegate {
 
 extension PhotoGridView.Coordinator: UICollectionViewDataSourcePrefetching {
     func collectionView(_ collectionView: UICollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
+        let columns = availableColumns[currentColumnIndex]
+        let prefetchLimit = columns == 1 ? 5 : 24
         let cellSize = cellSizeForCurrentColumns()
-        let targetSize = optimalTargetSize(for: cellSize)
+        let targetSize = pixelTargetSize(for: cellSize, scale: UIScreen.main.scale)
 
-        let assetsToCache = indexPaths.prefix(50).compactMap { indexPath -> PHAsset? in
-            guard indexPath.item < sortedAssets.count else { return nil }
+        var assetsToCache: [PHAsset] = []
+        for indexPath in indexPaths.prefix(prefetchLimit) {
+            guard indexPath.item < sortedAssets.count else { continue }
             let asset = sortedAssets[indexPath.item]
-
-            let cacheKey = CacheKeyGenerator.key(for: asset, size: targetSize)
-            if imageCache.image(for: cacheKey) != nil {
-                return nil
+            if asset.mediaType == .image {
+                let cacheKey = CacheKeyGenerator.key(for: asset, size: targetSize)
+                if imageCache.image(for: cacheKey) == nil {
+                    assetsToCache.append(asset)
+                }
+            } else if asset.mediaType == .video {
+                // Prefetch player item for faster autoplay
+                prefetchVideoItem(for: asset)
             }
-
-            return asset
         }
 
         guard !assetsToCache.isEmpty else { return }
-
         imageManager.startCachingImages(
-            for: Array(assetsToCache),
+            for: assetsToCache,
             targetSize: targetSize,
             contentMode: .aspectFill,
             options: nil
@@ -930,7 +911,7 @@ extension PhotoGridView.Coordinator: UICollectionViewDataSourcePrefetching {
 
     func collectionView(_ collectionView: UICollectionView, cancelPrefetchingForItemsAt indexPaths: [IndexPath]) {
         let cellSize = cellSizeForCurrentColumns()
-        let targetSize = optimalTargetSize(for: cellSize)
+        let targetSize = pixelTargetSize(for: cellSize, scale: UIScreen.main.scale)
 
         let assetsToStop = indexPaths.compactMap { indexPath -> PHAsset? in
             guard indexPath.item < sortedAssets.count else { return nil }
@@ -939,12 +920,32 @@ extension PhotoGridView.Coordinator: UICollectionViewDataSourcePrefetching {
 
         guard !assetsToStop.isEmpty else { return }
 
-        imageManager.stopCachingImages(
-            for: Array(assetsToStop),
-            targetSize: targetSize,
-            contentMode: .aspectFill,
-            options: nil
-        )
+        let images = assetsToStop.filter { $0.mediaType == .image }
+        if !images.isEmpty {
+            imageManager.stopCachingImages(
+                for: images,
+                targetSize: targetSize,
+                contentMode: .aspectFill,
+                options: nil
+            )
+        }
+        // For videos we don't have a PHCaching API; we just let any outstanding player requests finish.
+    }
+    
+    private func prefetchVideoItem(for asset: PHAsset) {
+        let key = asset.localIdentifier as NSString
+        if videoItemCache.object(forKey: key) != nil { return }
+        let options = PHVideoRequestOptions()
+        options.deliveryMode = .automatic
+        options.isNetworkAccessAllowed = true
+        PHImageManager.default().requestPlayerItem(forVideo: asset, options: options) { [weak self] item, _ in
+            guard let self, let item else { return }
+            // Keep cache small
+            if self.videoItemCache.totalCostLimit == 0 {
+                self.videoItemCache.countLimit = self.maxPrefetchedVideos
+            }
+            self.videoItemCache.setObject(item, forKey: key)
+        }
     }
 }
 
@@ -953,70 +954,49 @@ extension PhotoGridView.Coordinator: UICollectionViewDataSourcePrefetching {
 extension PhotoGridView.Coordinator: UIScrollViewDelegate {
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         updateFloatingHeader()
-        
-        // In fullscreen mode, update which item is centered and trigger face detection
         if availableColumns[currentColumnIndex] == 1 {
             let newCenteredIndex = getCenterVisibleItemIndex()
-            
             if newCenteredIndex != currentVisibleFullscreenIndex {
-                print("📍 [PhotoGrid] Centered index changed: \(currentVisibleFullscreenIndex ?? -1) → \(newCenteredIndex ?? -1)")
                 currentVisibleFullscreenIndex = newCenteredIndex
-                
-                // Clear faces temporarily while scrolling to new item
                 Task { @MainActor in
                     self.currentFaceViewModel.faces = []
+                    self.updateReportedFaceCounts()
                 }
             }
         }
     }
     
     func scrollViewWillEndDragging(_ scrollView: UIScrollView, withVelocity velocity: CGPoint, targetContentOffset: UnsafeMutablePointer<CGPoint>) {
-        // Only snap in fullscreen mode
         guard availableColumns[currentColumnIndex] == 1 else { return }
         guard let collectionView = collectionView else { return }
-        
         let targetY = targetContentOffset.pointee.y
         let centerY = targetY + collectionView.bounds.height / 2
-        
-        // Find the item closest to the target center point
         let targetPoint = CGPoint(x: collectionView.bounds.midX, y: centerY)
-        
         if let indexPath = collectionView.indexPathForItem(at: targetPoint),
            let attributes = collectionView.layoutAttributesForItem(at: indexPath) {
-            // Snap to center this item
             let itemCenterY = attributes.frame.midY
             let newTargetY = itemCenterY - collectionView.bounds.height / 2
-            
-            // Clamp to valid content offset range
             let maxY = max(0, collectionView.contentSize.height - collectionView.bounds.height)
             targetContentOffset.pointee.y = max(0, min(newTargetY, maxY))
-            
-            print("📍 [Snap] Snapping to item \(indexPath.item) at offset \(targetContentOffset.pointee.y)")
         }
     }
     
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-        // When scroll settles in fullscreen, ensure we have the correct faces
         if availableColumns[currentColumnIndex] == 1 {
             updateCurrentVisibleFullscreenIndex()
-            
-            // Trigger re-detection for the centered cell
             if let centeredIndex = currentVisibleFullscreenIndex,
                let collectionView = collectionView,
                centeredIndex < sortedAssets.count {
                 let indexPath = IndexPath(item: centeredIndex, section: 0)
-                
-                // Force the cell to re-detect faces
-                if let cell = collectionView.cellForItem(at: indexPath) as? PhotoFullscreenCell {
-                    print("🔄 [PhotoGrid] Re-triggering face detection for settled item at index \(centeredIndex)")
-                    // The cell will automatically detect faces when it loads the image
+                // If it's a video cell, try autoplay
+                if let videoCell = collectionView.cellForItem(at: indexPath) as? VideoCell {
+                    videoCell.playIfReady()
                 }
             }
         }
     }
     
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
-        // If not decelerating, we've settled immediately
         if !decelerate && availableColumns[currentColumnIndex] == 1 {
             updateCurrentVisibleFullscreenIndex()
         }
@@ -1081,7 +1061,6 @@ final class FloatingDateHeaderView: UIView {
             label.text = "Photos"
             return
         }
-        
         let formatter = DateFormatter()
         formatter.dateFormat = "MMMM yyyy"
         label.text = formatter.string(from: date)
@@ -1125,12 +1104,10 @@ final class PhotoCell: UICollectionViewCell {
 
     override func prepareForReuse() {
         super.prepareForReuse()
-
         if let requestID = currentRequestID {
             PHImageManager.default().cancelImageRequest(requestID)
             currentRequestID = nil
         }
-
         representedAssetIdentifier = nil
         currentCacheKey = nil
         imageView.image = nil
@@ -1161,24 +1138,120 @@ final class PhotoCell: UICollectionViewCell {
             options: options
         ) { [weak self] image, info in
             guard let self = self else { return }
-
             let isCancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
             guard !isCancelled else { return }
-
             let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
-
             guard self.representedAssetIdentifier == assetIdentifier,
-                  self.currentCacheKey == cacheKey else {
-                return
-            }
-
+                  self.currentCacheKey == cacheKey else { return }
             if let image = image {
                 self.imageView.image = image
-
                 if !isDegraded {
                     cache.setImage(image, for: cacheKey)
                 }
             }
         }
+    }
+}
+
+// MARK: - Video Cell (grid + fullscreen)
+
+final class VideoCell: UICollectionViewCell {
+    static let reuseIdentifier = "VideoCell"
+    
+    private let imageView = UIImageView() // poster while player prepares
+    private let playerLayer = AVPlayerLayer()
+    private var playerItemRequestID: PHImageRequestID?
+    private var representedAssetIdentifier: String?
+    private var player: AVPlayer?
+    private var isAutoplayEnabled = false
+    
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setupViews()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    
+    private func setupViews() {
+        contentView.backgroundColor = .black
+        imageView.contentMode = .scaleAspectFill
+        imageView.clipsToBounds = true
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(imageView)
+        NSLayoutConstraint.activate([
+            imageView.topAnchor.constraint(equalTo: contentView.topAnchor),
+            imageView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            imageView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            imageView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
+        ])
+        playerLayer.videoGravity = .resizeAspect
+        contentView.layer.addSublayer(playerLayer)
+    }
+    
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        playerLayer.frame = contentView.bounds
+    }
+    
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        if let id = playerItemRequestID {
+            PHImageManager.default().cancelImageRequest(id)
+            playerItemRequestID = nil
+        }
+        representedAssetIdentifier = nil
+        imageView.image = nil
+        stop()
+    }
+    
+    func configure(with asset: PHAsset, imageManager: PHCachingImageManager, posterTargetSize: CGSize, autoplay: Bool) {
+        representedAssetIdentifier = asset.localIdentifier
+        isAutoplayEnabled = autoplay
+        
+        // Request a fast poster image to avoid blank cell
+        let posterOptions = PHImageRequestOptions()
+        posterOptions.deliveryMode = .opportunistic
+        posterOptions.resizeMode = .fast
+        posterOptions.isNetworkAccessAllowed = true
+        imageManager.requestImage(
+            for: asset,
+            targetSize: posterTargetSize,
+            contentMode: .aspectFill,
+            options: posterOptions
+        ) { [weak self] image, _ in
+            guard let self else { return }
+            if self.representedAssetIdentifier == asset.localIdentifier, let image {
+                self.imageView.image = image
+            }
+        }
+        
+        // Prepare AVPlayerItem
+        let videoOptions = PHVideoRequestOptions()
+        videoOptions.deliveryMode = .automatic
+        videoOptions.isNetworkAccessAllowed = true
+        playerItemRequestID = PHImageManager.default().requestPlayerItem(forVideo: asset, options: videoOptions) { [weak self] item, _ in
+            DispatchQueue.main.async {
+                guard let self, self.representedAssetIdentifier == asset.localIdentifier else { return }
+                if let item {
+                    let player = AVPlayer(playerItem: item)
+                    self.player = player
+                    self.playerLayer.player = player
+                    if self.isAutoplayEnabled {
+                        self.playIfReady()
+                    }
+                }
+            }
+        }
+    }
+    
+    func playIfReady() {
+        guard let player = player else { return }
+        player.isMuted = true
+        player.play()
+    }
+    
+    func stop() {
+        player?.pause()
+        playerLayer.player = nil
+        player = nil
     }
 }

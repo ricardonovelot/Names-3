@@ -7,6 +7,7 @@
 
 import Foundation
 import SwiftData
+import SwiftUI
 
 @Model
 class Contact {
@@ -26,6 +27,9 @@ class Contact {
     
     @Relationship(inverse: \QuizPerformance.contact)
     var quizPerformance: QuizPerformance?
+    
+    @Relationship(inverse: \NoteRehearsalPerformance.contact)
+    var noteRehearsalPerformance: NoteRehearsalPerformance?
 
     var timestamp: Date = Date()
     var photo: Data = Data()
@@ -33,6 +37,15 @@ class Contact {
     var cropOffsetX: Float = 0.0
     var cropOffsetY: Float = 0.0
     var cropScale: Float = 1.0
+
+    /// When true, photo gradient colors below are valid (computed when photo was set). Used for content-below-photo background.
+    var hasPhotoGradient: Bool = false
+    var photoGradientStartR: Float = 0
+    var photoGradientStartG: Float = 0
+    var photoGradientStartB: Float = 0
+    var photoGradientEndR: Float = 0
+    var photoGradientEndG: Float = 0
+    var photoGradientEndB: Float = 0
 
     init(
         uuid: UUID = UUID(),
@@ -51,7 +64,15 @@ class Contact {
         cropOffsetY: Float = 0.0,
         cropScale: Float = 1.0,
         quickNotes: [QuickNote]? = nil,
-        quizPerformance: QuizPerformance? = nil
+        quizPerformance: QuizPerformance? = nil,
+        noteRehearsalPerformance: NoteRehearsalPerformance? = nil,
+        hasPhotoGradient: Bool = false,
+        photoGradientStartR: Float = 0,
+        photoGradientStartG: Float = 0,
+        photoGradientStartB: Float = 0,
+        photoGradientEndR: Float = 0,
+        photoGradientEndG: Float = 0,
+        photoGradientEndB: Float = 0
     ) {
         self.uuid = uuid
         self.name = name
@@ -70,6 +91,14 @@ class Contact {
         self.cropScale = cropScale
         self.quickNotes = quickNotes
         self.quizPerformance = quizPerformance
+        self.noteRehearsalPerformance = noteRehearsalPerformance
+        self.hasPhotoGradient = hasPhotoGradient
+        self.photoGradientStartR = photoGradientStartR
+        self.photoGradientStartG = photoGradientStartG
+        self.photoGradientStartB = photoGradientStartB
+        self.photoGradientEndR = photoGradientEndR
+        self.photoGradientEndG = photoGradientEndG
+        self.photoGradientEndB = photoGradientEndB
     }
     
     var allAcceptableNames: [String] {
@@ -97,6 +126,35 @@ class Contact {
         
         return "Unnamed"
     }
+
+    /// Stored photo gradient for content-below-image background (nil when hasPhotoGradient is false).
+    var photoGradientColors: (start: Color, end: Color)? {
+        guard hasPhotoGradient else { return nil }
+        let start = Color(
+            red: Double(photoGradientStartR),
+            green: Double(photoGradientStartG),
+            blue: Double(photoGradientStartB)
+        )
+        let end = Color(
+            red: Double(photoGradientEndR),
+            green: Double(photoGradientEndG),
+            blue: Double(photoGradientEndB)
+        )
+        return (start, end)
+    }
+
+    /// Tag names for display. Only safe when the store has not been invalidated (e.g. after CloudKit mirroring reset the context must be reset first).
+    var tagNames: [String] {
+        (tags ?? []).compactMap { $0.name }
+    }
+}
+
+/// Snapshot of a contact’s group/date-related state before a move, used to restore on undo.
+struct ContactMovementSnapshot: Hashable {
+    let uuid: UUID
+    let isMetLongAgo: Bool
+    let timestamp: Date
+    let tagNames: [String]
 }
 
 struct contactsGroup: Identifiable, Hashable {
@@ -114,18 +172,26 @@ struct contactsGroup: Identifiable, Hashable {
         if isLongAgo {
             return NSLocalizedString("Met long ago", comment: "")
         }
-        let tags = contacts.flatMap { ($0.tags ?? []).compactMap { $0.name } }
-        let uniqueTags = Set(tags)
+        let tagNames = contacts.flatMap(\.tagNames)
+        let uniqueTags = Array(Set(tagNames)).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
         if uniqueTags.isEmpty {
-            let formatter = DateFormatter()
-            formatter.locale = Locale.current
-            formatter.dateFormat = "MMM dd"
-            return formatter.string(from: date)
+            return dateOnlyTitle
         } else {
             return uniqueTags.joined(separator: ", ")
         }
     }
-    
+
+    /// Title using only the date (no tag names). Use during CloudKit mirroring reset to avoid touching possibly invalidated Tag model references.
+    var dateOnlyTitle: String {
+        if isLongAgo {
+            return NSLocalizedString("Met long ago", comment: "")
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale.current
+        formatter.dateFormat = "MMM dd"
+        return formatter.string(from: date)
+    }
+
     var subtitle: String {
         if isLongAgo {
             return ""

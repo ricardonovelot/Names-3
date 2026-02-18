@@ -10,11 +10,11 @@ import SwiftData
 
 enum Names3SchemaMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [SchemaV1.self, SchemaV2.self, SchemaV3.self]
+        [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self]
     }
     
     static var stages: [MigrationStage] {
-        [migrateV1toV2, migrateV2toV3]
+        [migrateV1toV2, migrateV2toV3, migrateV3toV4]
     }
     
     static let migrateV1toV2 = MigrationStage.lightweight(
@@ -25,6 +25,11 @@ enum Names3SchemaMigrationPlan: SchemaMigrationPlan {
     static let migrateV2toV3 = MigrationStage.lightweight(
         fromVersion: SchemaV2.self,
         toVersion: SchemaV3.self
+    )
+    
+    static let migrateV3toV4 = MigrationStage.lightweight(
+        fromVersion: SchemaV3.self,
+        toVersion: SchemaV4.self
     )
 }
 
@@ -384,6 +389,71 @@ enum SchemaV3: VersionedSchema {
             self.interval = interval
             self.repetitions = repetitions
             self.dueDate = dueDate
+        }
+    }
+}
+
+// MARK: - Schema V4 (Contact photo gradient for content-below-image background)
+
+enum SchemaV4: VersionedSchema {
+    static var versionIdentifier = Schema.Version(4, 0, 0)
+    
+    static var models: [any PersistentModel.Type] {
+        [Contact.self, Note.self, Tag.self, QuickNote.self, QuizPerformance.self]
+    }
+    
+    @Model
+    final class Contact {
+        var uuid: UUID = UUID()
+        var name: String? = ""
+        var summary: String? = ""
+        var isMetLongAgo: Bool = false
+        var isArchived: Bool = false
+        var archivedDate: Date? = nil
+        var notes: [Note]?
+        var tags: [Tag]?
+        @Relationship(inverse: \QuickNote.linkedContacts)
+        var quickNotes: [QuickNote]? = []
+        @Relationship(inverse: \QuizPerformance.contact)
+        var quizPerformance: QuizPerformance?
+        var timestamp: Date = Date()
+        var photo: Data = Data()
+        var group: String = ""
+        var cropOffsetX: Float = 0.0
+        var cropOffsetY: Float = 0.0
+        var cropScale: Float = 1.0
+        var hasPhotoGradient: Bool = false
+        var photoGradientStartR: Float = 0
+        var photoGradientStartG: Float = 0
+        var photoGradientStartB: Float = 0
+        var photoGradientEndR: Float = 0
+        var photoGradientEndG: Float = 0
+        var photoGradientEndB: Float = 0
+
+        init(uuid: UUID = UUID(), name: String = "", summary: String = "", isMetLongAgo: Bool = false, isArchived: Bool = false, archivedDate: Date? = nil, timestamp: Date = Date(), notes: [Note]? = nil, tags: [Tag]? = nil, photo: Data = Data(), group: String = "", cropOffsetX: Float = 0.0, cropOffsetY: Float = 0.0, cropScale: Float = 1.0, quickNotes: [QuickNote]? = nil, quizPerformance: QuizPerformance? = nil, hasPhotoGradient: Bool = false, photoGradientStartR: Float = 0, photoGradientStartG: Float = 0, photoGradientStartB: Float = 0, photoGradientEndR: Float = 0, photoGradientEndG: Float = 0, photoGradientEndB: Float = 0) {
+            self.uuid = uuid
+            self.name = name
+            self.summary = summary
+            self.isMetLongAgo = isMetLongAgo
+            self.isArchived = isArchived
+            self.archivedDate = archivedDate
+            self.notes = notes
+            self.tags = tags
+            self.timestamp = timestamp
+            self.photo = photo
+            self.group = group
+            self.cropOffsetX = cropOffsetX
+            self.cropOffsetY = cropOffsetY
+            self.cropScale = cropScale
+            self.quickNotes = quickNotes
+            self.quizPerformance = quizPerformance
+            self.hasPhotoGradient = hasPhotoGradient
+            self.photoGradientStartR = photoGradientStartR
+            self.photoGradientStartG = photoGradientStartG
+            self.photoGradientStartB = photoGradientStartB
+            self.photoGradientEndR = photoGradientEndR
+            self.photoGradientEndG = photoGradientEndG
+            self.photoGradientEndB = photoGradientEndB
         }
     }
 }

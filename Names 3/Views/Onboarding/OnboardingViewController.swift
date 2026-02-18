@@ -1,8 +1,11 @@
 import UIKit
+import Photos
 
 protocol OnboardingViewControllerDelegate: AnyObject {
     func onboardingViewControllerDidFinish(_ controller: OnboardingViewController)
 }
+
+private let shouldShowNameFacesAfterOnboardingKey = "Names3.shouldShowNameFacesAfterOnboarding"
 
 final class OnboardingViewController: UIViewController {
     
@@ -87,6 +90,7 @@ final class OnboardingViewController: UIViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         print("🟢 [OnboardingVC] View did appear")
+        updateUI()
     }
     
     private func setupView() {
@@ -125,25 +129,23 @@ final class OnboardingViewController: UIViewController {
     }
     
     private func setupPageViewController() {
-        let firstPage = OnboardingPageViewController(
-            page: pages[0],
-            pageIndex: 0,
-            totalPages: pages.count
-        )
-        pageViewController.setViewControllers([firstPage], direction: .forward, animated: false)
+        let firstVC = viewController(for: 0)
+        pageViewController.setViewControllers([firstVC], direction: .forward, animated: false)
     }
     
     @objc private func continueButtonTapped() {
         print("🔵 [OnboardingVC] Continue tapped, current page: \(currentPageIndex)")
+        let currentPage = pages[currentPageIndex]
+        
+        if currentPage.isPhotosPage {
+            requestPhotoPermissionAndContinue()
+            return
+        }
+        
         if currentPageIndex < pages.count - 1 {
             let nextIndex = currentPageIndex + 1
-            let nextPage = OnboardingPageViewController(
-                page: pages[nextIndex],
-                pageIndex: nextIndex,
-                totalPages: pages.count
-            )
-            
-            pageViewController.setViewControllers([nextPage], direction: .forward, animated: true) { _ in
+            let nextVC = viewController(for: nextIndex)
+            pageViewController.setViewControllers([nextVC], direction: .forward, animated: true) { _ in
                 self.currentPageIndex = nextIndex
                 self.updateUI()
             }
@@ -152,14 +154,53 @@ final class OnboardingViewController: UIViewController {
         }
     }
     
+    private func requestPhotoPermissionAndContinue() {
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        if status == .authorized || status == .limited {
+            UserDefaults.standard.set(true, forKey: shouldShowNameFacesAfterOnboardingKey)
+            finishOnboarding()
+            return
+        }
+        
+        if status == .denied || status == .restricted {
+            finishOnboarding()
+            return
+        }
+        
+        PHPhotoLibrary.requestAuthorization(for: .readWrite) { [weak self] newStatus in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if newStatus == .authorized || newStatus == .limited {
+                    UserDefaults.standard.set(true, forKey: shouldShowNameFacesAfterOnboardingKey)
+                }
+                self.finishOnboarding()
+            }
+        }
+    }
+    
+    private func viewController(for index: Int) -> UIViewController {
+        let page = pages[index]
+        if page.isPhotosPage {
+            return OnboardingPhotosPageViewController(
+                page: page,
+                pageIndex: index,
+                totalPages: pages.count
+            )
+        }
+        return OnboardingPageViewController(
+            page: page,
+            pageIndex: index,
+            totalPages: pages.count
+        )
+    }
+    
     @objc private func skipButtonTapped() {
         print("🔵 [OnboardingVC] Skip tapped")
         finishOnboarding()
     }
     
     private func finishOnboarding() {
-        print("✅ [OnboardingVC] Finishing onboarding")
-        OnboardingManager.shared.completeOnboarding()
+        print("✅ [OnboardingVC] Finishing onboarding (deferring completeOnboarding until dismiss)")
         delegate?.onboardingViewControllerDidFinish(self)
     }
     
@@ -167,7 +208,13 @@ final class OnboardingViewController: UIViewController {
         pageControl.currentPage = currentPageIndex
         
         let isLastPage = currentPageIndex == pages.count - 1
-        let buttonTitle = isLastPage ? NSLocalizedString("onboarding.button.getStarted", comment: "Get Started button") : NSLocalizedString("onboarding.button.continue", comment: "Continue button")
+        let isPhotosPage = pages[currentPageIndex].isPhotosPage
+        let buttonTitle: String
+        if isPhotosPage {
+            buttonTitle = NSLocalizedString("onboarding.button.allowPhotos", comment: "Allow Access to Photos button")
+        } else {
+            buttonTitle = isLastPage ? NSLocalizedString("onboarding.button.getStarted", comment: "Get Started button") : NSLocalizedString("onboarding.button.continue", comment: "Continue button")
+        }
         
         UIView.animate(withDuration: 0.3) {
             self.continueButton.setTitle(buttonTitle, for: .normal)
@@ -186,42 +233,46 @@ final class OnboardingViewController: UIViewController {
 
 extension OnboardingViewController: UIPageViewControllerDataSource {
     func pageViewController(_ pageViewController: UIPageViewController, viewControllerBefore viewController: UIViewController) -> UIViewController? {
-        guard let currentVC = viewController as? OnboardingPageViewController,
-              currentVC.pageIndex > 0 else {
+        let currentIndex: Int
+        if let vc = viewController as? OnboardingPageViewController {
+            currentIndex = vc.pageIndex
+        } else if let vc = viewController as? OnboardingPhotosPageViewController {
+            currentIndex = vc.pageIndex
+        } else {
             return nil
         }
+        guard currentIndex > 0 else { return nil }
         
-        let previousIndex = currentVC.pageIndex - 1
-        return OnboardingPageViewController(
-            page: pages[previousIndex],
-            pageIndex: previousIndex,
-            totalPages: pages.count
-        )
+        let previousIndex = currentIndex - 1
+        return self.viewController(for: previousIndex)
     }
     
     func pageViewController(_ pageViewController: UIPageViewController, viewControllerAfter viewController: UIViewController) -> UIViewController? {
-        guard let currentVC = viewController as? OnboardingPageViewController,
-              currentVC.pageIndex < pages.count - 1 else {
+        let currentIndex: Int
+        if let vc = viewController as? OnboardingPageViewController {
+            currentIndex = vc.pageIndex
+        } else if let vc = viewController as? OnboardingPhotosPageViewController {
+            currentIndex = vc.pageIndex
+        } else {
             return nil
         }
+        guard currentIndex < pages.count - 1 else { return nil }
         
-        let nextIndex = currentVC.pageIndex + 1
-        return OnboardingPageViewController(
-            page: pages[nextIndex],
-            pageIndex: nextIndex,
-            totalPages: pages.count
-        )
+        let nextIndex = currentIndex + 1
+        return self.viewController(for: nextIndex)
     }
 }
 
 extension OnboardingViewController: UIPageViewControllerDelegate {
     func pageViewController(_ pageViewController: UIPageViewController, didFinishAnimating finished: Bool, previousViewControllers: [UIViewController], transitionCompleted completed: Bool) {
-        guard completed,
-              let currentVC = pageViewController.viewControllers?.first as? OnboardingPageViewController else {
+        guard completed, let currentVC = pageViewController.viewControllers?.first else { return }
+        if let vc = currentVC as? OnboardingPageViewController {
+            currentPageIndex = vc.pageIndex
+        } else if let vc = currentVC as? OnboardingPhotosPageViewController {
+            currentPageIndex = vc.pageIndex
+        } else {
             return
         }
-        
-        currentPageIndex = currentVC.pageIndex
         updateUI()
     }
 }

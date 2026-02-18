@@ -62,7 +62,10 @@ final class PhotosGridViewController: UIViewController {
     private var isInitialLoad = true
     private var hasScrolledToBottom = false
     private var loadState: LoadState = .idle
-    
+
+    /// Cap on total assets loaded in the grid so Phase 2 doesn't load entire library (can be 50k+).
+    private static let maxTotalAssetsInGrid = 5000
+
     var onPhotoPicked: PhotoPickedHandler?
     
     // MARK: - Lifecycle
@@ -84,6 +87,20 @@ final class PhotosGridViewController: UIViewController {
         // Show loading state immediately
         setLoadState(.loading)
         
+        ProcessReportCoordinator.shared.register(name: "PhotosGridViewController") { [weak self] in
+            guard let self else {
+                return ProcessReportSnapshot(name: "PhotosGridViewController", payload: ["state": "released"])
+            }
+            return ProcessReportSnapshot(
+                name: "PhotosGridViewController",
+                payload: [
+                    "photoGroupsCount": "\(self.photoGroups.count)",
+                    "loadState": "\(self.loadState)",
+                    "thumbnailW": "\(Int(self.thumbnailSize.width))"
+                ]
+            )
+        }
+        
         loadPhotos()
     }
     
@@ -94,6 +111,7 @@ final class PhotosGridViewController: UIViewController {
     }
     
     deinit {
+        ProcessReportCoordinator.shared.unregister(name: "PhotosGridViewController")
         logger.info("PhotosGridViewController deinit")
         print("🎬 PhotosGridViewController deinit")
         if let observer = changeObserver {
@@ -349,17 +367,17 @@ final class PhotosGridViewController: UIViewController {
             
             self.preheatInitialAssets(from: initialGroups)
             
-            // PHASE 2: Load remaining photos in background
-            self.loadRemainingPhotos(alreadyLoaded: initialAssets.count, initialLimit: initialLimit)
+            // PHASE 2: Load remaining photos in background (capped to avoid very long waits on large libraries)
+            self.loadRemainingPhotos(alreadyLoaded: initialAssets.count, initialLimit: initialLimit, maxTotal: Self.maxTotalAssetsInGrid)
         }
     }
     
-    private func loadRemainingPhotos(alreadyLoaded: Int, initialLimit: Int) {
+    private func loadRemainingPhotos(alreadyLoaded: Int, initialLimit: Int, maxTotal: Int = 5000) {
         expandTask = Task { [weak self] in
             guard let self else { return }
             
-            print("🔄 Phase 2: Loading remaining photos in background")
-            NSLog("🔄 Phase 2 started")
+            print("🔄 Phase 2: Loading up to \(maxTotal) photos in background")
+            NSLog("🔄 Phase 2 started (max %d)", maxTotal)
             
             // Small delay to let UI settle
             try? await Task.sleep(for: .milliseconds(300))
@@ -367,7 +385,7 @@ final class PhotosGridViewController: UIViewController {
             if Task.isCancelled { return }
             
             let phase2Start = CFAbsoluteTimeGetCurrent()
-            let allAssets = self.fetchAssets(excludingScreenshots: true, fetchLimit: 0)
+            let allAssets = self.fetchAssets(excludingScreenshots: true, fetchLimit: maxTotal)
             let newAssetCount = allAssets.count - alreadyLoaded
             
             guard newAssetCount > 0 else {
@@ -472,48 +490,18 @@ final class PhotosGridViewController: UIViewController {
     }
     
     private func scrollToBottom(animated: Bool) {
-        guard collectionView.numberOfSections > 0 else {
-            print("⚠️ No sections to scroll")
-            return
-        }
+        guard collectionView.numberOfSections > 0 else { return }
         
         let lastSection = collectionView.numberOfSections - 1
         let itemsInLastSection = collectionView.numberOfItems(inSection: lastSection)
         
-        guard itemsInLastSection > 0 else {
-            print("⚠️ Last section empty")
-            return
-        }
+        guard itemsInLastSection > 0 else { return }
         
         let lastIndexPath = IndexPath(item: itemsInLastSection - 1, section: lastSection)
         
-        print("📍 Scrolling to: section \(lastSection), item \(itemsInLastSection - 1)")
-        NSLog("📍 Scroll to: s%d i%d", lastSection, itemsInLastSection - 1)
-        
+        // Use performBatchUpdates to ensure layout is complete before scrolling (documented UIKit pattern)
         collectionView.performBatchUpdates(nil) { _ in
-            self.collectionView.scrollToItem(
-                at: lastIndexPath,
-                at: .bottom,
-                animated: animated
-            )
-            
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                let contentHeight = self.collectionView.contentSize.height
-                let frameHeight = self.collectionView.frame.height
-                let adjustedInset = self.collectionView.adjustedContentInset
-                let maxOffset = contentHeight - frameHeight + adjustedInset.bottom
-                
-                if maxOffset > 0 && self.collectionView.contentOffset.y < maxOffset - 50 {
-                    print("📍 Adjusting to: \(maxOffset)")
-                    self.collectionView.setContentOffset(
-                        CGPoint(x: 0, y: maxOffset),
-                        animated: false
-                    )
-                }
-                
-                print("📍 Final offset: \(self.collectionView.contentOffset.y)")
-                NSLog("📍 Final: %.0f", self.collectionView.contentOffset.y)
-            }
+            self.collectionView.scrollToItem(at: lastIndexPath, at: .bottom, animated: animated)
         }
     }
     
@@ -566,9 +554,12 @@ extension PhotosGridViewController: UICollectionViewDelegate {
         options.isNetworkAccessAllowed = true
         options.isSynchronous = false
         
+        let maxDimension: CGFloat = 2048
+        let targetSize = CGSize(width: maxDimension, height: maxDimension)
+        
         imageManager.requestImage(
             for: item.asset,
-            targetSize: PHImageManagerMaximumSize,
+            targetSize: targetSize,
             contentMode: .aspectFit,
             options: options
         ) { [weak self] image, _ in
@@ -597,12 +588,14 @@ extension PhotosGridViewController: UICollectionViewDelegate {
 // MARK: - UICollectionViewDataSourcePrefetching
 
 extension PhotosGridViewController: UICollectionViewDataSourcePrefetching {
+    private static let prefetchLimit = 24
+    
     func collectionView(_ collectionView: UICollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
-        let assets = indexPaths.compactMap { dataSource.itemIdentifier(for: $0)?.asset }
+        let assets = indexPaths.prefix(Self.prefetchLimit).compactMap { dataSource.itemIdentifier(for: $0)?.asset }
         guard !assets.isEmpty else { return }
         
         imageManager.startCachingImages(
-            for: assets,
+            for: Array(assets),
             targetSize: thumbnailSize,
             contentMode: .aspectFill,
             options: photoRequestOptions()
