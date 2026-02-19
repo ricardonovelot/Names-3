@@ -31,6 +31,9 @@ final class TikTokFeedViewModel: ObservableObject {
     private var videosSinceLastCarousel = 0
     private var usedPhotoIDs: Set<String> = []
 
+    /// When true, we loaded via bridge (loadWindowContaining); skip loadMore until user-triggered load.
+    private var isBridgeWindowActive = false
+
     // Day-hopping explore mode state
     private var exploreModeActive = false
     private var segmentEndIndices: [Int] = []
@@ -46,6 +49,9 @@ final class TikTokFeedViewModel: ObservableObject {
         let end: Int     // exclusive in fetchVideos
     }
     private var dayRanges: [DayRange] = []
+    
+    /// When set before onAppear, the initial load uses this asset instead of loadRandomWindow (Carousel→Feed bridge).
+    var initialBridgeAssetID: String?
     
     init(mode: FeedMode = .explore) {
         self.mode = mode
@@ -79,7 +85,7 @@ final class TikTokFeedViewModel: ObservableObject {
                     Diagnostics.log("Auth: requested -> \(String(describing: newStatus))")
                     FirstLaunchProbe.shared.recordAuthResult(newStatus)
                     if newStatus == .authorized || newStatus == .limited {
-                        self?.loadWindow()
+                        self?.loadWindowOrBridgeTarget()
                     }
                 }
             }
@@ -87,7 +93,7 @@ final class TikTokFeedViewModel: ObservableObject {
         }
         
         if status == .authorized || status == .limited {
-            loadWindow()
+            loadWindowOrBridgeTarget()
         }
     }
     
@@ -109,6 +115,20 @@ final class TikTokFeedViewModel: ObservableObject {
         }
     }
 
+    /// Uses bridge target if set (Carousel→Feed); otherwise normal load.
+    private func loadWindowOrBridgeTarget() {
+        // #region agent log
+        Diagnostics.debugBridge(hypothesisId: "C", location: "TikTokFeedViewModel.loadWindowOrBridgeTarget", message: "loadWindowOrBridgeTarget", data: ["initialBridgeAssetID": initialBridgeAssetID ?? "nil"])
+        // #endregion
+        if let id = initialBridgeAssetID {
+            initialBridgeAssetID = nil
+            Diagnostics.log("Feed: loading window for bridge target asset \(id)")
+            loadWindowContaining(assetID: id)
+        } else {
+            loadWindow()
+        }
+    }
+
     private func filterHidden(_ videos: [PHAsset]) -> [PHAsset] {
         let hidden = DeletedVideosStore.snapshot()
         if hidden.isEmpty { return videos }
@@ -116,6 +136,7 @@ final class TikTokFeedViewModel: ObservableObject {
     }
     
     private func commonFetchSetup() {
+        isBridgeWindowActive = false
         let videoOpts = PHFetchOptions()
         videoOpts.predicate = NSPredicate(format: "mediaType == %d AND duration >= 1.0", PHAssetMediaType.video.rawValue)
         videoOpts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
@@ -437,9 +458,9 @@ final class TikTokFeedViewModel: ObservableObject {
         }
     }
 
-    func loadWindow(around targetDate: Date) {
+    func loadWindow(around targetDate: Date, targetAssetID: String? = nil) {
         isLoading = true
-        Diagnostics.log("DateWindow: begin target=\(targetDate)")
+        Diagnostics.log("DateWindow: begin target=\(targetDate) assetID=\(targetAssetID ?? "nil")")
         commonFetchSetup()
         guard let vResult = fetchVideos, vResult.count > 0 else {
             items = []
@@ -469,9 +490,12 @@ final class TikTokFeedViewModel: ObservableObject {
         let carousels = makeCarousels(from: pSlice)
         let (itemsBuilt, _, videosTailCount) = interleave(videos: vSlice, carousels: carousels, startVideoStride: 0)
 
-        let clampedIndex = min(max(foundIndex, start), end - 1)
-        let selectedID = vResult.object(at: clampedIndex).localIdentifier
         let initialLocalIndex: Int = {
+            if let targetID = targetAssetID, let idx = indexOfAssetInItems(targetID, items: itemsBuilt) {
+                return idx
+            }
+            let clampedIndex = min(max(foundIndex, start), end - 1)
+            let selectedID = vResult.object(at: clampedIndex).localIdentifier
             for (idx, it) in itemsBuilt.enumerated() {
                 if case .video(let a) = it.kind, a.localIdentifier == selectedID {
                     return idx
@@ -497,7 +521,7 @@ final class TikTokFeedViewModel: ObservableObject {
         videosSinceLastCarousel = videosTailCount
         markPhotosUsed(from: itemsBuilt)
 
-        Diagnostics.log("DateWindow: target=\(targetDate) window=[\(start)..<\(end)] initialLocalIndex=\(initialLocalIndex)")
+        Diagnostics.log("DateWindow: target=\(targetDate) window=[\(start)..<\(end)] initialLocalIndex=\(initialLocalIndex) targetAssetID=\(targetAssetID ?? "nil")")
     }
 
     func jumpToOneYearAgo() {
@@ -508,8 +532,94 @@ final class TikTokFeedViewModel: ObservableObject {
         }
     }
 
+    /// Loads a window containing the given asset (for sync when switching from Carousel).
+    /// Uses a unified mixed fetch (photos + videos, any duration) so the exact same asset is always shown.
+    func loadWindowContaining(assetID: String) {
+        guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [assetID], options: nil).firstObject else {
+            loadWindow()
+            return
+        }
+        isLoading = true
+        commonFetchSetup()
+        Diagnostics.log("BridgeWindow: loading for asset \(assetID) mediaType=\(asset.mediaType.rawValue)")
+        Task { @MainActor in
+            let (mixedAssets, targetIdx) = await NameFacesCarouselAssetFetcher.fetchMixedAssetsAround(
+                targetAsset: asset,
+                rangeDays: 14,
+                limit: 80
+            )
+            guard !mixedAssets.isEmpty else {
+                Diagnostics.log("BridgeWindow: no assets, falling back to normal load")
+                loadWindow(around: asset.creationDate ?? Date(), targetAssetID: assetID)
+                return
+            }
+            let feedItems = self.buildFeedItemsFromMixedAssets(mixedAssets)
+            guard let finalIndex = feedItems.firstIndex(where: { Self.itemContainsAsset($0, assetID: assetID) }) else {
+                // #region agent log
+                Diagnostics.debugBridge(hypothesisId: "D", location: "TikTokFeedViewModel.loadWindowContaining", message: "target NOT in built items", data: ["assetID": assetID, "feedItemsCount": feedItems.count, "mixedAssetsCount": mixedAssets.count])
+                // #endregion
+                Diagnostics.log("BridgeWindow: target not in built items, falling back")
+                loadWindow(around: asset.creationDate ?? Date(), targetAssetID: assetID)
+                return
+            }
+            // #region agent log
+            Diagnostics.debugBridge(hypothesisId: "E", location: "TikTokFeedViewModel.loadWindowContaining", message: "bridge SUCCESS", data: ["assetID": assetID, "finalIndex": finalIndex, "feedItemsCount": feedItems.count])
+            // #endregion
+            items = feedItems
+            initialIndexInWindow = finalIndex
+            isLoading = false
+            exploreModeActive = false
+            isBridgeWindowActive = true
+            segmentEndIndices.removeAll()
+            Diagnostics.log("BridgeWindow: published \(feedItems.count) items, targetIndex=\(finalIndex)")
+            let videosToPrefetch: [PHAsset] = feedItems.suffix(from: max(0, finalIndex - 2)).prefix(5).compactMap { item in
+                if case .video(let a) = item.kind { return a }
+                return nil
+            }
+            if !videosToPrefetch.isEmpty {
+                VideoPrefetcher.shared.prefetch(videosToPrefetch)
+                PlayerItemPrefetcher.shared.prefetch(videosToPrefetch)
+            }
+            if let first = feedItems.first {
+                switch first.kind {
+                case .video(let a):
+                    FirstLaunchProbe.shared.windowPublished(items: feedItems.count, firstID: a.localIdentifier)
+                case .photoCarousel(let arr):
+                    FirstLaunchProbe.shared.windowPublished(items: feedItems.count, firstID: arr.first?.localIdentifier ?? "n/a")
+                }
+            }
+        }
+    }
+
+    private static func itemContainsAsset(_ item: FeedItem, assetID: String) -> Bool {
+        switch item.kind {
+        case .video(let a): return a.localIdentifier == assetID
+        case .photoCarousel(let arr): return arr.contains { $0.localIdentifier == assetID }
+        }
+    }
+
+    /// Converts a flat mixed [PHAsset] list to [FeedItem]: videos as .video, photos as single-photo carousels.
+    private func buildFeedItemsFromMixedAssets(_ assets: [PHAsset]) -> [FeedItem] {
+        let hidden = DeletedVideosStore.snapshot()
+        var out: [FeedItem] = []
+        for a in assets {
+            switch a.mediaType {
+            case .video:
+                if !hidden.contains(a.localIdentifier) {
+                    out.append(.video(a))
+                }
+            case .image:
+                out.append(.carousel([a]))
+            default:
+                break
+            }
+        }
+        return out
+    }
+
     func loadMoreIfNeeded(currentIndex: Int) {
-        Diagnostics.log("LoadMore: currentIndex=\(currentIndex) items=\(items.count) cursor=\(videoCursor) explore=\(exploreModeActive)")
+        Diagnostics.log("LoadMore: currentIndex=\(currentIndex) items=\(items.count) cursor=\(videoCursor) explore=\(exploreModeActive) bridge=\(isBridgeWindowActive)")
+        if isBridgeWindowActive { return }
         if exploreModeActive {
             guard let lastEnd = segmentEndIndices.last else { return }
             // EARLY PREWARM: start warming next day earlier to overlap network
@@ -699,5 +809,22 @@ final class TikTokFeedViewModel: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Find feed index containing the given asset (for shared position with Carousel).
+    func indexOfAsset(id: String) -> Int? {
+        indexOfAssetInItems(id, items: items)
+    }
+
+    private func indexOfAssetInItems(_ id: String, items: [FeedItem]) -> Int? {
+        for (idx, item) in items.enumerated() {
+            switch item.kind {
+            case .video(let a):
+                if a.localIdentifier == id { return idx }
+            case .photoCarousel(let arr):
+                if arr.contains(where: { $0.localIdentifier == id }) { return idx }
+            }
+        }
+        return nil
     }
 }

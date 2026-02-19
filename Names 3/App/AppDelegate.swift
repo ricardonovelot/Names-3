@@ -1,9 +1,10 @@
 import UIKit
 import Photos
+import UserNotifications
 import os
 import os.signpost
 
-class AppDelegate: NSObject, UIApplicationDelegate {
+class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     private static let launchLogger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Names3", category: "Launch")
 
     /// Observer that invalidates Name Faces carousel cache when the photo library changes.
@@ -11,6 +12,7 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
         installUncaughtExceptionHandler()
+        UNUserNotificationCenter.current().delegate = self
         let t0 = CFAbsoluteTimeGetCurrent()
         let signpostState = LaunchProfiler.beginPhase("DidFinishLaunching")
         LaunchProfiler.logCheckpoint("didFinishLaunching started (\(LaunchProfiler.mainThreadTag))")
@@ -42,6 +44,25 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         }
     }
     
+    // MARK: - Post-launch (deferred from didFinishLaunching for fast launch)
+
+    // MARK: - Notification tap handling (quiz reminder → choose practice mode)
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let identifier = response.notification.request.identifier
+        if identifier == QuizReminderService.dailyReminderIdentifier {
+            QuizReminderService.hasPendingQuizReminderTap = true
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .quizReminderTapped, object: nil)
+            }
+        }
+        completionHandler()
+    }
+
     // MARK: - Post-launch (deferred from didFinishLaunching for fast launch)
 
     /// Registers the photo library change observer for Name Faces cache invalidation.

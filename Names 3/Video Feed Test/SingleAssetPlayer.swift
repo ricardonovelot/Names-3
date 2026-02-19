@@ -27,6 +27,9 @@ final class SingleAssetPlayer: ObservableObject {
     private var currentAssetID: String?
     private var isActive: Bool = false
 
+    /// Exposed for CombinedMediaCoordinator: check if this player is showing the given asset (carousel can reuse instead of creating new).
+    var displayedAssetID: String? { currentAssetID }
+
     private var diagProbe: PlayerProbe?
     private var diagStart: CFTimeInterval = 0
 

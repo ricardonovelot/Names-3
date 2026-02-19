@@ -8,7 +8,17 @@ struct TikTokPlayerView: View {
     let isActive: Bool
     let pinnedMode: Bool
     let noCropMode: Bool
-    @StateObject private var controller = SingleAssetPlayer()
+    /// When set (combined Feed+Carousel mode), use this shared player instead of per-cell instance.
+    /// Ensures playback continues across morph without reload.
+    var sharedController: SingleAssetPlayer? = nil
+
+    @StateObject private var ownController = SingleAssetPlayer()
+
+    private var controller: SingleAssetPlayer {
+        sharedController ?? ownController
+    }
+
+    private var isUsingShared: Bool { sharedController != nil }
 
     private var isPortrait: Bool {
         asset.pixelHeight >= asset.pixelWidth
@@ -29,16 +39,29 @@ struct TikTokPlayerView: View {
             }
         }
         .onAppear {
-            Diagnostics.log("TikTokPlayerView onAppear for asset=\(asset.localIdentifier) isActive=\(isActive)")
-            controller.setAsset(asset)
-            controller.setActive(isActive)
+            Diagnostics.log("TikTokPlayerView onAppear for asset=\(asset.localIdentifier) isActive=\(isActive) shared=\(isUsingShared)")
+            if isUsingShared {
+                if isActive {
+                    controller.setAsset(asset)
+                    controller.setActive(true)
+                } else {
+                    controller.setActive(false)
+                }
+            } else {
+                controller.setAsset(asset)
+                controller.setActive(isActive)
+            }
             if isActive {
                 CurrentPlayback.shared.currentAssetID = asset.localIdentifier
             }
         }
         .onDisappear {
-            Diagnostics.log("TikTokPlayerView onDisappear for asset=\(asset.localIdentifier)")
-            controller.cancel()
+            Diagnostics.log("TikTokPlayerView onDisappear for asset=\(asset.localIdentifier) shared=\(isUsingShared)")
+            if isUsingShared {
+                controller.setActive(false)
+            } else {
+                controller.cancel()
+            }
         }
         .onChange(of: isActive) { _, newValue in
             Diagnostics.log("TikTokPlayerView isActive changed asset=\(asset.localIdentifier) -> \(newValue)")

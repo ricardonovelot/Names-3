@@ -118,6 +118,8 @@ final class WelcomeFaceNamingViewController: UIViewController {
     private var videoPlayer: AVPlayer?
     private var videoPlayerLayer: AVPlayerLayer?
     private var currentVideoAsset: PHAsset?
+    /// When true, we're displaying coordinator's shared player—don't pause/nil it in cleanup.
+    private var isUsingSharedVideoPlayer = false
     private var faceDetectionTimer: Timer?
     private var controlsHideTimer: Timer?
     private var lastDetectionTime: TimeInterval = 0
@@ -187,12 +189,21 @@ final class WelcomeFaceNamingViewController: UIViewController {
         return view
     }()
     
+    /// Subtle placeholder shown when no image/video is displayed yet (avoids blank flash during load).
+    private lazy var photoPlaceholderView: UIView = {
+        let view = UIView()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.backgroundColor = UIColor.systemGray5
+        view.isUserInteractionEnabled = false
+        return view
+    }()
+
     private lazy var photoImageView: UIImageView = {
         let imageView = UIImageView()
         imageView.translatesAutoresizingMaskIntoConstraints = false
         imageView.contentMode = .scaleAspectFit
         imageView.clipsToBounds = true
-        imageView.isUserInteractionEnabled = false
+        imageView.isUserInteractionEnabled = true
         return imageView
     }()
     
@@ -211,7 +222,6 @@ final class WelcomeFaceNamingViewController: UIViewController {
         let panGesture = UIPanGestureRecognizer(target: self, action: #selector(handleVideoPanGesture(_:)))
         view.addGestureRecognizer(panGesture)
         
-        // Allow both gestures to work together
         tapGesture.require(toFail: panGesture)
         
         return view
@@ -490,17 +500,28 @@ final class WelcomeFaceNamingViewController: UIViewController {
     /// When non-nil (e.g. when opened from a group header), the carousel scrolls to the photo at or nearest this date.
     private let initialScrollDate: Date?
 
+    /// When non-nil (e.g. when switching from Feed), scroll to this asset. Takes precedence over initialScrollDate.
+    private let initialAssetID: String?
+
     /// When true (tab context), QuickInput replaces the built-in name field; hide nameTextField and sync via notifications.
     private let useQuickInputForName: Bool
+
+    /// When set (combined Feed+Carousel), we reuse its shared player when showing the same video—avoids reload on morph.
+    weak var combinedMediaCoordinator: CombinedMediaCoordinator?
 
     /// When set (e.g. by SwiftUI host), called after the VC mutates prioritizedAssets (e.g. archive) so the host can sync its state and not overwrite the list on next update.
     var onPrioritizedAssetsDidChange: (([PHAsset]) -> Void)?
 
-    init(prioritizedAssets: [PHAsset], modelContext: ModelContext, initialScrollDate: Date? = nil, useQuickInputForName: Bool = false) {
+    /// When set (e.g. by CombinedMediaCoordinator), called when the visible carousel asset changes.
+    var onCurrentAssetDidChange: ((String?) -> Void)?
+
+    init(prioritizedAssets: [PHAsset], modelContext: ModelContext, initialScrollDate: Date? = nil, initialAssetID: String? = nil, useQuickInputForName: Bool = false, coordinator: CombinedMediaCoordinator? = nil) {
         self.prioritizedAssets = prioritizedAssets
         self.modelContext = modelContext
         self.initialScrollDate = initialScrollDate
+        self.initialAssetID = initialAssetID
         self.useQuickInputForName = useQuickInputForName
+        self.combinedMediaCoordinator = coordinator
         super.init(nibName: nil, bundle: nil)
         
         imageManager.allowsCachingHighQualityImages = false
@@ -708,6 +729,11 @@ final class WelcomeFaceNamingViewController: UIViewController {
     func updatePrioritizedAssetsIfNeeded(_ newAssets: [PHAsset]) {
         guard newAssets.count != prioritizedAssets.count ||
               !zip(prioritizedAssets, newAssets).allSatisfy({ $0.localIdentifier == $1.localIdentifier }) else { return }
+        // Never replace with a shorter list when we've appended (e.g. fetchUntilSavedAssetPresent).
+        // SwiftUI can re-render before onPrioritizedAssetsDidChange runs, passing the initial 500 and clobbering our 620.
+        if newAssets.count < prioritizedAssets.count {
+            return
+        }
         // #region agent log
         debugSessionLog(location: "WelcomeFaceNamingVC:updatePrioritizedAssetsIfNeeded", message: "Replacing asset list", data: ["oldCount": prioritizedAssets.count, "newCount": newAssets.count], hypothesisId: "H2")
         // #endregion
@@ -756,6 +782,7 @@ final class WelcomeFaceNamingViewController: UIViewController {
             hasAppliedInitialCarouselPosition = true
             scrollToSavedPosition()
         }
+        reportCurrentAssetToCoordinator(assetID: isValidCarouselIndex(currentCarouselIndex) ? prioritizedAssets[currentCarouselIndex].localIdentifier : nil)
         // Refinement for initialScrollDate can run after appear
         if initialScrollDate != nil {
             DispatchQueue.main.async { [weak self] in
@@ -775,6 +802,16 @@ final class WelcomeFaceNamingViewController: UIViewController {
     // MARK: - Position Persistence
     
     private func restoreCarouselPosition() {
+        if let assetID = initialAssetID, let idx = prioritizedAssets.firstIndex(where: { $0.localIdentifier == assetID }) {
+            currentCarouselIndex = idx
+            print("📍 Opening at asset: index \(currentCarouselIndex) for assetID \(assetID)")
+            return
+        }
+        // Bridge asset not yet in list: defer to fetchUntilSavedAssetPresent (don't use UserDefaults)
+        if initialAssetID != nil {
+            currentCarouselIndex = clampCarouselIndex(0)
+            return
+        }
         if let targetDate = initialScrollDate {
             currentCarouselIndex = indexForDate(targetDate)
             currentCarouselIndex = clampCarouselIndex(currentCarouselIndex)
@@ -934,6 +971,7 @@ final class WelcomeFaceNamingViewController: UIViewController {
         let assetIDToSave: String? = isValidCarouselIndex(indexToSave)
             ? prioritizedAssets[indexToSave].localIdentifier
             : nil
+        reportCurrentAssetToCoordinator(assetID: assetIDToSave)
         DispatchQueue.global(qos: .utility).async {
             UserDefaults.standard.set(indexToSave, forKey: self.carouselPositionKey)
             if let id = assetIDToSave {
@@ -942,6 +980,13 @@ final class WelcomeFaceNamingViewController: UIViewController {
                 UserDefaults.standard.removeObject(forKey: self.carouselPositionAssetIDKey)
             }
         }
+    }
+
+    private func reportCurrentAssetToCoordinator(assetID: String?) {
+        // #region agent log
+        Diagnostics.debugBridge(hypothesisId: "G", location: "WelcomeFaceNamingVC.reportCurrentAssetToCoordinator", message: "Carousel reports asset", data: ["assetID": assetID ?? "nil", "currentCarouselIndex": currentCarouselIndex])
+        // #endregion
+        onCurrentAssetDidChange?(assetID)
     }
     
     private func clearSavedPosition() {
@@ -958,9 +1003,10 @@ final class WelcomeFaceNamingViewController: UIViewController {
         // Apply restored carousel position before first paint so we never show index 0 then jump
         if !hasAppliedInitialCarouselPosition, carouselItemCount > 0, photoCarouselCollectionView.bounds.width > 0 {
             let savedAssetID = UserDefaults.standard.string(forKey: carouselPositionAssetIDKey)
-            let assetAlreadyInList = savedAssetID.map { id in prioritizedAssets.contains { $0.localIdentifier == id } } ?? false
-            if let id = savedAssetID, !assetAlreadyInList {
-                // Saved photo is beyond initial 500 (e.g. user had used Next and left at index 685). Fetch until it's in the list.
+            let assetIDToRestore = initialAssetID ?? savedAssetID
+            let assetAlreadyInList = assetIDToRestore.map { id in prioritizedAssets.contains { $0.localIdentifier == id } } ?? false
+            if let id = assetIDToRestore, !assetAlreadyInList {
+                // Asset beyond initial 500 (from Feed switch or saved position). Fetch until it's in the list.
                 hasAppliedInitialCarouselPosition = true
                 Task { [weak self] in
                     guard let self else { return }
@@ -969,9 +1015,11 @@ final class WelcomeFaceNamingViewController: UIViewController {
                         if found {
                             self.restoreCarouselPosition()
                             self.scrollToSavedPosition()
+                            self.saveCarouselPosition()
                             self.onPrioritizedAssetsDidChange?(self.prioritizedAssets)
                         } else {
                             self.scrollToSavedPosition()
+                            self.saveCarouselPosition()
                         }
                     }
                 }
@@ -1031,6 +1079,7 @@ final class WelcomeFaceNamingViewController: UIViewController {
         setMainImageContentMode(for: asset)
         photoImageView.image = image
         photoImageView.isHidden = false
+        photoPlaceholderView.isHidden = true
         cleanupVideoPlayer()
         configureLayoutForImage()
     }
@@ -1386,7 +1435,8 @@ final class WelcomeFaceNamingViewController: UIViewController {
             nextHosting.view.bottomAnchor.constraint(equalTo: nextButtonContainerView.bottomAnchor),
         ])
         
-        // Add photo/video content to container
+        // Add photo/video content to container (placeholder behind so it shows when loading)
+        photoContainerView.insertSubview(photoPlaceholderView, at: 0)
         photoContainerView.addSubview(photoImageView)
         photoContainerView.addSubview(videoPlayerView)
         
@@ -1402,30 +1452,31 @@ final class WelcomeFaceNamingViewController: UIViewController {
         // Magnifying glass (Next) at same height as detected faces, on the left side of the faces strip
         photoContainerView.addSubview(nextButtonContainerView)
         
-        // Add close button ON TOP of photo (liquid glass circle, same as ContactDetailsView)
-        let closeButtonView = LiquidGlassCloseButton { [weak self] in self?.closeTapped() }
-        let closeHosting = UIHostingController(rootView: closeButtonView)
-        closeHosting.view.translatesAutoresizingMaskIntoConstraints = false
-        closeHosting.view.backgroundColor = .clear
-        addChild(closeHosting)
-        closeHosting.didMove(toParent: self)
-        photoContainerView.addSubview(closeHosting.view)
-        closeButtonHostingController = closeHosting
+        // Close button only when presented as sheet (not when inline in tab). Tab uses tab bar to switch away.
+        if !useQuickInputForName {
+            let closeButtonView = LiquidGlassCloseButton { [weak self] in self?.closeTapped() }
+            let closeHosting = UIHostingController(rootView: closeButtonView)
+            closeHosting.view.translatesAutoresizingMaskIntoConstraints = false
+            closeHosting.view.backgroundColor = .clear
+            addChild(closeHosting)
+            closeHosting.didMove(toParent: self)
+            photoContainerView.addSubview(closeHosting.view)
+            closeButtonHostingController = closeHosting
+        }
         
-        // Layout: photo fills space above carousel when keyboard is not shown; bottom stack pinned to safe area
-        NSLayoutConstraint.activate([
+        var layoutConstraints: [NSLayoutConstraint] = [
             // Photo/video container - fills from top down to carousel (no fixed height)
             photoContainerView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
             photoContainerView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             photoContainerView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             photoContainerView.bottomAnchor.constraint(equalTo: photoCarouselCollectionView.topAnchor, constant: -12),
             
-            // Close button overlaying top-right of photo (44×44 liquid glass circle)
-            closeHosting.view.topAnchor.constraint(equalTo: photoContainerView.topAnchor, constant: 12),
-            closeHosting.view.trailingAnchor.constraint(equalTo: photoContainerView.trailingAnchor, constant: -12),
-            closeHosting.view.widthAnchor.constraint(equalToConstant: 44),
-            closeHosting.view.heightAnchor.constraint(equalToConstant: 44),
-            
+            // Placeholder fills container (shown when no image yet)
+            photoPlaceholderView.topAnchor.constraint(equalTo: photoContainerView.topAnchor),
+            photoPlaceholderView.leadingAnchor.constraint(equalTo: photoContainerView.leadingAnchor),
+            photoPlaceholderView.trailingAnchor.constraint(equalTo: photoContainerView.trailingAnchor),
+            photoPlaceholderView.bottomAnchor.constraint(equalTo: photoContainerView.bottomAnchor),
+
             // Photo image view fills container
             photoImageView.topAnchor.constraint(equalTo: photoContainerView.topAnchor),
             photoImageView.leadingAnchor.constraint(equalTo: photoContainerView.leadingAnchor),
@@ -1500,7 +1551,16 @@ final class WelcomeFaceNamingViewController: UIViewController {
             carouselButtonsStackView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             carouselButtonsStackView.heightAnchor.constraint(equalToConstant: 44),
             carouselButtonsStackView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
-        ])
+        ]
+        if let closeHosting = closeButtonHostingController {
+            layoutConstraints += [
+                closeHosting.view.topAnchor.constraint(equalTo: photoContainerView.topAnchor, constant: 12),
+                closeHosting.view.trailingAnchor.constraint(equalTo: photoContainerView.trailingAnchor, constant: -12),
+                closeHosting.view.widthAnchor.constraint(equalToConstant: 44),
+                closeHosting.view.heightAnchor.constraint(equalToConstant: 44),
+            ]
+        }
+        NSLayoutConstraint.activate(layoutConstraints)
 
         let inputRowHeight: CGFloat = 56
         nameTextFieldHeightConstraint = nameTextField.heightAnchor.constraint(equalToConstant: inputRowHeight)
@@ -1594,6 +1654,7 @@ final class WelcomeFaceNamingViewController: UIViewController {
             photoCarouselCollectionView.reloadData()
             currentPhotoData = nil
             photoImageView.image = nil
+            photoPlaceholderView.isHidden = false
             detectedFaces = []
             faceAssignments = []
             facesCollectionView.reloadData()
@@ -1789,6 +1850,7 @@ final class WelcomeFaceNamingViewController: UIViewController {
                 cachedDisplayImages[i] = cached
                 continue
             }
+            let index = i  // Capture value for async callback (loop variable would be wrong when callback runs)
             let options = displayImageOptions()
             imageManager.requestImage(
                 for: asset,
@@ -1805,13 +1867,13 @@ final class WelcomeFaceNamingViewController: UIViewController {
                         // Never overwrite a higher-fidelity image with a lower-fidelity one.
                         // With opportunistic delivery, we may get degraded first then full (or out of order).
                         if isDegraded {
-                            if self.cachedDisplayImages[i] == nil {
-                                self.cachedDisplayImages[i] = toStore
+                            if self.cachedDisplayImages[index] == nil {
+                                self.cachedDisplayImages[index] = toStore
                                 // Do not store degraded in ImageCacheService; wait for full-quality so we don't overwrite.
                             }
                         } else {
                             self.imageCache.setImage(toStore, for: cacheKey)
-                            self.cachedDisplayImages[i] = toStore
+                            self.cachedDisplayImages[index] = toStore
                         }
                     }
                 }
@@ -1901,6 +1963,9 @@ final class WelcomeFaceNamingViewController: UIViewController {
 
     // MARK: - Sliding window (fetch more when user scrolls near end/start; keeps memory bounded, no cap on how far back)
 
+    /// Max items before we drop from the start. Append-only until we hit this; then we roll the window.
+    private let carouselMaxItemCount = 600
+
     private func slideWindowForwardIfNeeded(centerIndex: Int) {
         guard !isSlidingWindow, carouselItemCount >= slideTriggerMargin, centerIndex >= carouselItemCount - slideTriggerMargin else { return }
         guard let lastDate = prioritizedAssets.last?.creationDate else { return }
@@ -1910,49 +1975,76 @@ final class WelcomeFaceNamingViewController: UIViewController {
             await MainActor.run {
                 defer { isSlidingWindow = false }
                 guard !newBatch.isEmpty else { return }
+                isProgrammaticallyScrollingCarousel = true  // Prevent scrollViewDidScroll from overwriting index during batch update
                 let oldCount = prioritizedAssets.count
                 let oldCenter = currentCarouselIndex
-                let dropCount = min(slideWindowChunk, oldCount)
-                let deletePaths = (0..<dropCount).map { IndexPath(item: $0, section: 0) }
-                let insertPaths = (oldCount - dropCount..<oldCount - dropCount + newBatch.count).map { IndexPath(item: $0, section: 0) }
-                prioritizedAssets = Array(prioritizedAssets.dropFirst(dropCount)) + newBatch
-                carouselThumbnails = Array(carouselThumbnails.dropFirst(dropCount)) + Array(repeating: nil, count: newBatch.count)
-                (0..<dropCount).forEach { thumbnailLoadingTasks.removeValue(forKey: $0) }
-                thumbnailLoadingTasks.forEach { $0.value.cancel() }
-                thumbnailLoadingTasks.removeAll()
-                windowStartIndex += dropCount
-                currentCarouselIndex = clampCarouselIndex(max(0, oldCenter - dropCount))
-                cachedDisplayImages.removeAll()
-                lastCachedDisplayWindow = nil
-                lastCarouselThumbnailWindow = nil
-                lastEvictionCenterIndex = nil
-                photoQueue.removeAll()
-                // So the new tail (dropped-from-start + new batch) gets preprocessed for magnifying glass
-                currentBatchIndex = min(currentBatchIndex, oldCount - dropCount)
-                UIView.performWithoutAnimation {
-                    photoCarouselCollectionView.performBatchUpdates {
-                        photoCarouselCollectionView.deleteItems(at: deletePaths)
+
+                // Append-first: grow the carousel so user can scroll further. No jump to 0.
+                // When we would exceed carouselMaxItemCount, drop from the start and adjust scroll to keep position.
+                let wouldExceed = oldCount + newBatch.count > carouselMaxItemCount
+                let dropCount = wouldExceed ? min(slideWindowChunk, oldCount) : 0
+
+                if dropCount > 0 {
+                    // Roll window: drop from start, append new; adjust index and content offset so user doesn't notice
+                    let deletePaths = (0..<dropCount).map { IndexPath(item: $0, section: 0) }
+                    prioritizedAssets = Array(prioritizedAssets.dropFirst(dropCount)) + newBatch
+                    carouselThumbnails = Array(carouselThumbnails.dropFirst(dropCount)) + Array(repeating: nil, count: newBatch.count)
+                    (0..<dropCount).forEach { thumbnailLoadingTasks.removeValue(forKey: $0) }
+                    thumbnailLoadingTasks.forEach { $0.value.cancel() }
+                    thumbnailLoadingTasks.removeAll()
+                    windowStartIndex += dropCount
+                    currentCarouselIndex = clampCarouselIndex(max(0, oldCenter - dropCount))
+                    let insertCount = newBatch.count
+                    let insertPaths = (oldCount - dropCount..<oldCount - dropCount + insertCount).map { IndexPath(item: $0, section: 0) }
+                    cachedDisplayImages.removeAll()
+                    lastCachedDisplayWindow = nil
+                    lastCarouselThumbnailWindow = nil
+                    lastEvictionCenterIndex = nil
+                    photoQueue.removeAll()
+                    currentBatchIndex = min(currentBatchIndex, oldCount - dropCount)
+                    UIView.performWithoutAnimation {
+                        photoCarouselCollectionView.performBatchUpdates {
+                            photoCarouselCollectionView.deleteItems(at: deletePaths)
+                            photoCarouselCollectionView.insertItems(at: insertPaths)
+                        }
+                    }
+                    scrollCarouselToCurrentIndex()
+                } else {
+                    // Append only: no drop, no index change, infinite feel
+                    prioritizedAssets.append(contentsOf: newBatch)
+                    carouselThumbnails.append(contentsOf: Array(repeating: nil, count: newBatch.count))
+                    let insertPaths = (oldCount..<prioritizedAssets.count).map { IndexPath(item: $0, section: 0) }
+                    currentCarouselIndex = oldCenter  // Unchanged; user stays at same position
+                    currentBatchIndex = min(currentBatchIndex, oldCount)  // Preprocess new tail
+                    UIView.performWithoutAnimation {
                         photoCarouselCollectionView.insertItems(at: insertPaths)
                     }
+                    // No scroll: user is already at oldCenter. No loadPhotoAtCarouselIndex: same asset.
                 }
-                scrollCarouselToCurrentIndex()
                 loadPhotoAtCarouselIndex(currentCarouselIndex)
                 startCachingDisplayImages(around: currentCarouselIndex)
                 preprocessNextBatch()
+                // Clear flag on next run loop so layout-triggered scroll events don't overwrite index
+                DispatchQueue.main.async { [weak self] in
+                    self?.isProgrammaticallyScrollingCarousel = false
+                }
             }
         }
     }
 
-    /// Appends batches (older than last) until the carousel contains the given asset ID, so we can restore to that photo after re-open. Returns true if the asset was found.
+    /// Fetches batches (older, then newer if needed) until the carousel contains the given asset ID. Returns true if found.
     private func fetchUntilSavedAssetPresent(assetID: String) async -> Bool {
-        let maxBatches = 10
-        for _ in 0..<maxBatches {
+        let targetAsset = await MainActor.run { PHAsset.fetchAssets(withLocalIdentifiers: [assetID], options: nil).firstObject }
+        guard let targetAsset, let targetDate = targetAsset.creationDate else { return false }
+
+        // Try older batches first (asset beyond our 500-window tail)
+        for _ in 0..<10 {
             let alreadyThere = await MainActor.run { self.prioritizedAssets.contains { $0.localIdentifier == assetID } }
             if alreadyThere { return true }
             let lastDate = await MainActor.run { self.prioritizedAssets.last?.creationDate }
-            guard let lastDate else { return false }
+            guard let lastDate else { break }
             let newBatch = await NameFacesCarouselAssetFetcher.fetchAssetsOlderThan(lastDate, limit: slideWindowChunk)
-            guard !newBatch.isEmpty else { return false }
+            guard !newBatch.isEmpty else { break }
             await MainActor.run {
                 let oldCount = self.prioritizedAssets.count
                 self.prioritizedAssets.append(contentsOf: newBatch)
@@ -1961,10 +2053,43 @@ final class WelcomeFaceNamingViewController: UIViewController {
                 let insertPaths = (oldCount..<self.prioritizedAssets.count).map { IndexPath(item: $0, section: 0) }
                 self.photoCarouselCollectionView.insertItems(at: insertPaths)
             }
-            let found = await MainActor.run { self.prioritizedAssets.contains { $0.localIdentifier == assetID } }
-            if found { return true }
         }
-        return false
+
+        // If still not found, try newer batches (asset newer than our first item, e.g. just imported)
+        if targetDate > (await MainActor.run { self.prioritizedAssets.first?.creationDate } ?? .distantPast) {
+            for _ in 0..<5 {
+                let alreadyThere = await MainActor.run { self.prioritizedAssets.contains { $0.localIdentifier == assetID } }
+                if alreadyThere { return true }
+                let firstDate = await MainActor.run { self.prioritizedAssets.first?.creationDate }
+                guard let firstDate else { break }
+                let newBatch = await NameFacesCarouselAssetFetcher.fetchAssetsNewerThan(firstDate, limit: slideWindowChunk)
+                guard !newBatch.isEmpty else { break }
+                await MainActor.run {
+                    self.isProgrammaticallyScrollingCarousel = true  // Prevent scrollViewDidScroll from overwriting index during batch update
+                    let oldCount = self.prioritizedAssets.count
+                    let oldCenter = self.currentCarouselIndex
+                    let dropCount = min(slideWindowChunk, oldCount)
+                    self.prioritizedAssets = newBatch + Array(self.prioritizedAssets.dropLast(dropCount))
+                    self.carouselThumbnails = Array(repeating: nil, count: newBatch.count) + Array(self.carouselThumbnails.dropLast(dropCount))
+                    self.currentCarouselIndex = self.clampCarouselIndex(oldCenter + newBatch.count)
+                    self.cachedDisplayImages.removeAll()
+                    self.lastCachedDisplayWindow = nil
+                    let deletePaths = (oldCount - dropCount..<oldCount).map { IndexPath(item: $0, section: 0) }
+                    let insertPaths = (0..<newBatch.count).map { IndexPath(item: $0, section: 0) }
+                    UIView.performWithoutAnimation {
+                        self.photoCarouselCollectionView.performBatchUpdates {
+                            self.photoCarouselCollectionView.insertItems(at: insertPaths)
+                            self.photoCarouselCollectionView.deleteItems(at: deletePaths)
+                        }
+                    }
+                    self.scrollCarouselToCurrentIndex()
+                    self.loadPhotoAtCarouselIndex(self.currentCarouselIndex)
+                    self.startCachingDisplayImages(around: self.currentCarouselIndex)
+                }
+            }
+        }
+
+        return await MainActor.run { self.prioritizedAssets.contains { $0.localIdentifier == assetID } }
     }
 
     /// Fetches more assets (older than current last) and appends to the carousel. Used when magnifying glass
@@ -1996,6 +2121,7 @@ final class WelcomeFaceNamingViewController: UIViewController {
             await MainActor.run {
                 defer { isSlidingWindow = false }
                 guard !newBatch.isEmpty else { return }
+                isProgrammaticallyScrollingCarousel = true  // Prevent scrollViewDidScroll from overwriting index during batch update
                 let oldCount = prioritizedAssets.count
                 let oldCenter = currentCarouselIndex
                 let dropCount = min(slideWindowChunk, oldCount)
@@ -2349,9 +2475,52 @@ final class WelcomeFaceNamingViewController: UIViewController {
         await MainActor.run {
             cleanupVideoPlayer()
             currentVideoAsset = asset
-            print("📹 Setting up custom video player for asset")
         }
-        
+
+        // Reuse Feed's shared player when morphing Feed→Carousel—avoids reload, keeps playback.
+        if let coord = combinedMediaCoordinator,
+           coord.sharedVideoPlayer.displayedAssetID == asset.localIdentifier {
+            await MainActor.run {
+                guard currentCarouselIndex == carouselIndex ?? currentCarouselIndex else { return }
+                let shared = coord.sharedVideoPlayer
+                videoPlayer = shared.player
+                isUsingSharedVideoPlayer = true
+
+                let playerLayer = AVPlayerLayer(player: shared.player)
+                playerLayer.videoGravity = .resizeAspect
+                playerLayer.frame = CGRect(origin: .zero, size: videoPlayerView.bounds.size)
+
+                videoPlayerView.layer.sublayers?.forEach { $0.removeFromSuperlayer() }
+                videoPlayerView.layer.addSublayer(playerLayer)
+                videoPlayerLayer = playerLayer
+
+                videoPlayerView.isHidden = false
+                videoControlsContainer.isHidden = true
+                videoControlsContainer.alpha = 0
+                photoImageView.isHidden = true
+                photoPlaceholderView.isHidden = true
+
+                UIView.performWithoutAnimation {
+                    facesBottomConstraintForVideo?.isActive = false
+                    facesBottomConstraintForImage?.isActive = true
+                    view.layoutIfNeeded()
+                }
+
+                setupTimeObserver()
+                startFaceDetectionTimer()
+
+                shared.setActive(true)
+                shared.player.play()
+                updatePlayPauseButton(isPlaying: true)
+
+                print("✅ Reusing Feed shared player (seamless morph)")
+            }
+            return
+        }
+
+        isUsingSharedVideoPlayer = false
+        print("📹 Setting up custom video player for asset")
+
         // Request the AVAsset for the video
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             let options = PHVideoRequestOptions()
@@ -2390,6 +2559,7 @@ final class WelcomeFaceNamingViewController: UIViewController {
                     self.videoControlsContainer.isHidden = true  // Hidden by default, Apple pattern
                     self.videoControlsContainer.alpha = 0  // Start at 0 for smooth fade-in
                     self.photoImageView.isHidden = true
+                    self.photoPlaceholderView.isHidden = true
                     
                     // Position faces at bottom initially (will move up when user drags to scrub)
                     // Apple pattern: Drag on video to scrub AND show controls
@@ -2454,16 +2624,19 @@ final class WelcomeFaceNamingViewController: UIViewController {
     private func cleanupVideoPlayer() {
         stopFaceDetectionTimer()
         cancelControlsAutoHide()  // Clean up controls hide timer
-        
+
         // Remove time observer from the current player before releasing it
         if let observer = timeObserver, let player = videoPlayer {
             player.removeTimeObserver(observer)
             timeObserver = nil
         }
-        
-        // Pause and release player
-        videoPlayer?.pause()
+
+        // Pause and release player—skip pause when using shared (Feed owns it, keeps playing during morph)
+        if !isUsingSharedVideoPlayer {
+            videoPlayer?.pause()
+        }
         videoPlayer = nil
+        isUsingSharedVideoPlayer = false
         
         // Clean up layer
         videoPlayerLayer?.removeFromSuperlayer()
@@ -2874,11 +3047,16 @@ final class WelcomeFaceNamingViewController: UIViewController {
     }
     
     private func loadInitialCarouselThumbnails() {
-        // Native-first: fewer initial thumbnails on phone so main photo and carousel appear faster.
+        // Load around currentCarouselIndex first so the main photo area has a placeholder when display cache is empty.
         let cap = (UIDevice.current.userInterfaceIdiom == .phone) ? 15 : 30
-        let initialCount = min(cap, carouselItemCount)
+        let targetCount = min(cap, carouselItemCount)
+        guard targetCount > 0 else { return }
         
-        for i in 0..<initialCount {
+        let center = currentCarouselIndex
+        let indicesByDistance = (0..<carouselItemCount)
+            .filter { isValidCarouselIndex($0) }
+            .sorted { abs($0 - center) < abs($1 - center) }
+        for i in indicesByDistance.prefix(targetCount) {
             loadThumbnailAtIndex(i)
         }
     }
@@ -2947,13 +3125,22 @@ final class WelcomeFaceNamingViewController: UIViewController {
 
     private func requestThumbnailImage(for asset: PHAsset, size: CGSize) async -> UIImage? {
         await withCheckedContinuation { continuation in
+            var didResume = false
+            let lock = NSLock()
+            let fallback = DispatchWorkItem { [lock] in
+                lock.lock()
+                defer { lock.unlock() }
+                if !didResume {
+                    didResume = true
+                    continuation.resume(returning: nil)
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: fallback)
             let options = PHImageRequestOptions()
             options.deliveryMode = .fastFormat
             options.resizeMode = .fast
             options.isNetworkAccessAllowed = true
             options.isSynchronous = false
-            var didResume = false
-            let lock = NSLock()
             imageManager.requestImage(
                 for: asset,
                 targetSize: size,
@@ -2965,6 +3152,7 @@ final class WelcomeFaceNamingViewController: UIViewController {
                 guard !didResume else { return }
                 let isDegraded = (info?[PHImageResultIsDegradedKey] as? NSNumber)?.boolValue == true
                 if !isDegraded || image != nil {
+                    fallback.cancel()
                     didResume = true
                     continuation.resume(returning: image)
                 }
@@ -2973,23 +3161,46 @@ final class WelcomeFaceNamingViewController: UIViewController {
     }
     
     private func loadVideoThumbnail(for asset: PHAsset) async -> UIImage? {
-        return await withCheckedContinuation { continuation in
+        await withCheckedContinuation { continuation in
+            var didResume = false
+            let lock = NSLock()
+            let fallback = DispatchWorkItem {
+                lock.lock()
+                defer { lock.unlock() }
+                if !didResume {
+                    didResume = true
+                    continuation.resume(returning: nil)
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: fallback)
             let options = PHImageRequestOptions()
             options.deliveryMode = .fastFormat
             options.resizeMode = .fast
             options.isNetworkAccessAllowed = false
-            
             imageManager.requestImage(
                 for: asset,
                 targetSize: carouselThumbnailSize,
                 contentMode: .aspectFill,
                 options: options
             ) { image, _ in
+                lock.lock()
+                defer { lock.unlock() }
+                guard !didResume else { return }
+                fallback.cancel()
+                didResume = true
                 continuation.resume(returning: image)
             }
         }
     }
     
+    /// Called from SwiftUI when Feed→Carousel bridge: scroll to the given asset (must be in prioritizedAssets).
+    func scrollToAssetIDIfNeeded(_ assetID: String?) {
+        guard let id = assetID,
+              let index = prioritizedAssets.firstIndex(where: { $0.localIdentifier == id }),
+              index != currentCarouselIndex else { return }
+        jumpToPhotoAtIndex(index)
+    }
+
     private func jumpToPhotoAtIndex(_ index: Int) {
         guard isValidCarouselIndex(index) else { return }
         
@@ -3244,7 +3455,7 @@ extension WelcomeFaceNamingViewController: UICollectionViewDelegate {
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         if scrollView == photoCarouselCollectionView {
-            guard !isProgrammaticallyScrollingCarousel && !isUserTappingCarousel else { return }
+            guard !isProgrammaticallyScrollingCarousel, !isUserTappingCarousel, !isSlidingWindow else { return }
             guard hasUserInteractedWithCarousel else { return }
             
             guard let centeredIndex = findCenteredItemIndex(), centeredIndex != currentCarouselIndex else { return }
@@ -3283,6 +3494,7 @@ extension WelcomeFaceNamingViewController: UICollectionViewDelegate {
     /// Called when scroll has settled (timer) or ended. Commits current center: save position, update cache window and eviction. Does not run loadPhotoAtCarouselIndex (that runs only on scroll end / tap).
     private func commitScrollPosition() {
         scrollCommitWorkItem = nil
+        guard !isProgrammaticallyScrollingCarousel, !isSlidingWindow else { return }
         guard let centeredIndex = findCenteredItemIndex(), isValidCarouselIndex(centeredIndex) else { return }
         currentCarouselIndex = centeredIndex
         saveCarouselPosition()
@@ -3311,6 +3523,7 @@ extension WelcomeFaceNamingViewController: UICollectionViewDelegate {
             scrollCommitWorkItem = nil
             isUserTappingCarousel = false
             hasUserStoppedScrolling = true
+            guard !isProgrammaticallyScrollingCarousel, !isSlidingWindow else { return }
             guard hasUserInteractedWithCarousel, let centeredIndex = findCenteredItemIndex() else { return }
             let prev = currentCarouselIndex
             currentCarouselIndex = centeredIndex
@@ -3325,6 +3538,7 @@ extension WelcomeFaceNamingViewController: UICollectionViewDelegate {
             scrollCommitWorkItem = nil
             isUserTappingCarousel = false
             hasUserStoppedScrolling = true
+            guard !isProgrammaticallyScrollingCarousel, !isSlidingWindow else { return }
             guard hasUserInteractedWithCarousel, let centeredIndex = findCenteredItemIndex() else { return }
             let prev = currentCarouselIndex
             currentCarouselIndex = centeredIndex
@@ -3336,14 +3550,25 @@ extension WelcomeFaceNamingViewController: UICollectionViewDelegate {
     private func performPostScrollUpdates(for centeredIndex: Int) {
         // All heavy operations happen here, AFTER scrolling stops
         // CRITICAL: Avoid any layout changes that cause visual jumps
+        // Guard scroll delegates: reloadData/reloadItems can trigger scrollViewDidScroll during layout;
+        // without this, findCenteredItemIndex() may return 0 and overwrite currentCarouselIndex.
+        isProgrammaticallyScrollingCarousel = true
+        // Clear flag on next run loop so layout-triggered scroll events are still guarded
+        DispatchQueue.main.async { [weak self] in
+            self?.isProgrammaticallyScrollingCarousel = false
+        }
         
         // Wrap everything in performWithoutAnimation to prevent any implicit animations
         UIView.performWithoutAnimation {
             // 1. Update carousel thumbnails
             loadVisibleAndNearbyThumbnails()
             
-            // 2. Update carousel cell highlights
-            photoCarouselCollectionView.reloadData()
+            // 2. Update carousel cell highlights — reload only visible items to avoid full layout churn
+            //    that can trigger spurious scroll events and overwrite currentCarouselIndex with 0
+            let visiblePaths = photoCarouselCollectionView.indexPathsForVisibleItems
+            if !visiblePaths.isEmpty {
+                photoCarouselCollectionView.reloadItems(at: visiblePaths)
+            }
             
             // 3. Clean up video player WITHOUT affecting image view
             // Only clean up if we're showing an image (not switching between media types)
@@ -3420,6 +3645,7 @@ extension WelcomeFaceNamingViewController: UICollectionViewDelegate {
     private func findCenteredItemIndex() -> Int? {
         guard carouselItemCount > 0 else { return nil }
         let cv = photoCarouselCollectionView
+        guard cv.bounds.width > 0, cv.bounds.height > 0 else { return nil }
         let centerX = cv.contentOffset.x + cv.bounds.width / 2
         let visibleRect = CGRect(origin: cv.contentOffset, size: cv.bounds.size)
         let raw: Int?

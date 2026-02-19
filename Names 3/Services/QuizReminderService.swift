@@ -2,6 +2,22 @@ import Foundation
 import UIKit
 import UserNotifications
 
+extension Notification.Name {
+    /// Posted when the user taps the quiz reminder notification. ContentView should switch to practice tab and show the choose-practice-mode view.
+    static let quizReminderTapped = Notification.Name("Names3.QuizReminderTapped")
+}
+
+private let pendingQuizReminderTapKey = "Names3.pendingQuizReminderTap"
+
+extension QuizReminderService {
+    /// When the user taps the quiz notification before ContentView is mounted (e.g. cold start), we store this flag.
+    /// ContentView checks it on appear and navigates to choose practice mode.
+    static var hasPendingQuizReminderTap: Bool {
+        get { UserDefaults.standard.bool(forKey: pendingQuizReminderTapKey) }
+        set { UserDefaults.standard.set(newValue, forKey: pendingQuizReminderTapKey) }
+    }
+}
+
 /// Schedules a single daily local notification to remind the user to practice (Face Quiz or Memory Rehearsal).
 /// Permission is requested only once, after the user completes their first quiz of any type.
 /// User can enable/disable the reminder in Settings; one notification per day regardless of quiz type.
@@ -20,7 +36,8 @@ final class QuizReminderService {
     }
     
     /// Identifier for the one daily reminder. Reused so we never have more than one pending.
-    private static let dailyReminderIdentifier = "quiz_daily_reminder"
+    /// Exposed so AppDelegate can recognize it when the user taps the notification.
+    static let dailyReminderIdentifier = "quiz_daily_reminder"
     
     /// Default time for the daily reminder (9:00 AM local).
     private static let defaultReminderHour = 9

@@ -8,7 +8,7 @@
 import SwiftUI
 
 enum MainTab: Int, CaseIterable {
-    case nameFaces = 0   // camera first
+    case nameFaces = 0   // combined: feed + face-naming carousel
     case people = 1      // people middle
     case practice = 2    // practice third
 
@@ -28,6 +28,19 @@ enum MainTab: Int, CaseIterable {
         }
     }
 }
+
+// MARK: - Tab Bar Height Preference
+
+/// Preference key for the tab bar's height. Used by Name Faces to add bottom inset so the carousel doesn't overlap the bar.
+enum TabBarHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+/// Minimum height to reserve for the tab bar when measured height isn't available yet (pill 64pt + padding 16pt).
+let tabBarMinimumHeight: CGFloat = 80
 
 // MARK: - Apple Music–Style Tab Bar
 
@@ -64,6 +77,11 @@ struct QuickInputBottomBar<InlineInputContent: View>: View {
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
         .safeAreaPadding(.bottom, 8)
+        .background(
+            GeometryReader { geo in
+                Color.clear.preference(key: TabBarHeightPreferenceKey.self, value: geo.size.height)
+            }
+        )
     }
 
     /// Chevron in its own separate circle; input in its own pill. Two distinct containers with gap.

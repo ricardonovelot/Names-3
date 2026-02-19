@@ -31,6 +31,8 @@ struct TikTokFeedView: View {
     @State private var firstCellFrameObserver: NSObjectProtocol?
     @State private var didShowFirstFrame = false
     @State private var criticalPrefetchedIDs: Set<String> = []
+    @State private var pendingScrollToAssetID: String?
+    @State private var pendingScrollLoadInFlight = false  // Avoid loop when carousel asset not in Feed (e.g. photo-only)
 
     private struct CellMountLogger: View {
         let idx: Int
@@ -68,8 +70,16 @@ struct TikTokFeedView: View {
         }
     }
 
-    init(mode: TikTokFeedViewModel.FeedMode = .explore) {
+    /// When set, syncs position with Carousel and reports current asset for morph transition.
+    var coordinator: CombinedMediaCoordinator?
+
+    /// When false (carousel visible), feed pauses shared player; when true, feed consumes bridge on becoming visible.
+    var isFeedVisible: Bool = true
+
+    init(mode: TikTokFeedViewModel.FeedMode = .explore, coordinator: CombinedMediaCoordinator? = nil, isFeedVisible: Bool = true) {
         _viewModel = StateObject(wrappedValue: TikTokFeedViewModel(mode: mode))
+        self.coordinator = coordinator
+        self.isFeedVisible = isFeedVisible
     }
     
     var body: some View {
@@ -83,6 +93,7 @@ struct TikTokFeedView: View {
             } else {
                 PagedCollectionView(items: viewModel.items,
                                     index: $index,
+                                    initialIndex: !didSetInitialIndex ? viewModel.initialIndexInWindow : nil,
                                     id: { $0.id },
                                     onPrefetch: handlePrefetch(indices:size:),
                                     onCancelPrefetch: handleCancelPrefetch(indices:size:),
@@ -95,9 +106,10 @@ struct TikTokFeedView: View {
                         AnyView(
                             TikTokPlayerView(
                                 asset: asset,
-                                isActive: isActive,
+                                isActive: isActive && isFeedVisible,
                                 pinnedMode: options.progress > 0.001,
-                                noCropMode: true
+                                noCropMode: true,
+                                sharedController: coordinator?.sharedVideoPlayer
                             )
                             .id(item.id)
                             .optionsPinnedTopTransform(progress: options.progress)
@@ -108,7 +120,7 @@ struct TikTokFeedView: View {
                             )
                         )
                     case .photoCarousel(let assets):
-                        if FeatureFlags.enablePhotoPosts {
+                        if FeatureFlags.enablePhotoPosts || !assets.isEmpty {
                             AnyView(
                                 PhotoCarouselPostView(assets: assets)
                                     .id(item.id)
@@ -276,7 +288,37 @@ struct TikTokFeedView: View {
                 }
             }
         } 
-        .onAppear { 
+        .onChange(of: isFeedVisible) { _, nowVisible in
+            // When switching Carousel→Feed: feed becomes visible but doesn't get onAppear (always mounted).
+            // Consume bridge here so we scroll to the carousel's asset.
+            guard nowVisible, let coord = coordinator else { return }
+            let bridgeID = coord.consumeBridgeTarget()
+            if let id = bridgeID {
+                didSetInitialIndex = false  // Allow items onChange to apply bridge index (was blocking when feed pre-loaded)
+                pendingScrollToAssetID = id
+                viewModel.initialBridgeAssetID = id
+                Diagnostics.log("[Bridge] Feed became visible: scroll to Carousel asset \(id)")
+                applyPendingScrollIfNeeded()
+                if viewModel.items.isEmpty || viewModel.indexOfAsset(id: id) == nil {
+                    pendingScrollLoadInFlight = true
+                    viewModel.loadWindowContaining(assetID: id)
+                } else {
+                    pendingScrollLoadInFlight = false
+                }
+            }
+        }
+        .onAppear {
+            // Single source: consume bridge target from coordinator (Carousel→Feed handoff, first load)
+            let bridgeID = coordinator?.consumeBridgeTarget()
+            // #region agent log
+            Diagnostics.debugBridge(hypothesisId: "B", location: "TikTokFeedView.onAppear", message: "Feed onAppear: bridge ID", data: ["bridgeID": bridgeID ?? "nil"])
+            // #endregion
+            if let id = bridgeID {
+                pendingScrollToAssetID = id
+                pendingScrollLoadInFlight = false
+                viewModel.initialBridgeAssetID = id
+                Diagnostics.log("[Bridge] Feed will load window for Carousel asset \(id)")
+            }
             let appState = UIApplication.shared.applicationState
             BootTimeline.mark("TikTokFeed onAppear")
             Diagnostics.log("TikTokFeed onAppear appState=\(appState.rawValue) scenePhase=\(String(describing: scenePhase))")
@@ -358,10 +400,37 @@ struct TikTokFeedView: View {
                 }
                 return
             }
-            let startIndex = viewModel.initialIndexInWindow ?? 0
-            index = max(0, min(viewModel.items.count - 1, startIndex))
+            let startIndex: Int
+            if let pendingID = pendingScrollToAssetID {
+                let idx = viewModel.indexOfAsset(id: pendingID)
+                // #region agent log
+                Diagnostics.debugBridge(hypothesisId: "F", location: "TikTokFeedView.itemsOnChange", message: "resolving startIndex", data: ["pendingID": pendingID, "indexOfAsset": idx?.description ?? "nil", "itemsCount": viewModel.items.count, "initialIndexInWindow": viewModel.initialIndexInWindow?.description ?? "nil"])
+                // #endregion
+                if let idx = idx {
+                    startIndex = idx
+                    pendingScrollToAssetID = nil
+                    pendingScrollLoadInFlight = false
+                } else if pendingScrollLoadInFlight {
+                    // loadWindowContaining already ran; asset not in Feed structure (e.g. photo-only). Use best-effort index.
+                    Diagnostics.log("Feed: bridge asset \(pendingID) not in Feed items, using initialIndexInWindow=\(viewModel.initialIndexInWindow ?? 0)")
+                    startIndex = viewModel.initialIndexInWindow ?? 0
+                    pendingScrollToAssetID = nil
+                    pendingScrollLoadInFlight = false
+                } else {
+                    Diagnostics.log("Feed: asset \(pendingID) not in current items, loading window containing it")
+                    didSetInitialIndex = false
+                    pendingScrollLoadInFlight = true
+                    viewModel.loadWindowContaining(assetID: pendingID)
+                    return
+                }
+            } else {
+                startIndex = viewModel.initialIndexInWindow ?? 0
+            }
+            // PagedCollectionView owns index during bridge (initialIndex); we set it here as fallback for non-bridge
+            let clamped = max(0, min(viewModel.items.count - 1, startIndex))
+            index = clamped
             didSetInitialIndex = true
-            Diagnostics.log("TikTokFeed initial local start index=\(index)")
+            Diagnostics.log("TikTokFeed initial local start index=\(clamped)")
             if viewModel.items.indices.contains(index), case .video(let a) = viewModel.items[index].kind {
                 Task { await NextVideoTraceCenter.shared.begin(assetID: a.localIdentifier, idx: index, total: viewModel.items.count) }
             }
@@ -387,20 +456,33 @@ struct TikTokFeedView: View {
             }
         }
         .onChange(of: index) { _, newIndex in
+            if viewModel.initialIndexInWindow != nil { didSetInitialIndex = true }
             Diagnostics.log("Feed index=\(newIndex)")
             let items = viewModel.items
             if items.indices.contains(newIndex) {
-                if case .video(let asset) = items[newIndex].kind {
-                    CurrentPlayback.shared.currentAssetID = asset.localIdentifier
-                    Task { await NextVideoTraceCenter.shared.begin(assetID: asset.localIdentifier, idx: newIndex, total: items.count) }
+                let assetID = currentAssetID()
+                if case .video = items[newIndex].kind {
+                    CurrentPlayback.shared.currentAssetID = assetID
+                    Task { await NextVideoTraceCenter.shared.begin(assetID: assetID ?? "", idx: newIndex, total: items.count) }
                 } else {
                     CurrentPlayback.shared.currentAssetID = nil
                 }
+                coordinator?.currentAssetID = assetID
             }
             viewModel.loadMoreIfNeeded(currentIndex: newIndex)
             let sizePts = UIScreen.main.bounds.size
             prefetchWindow(around: newIndex, sizePx: sizePts)
             preheatActiveCarouselIfAny(at: newIndex)
+        }
+        .onAppear {
+            // Only update coordinator when we have a valid asset to report (don't overwrite carousel's value with nil when Feed is still loading)
+            if let coord = coordinator, let id = currentAssetID() {
+                coord.currentAssetID = id
+            }
+            applyPendingScrollIfNeeded()
+        }
+        .onChange(of: viewModel.items.count) { _, _ in
+            applyPendingScrollIfNeeded()
         }
         .onChange(of: isQuickPanelExpanded) { _, expanded in
             guard expanded, FeatureFlags.enableAppleMusicIntegration else { return }
@@ -421,7 +503,7 @@ struct TikTokFeedView: View {
             shareItems.removeAll()
         }
         .sheet(isPresented: $showSettings) {
-            SettingsView(appleMusic: appleMusic)
+            VideoFeedSettingsView(appleMusic: appleMusic)
         }
         .overlay {
             if isQuickPanelExpanded {
@@ -567,6 +649,22 @@ struct TikTokFeedView: View {
             return a
         }
         return nil
+    }
+
+    /// Current asset ID (video or first photo of carousel) for coordinator sync.
+    private func currentAssetID() -> String? {
+        guard viewModel.items.indices.contains(index) else { return nil }
+        switch viewModel.items[index].kind {
+        case .video(let a): return a.localIdentifier
+        case .photoCarousel(let arr): return arr.first?.localIdentifier
+        }
+    }
+
+    private func applyPendingScrollIfNeeded() {
+        guard let id = pendingScrollToAssetID, !viewModel.items.isEmpty,
+              let idx = viewModel.indexOfAsset(id: id), idx != index else { return }
+        pendingScrollToAssetID = nil
+        index = idx
     }
     
     private func dateLabelForCurrentItem() -> String? {

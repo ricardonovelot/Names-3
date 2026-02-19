@@ -44,16 +44,25 @@ struct ContentView: View {
     @Environment(\.connectivityMonitor) private var connectivityMonitor
     @Environment(\.cloudKitMirroringResetCoordinator) private var cloudKitResetCoordinator
     @Environment(\.storageMonitor) private var storageMonitor
-    
-    @Query private var contacts: [Contact]
 
-    init() {
+    /// When set, loads contacts on background thread to avoid blocking main during CloudKit sync.
+    private let containerForAsyncLoad: ModelContainer?
+    @Query private var queryContacts: [Contact]
+    @State private var asyncLoadedContacts: [Contact] = []
+    @State private var asyncLoadComplete = false
+
+    private var contacts: [Contact] {
+        containerForAsyncLoad != nil ? asyncLoadedContacts : queryContacts
+    }
+
+    init(containerForAsyncLoad: ModelContainer? = nil) {
+        self.containerForAsyncLoad = containerForAsyncLoad
         var descriptor = FetchDescriptor<Contact>(
             predicate: #Predicate<Contact> { !$0.isArchived },
             sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
         )
-        descriptor.fetchLimit = 2000
-        _contacts = Query(descriptor)
+        descriptor.fetchLimit = 500
+        _queryContacts = Query(descriptor)
     }
     @State private var parsedContacts: [Contact] = []
     @State private var selectedContact: Contact?
@@ -92,6 +101,7 @@ struct ContentView: View {
     @State private var showAllGroupTagDates = false
     @State private var contactForDateEdit: Contact?
     @State private var bottomInputHeight: CGFloat = 0
+    @State private var tabBarHeight: CGFloat = 0
     @State private var fullPhotoGridFaceViewModel: FaceDetectionViewModel? = nil
     @State private var showSettings = false
     @State private var showQuickNotesFeed = false
@@ -103,6 +113,8 @@ struct ContentView: View {
     @State private var showInitialSyncState = true
     @State private var offlineBannerDismissed = false
     @State private var showOfflineActionAlert = false
+    /// When Name Faces tab is in feed mode (vs carousel), collapse quick input.
+    @State private var nameFacesIsFeedMode = true
     /// Undo stack for contact moves (drag-to-group and date picker). Each entry is one user action and can affect multiple contacts.
     @State private var movementUndoStack: [[ContactMovementSnapshot]] = []
     private let maxMovementUndoStackSize = 50
@@ -282,6 +294,7 @@ struct ContentView: View {
                             onTapHeader: {
                                 guard !group.isLongAgo else { return }
                                 faceNamingInitialDate = group.date
+                                nameFacesIsFeedMode = false  // open carousel for face naming
                                 selectedTab = .nameFaces
                             },
                             onDropRecords: { records in
@@ -328,6 +341,18 @@ struct ContentView: View {
         return NavigationStack(path: $contactPathIds) {
             mainContent
                 .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
+                .task {
+                    if let container = containerForAsyncLoad {
+                        asyncLoadedContacts = await FeedContactsLoader.loadContacts(
+                            container: container,
+                            mainContext: modelContext,
+                            fetchLimit: 500
+                        )
+                        asyncLoadComplete = true
+                    } else {
+                        asyncLoadComplete = true
+                    }
+                }
                 .onAppear {
                     LaunchProfiler.logCheckpoint("ContentView mainContent appeared")
                     Self.launchLogger.info("🚀 [Launch] Feed state: contacts=\(self.contacts.count) parsed=\(self.parsedContacts.count) groups=\(self.groups.count)")
@@ -362,6 +387,9 @@ struct ContentView: View {
                 .onPreferenceChange(TotalQuickInputHeightKey.self) { height in
                     handleQuickInputHeightChange(height)
                 }
+                .onPreferenceChange(TabBarHeightPreferenceKey.self) { height in
+                    tabBarHeight = height
+                }
                 .onReceive(
                     NotificationCenter.default.publisher(for: NSCloudKitMirroringDelegateWillResetSyncNotificationName)
                         .receive(on: DispatchQueue.main)
@@ -373,11 +401,27 @@ struct ContentView: View {
                         isQuickInputExpanded = true
                     }
                 }
+                .onReceive(NotificationCenter.default.publisher(for: .quizReminderTapped)) { _ in
+                    QuizReminderService.hasPendingQuizReminderTap = false
+                    navigateToChoosePracticeMode()
+                }
+                .task {
+                    if QuizReminderService.hasPendingQuizReminderTap {
+                        QuizReminderService.hasPendingQuizReminderTap = false
+                        navigateToChoosePracticeMode()
+                    }
+                }
                 .onChange(of: selectedTab) { _, newTab in
                     if newTab == .nameFaces || newTab == .people {
                         withAnimation(.spring(response: 0.4, dampingFraction: 0.82)) {
-                            isQuickInputExpanded = true
+                            isQuickInputExpanded = !(newTab == .nameFaces && nameFacesIsFeedMode)
                         }
+                    }
+                }
+                .onChange(of: nameFacesIsFeedMode) { _, inFeedMode in
+                    guard selectedTab == .nameFaces else { return }
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.82)) {
+                        isQuickInputExpanded = !inFeedMode
                     }
                 }
                 .safeAreaInset(edge: .top) {
@@ -387,7 +431,7 @@ struct ContentView: View {
                         onDismiss: { offlineBannerDismissed = true }
                     )
                 }
-                .overlay(alignment: .bottom) {
+                .safeAreaInset(edge: .bottom) {
                     quickInputSection
                 }
                 .background(Color(uiColor: .systemGroupedBackground))
@@ -488,12 +532,14 @@ struct ContentView: View {
                     }
                 )
             case .nameFaces:
-                NameFacesTabView(
+                NameFacesFeedCombinedView(
+                    isInFeedMode: $nameFacesIsFeedMode,
                     onDismiss: {
                         faceNamingInitialDate = nil
                         selectedTab = .people
                     },
-                    initialScrollDate: faceNamingInitialDate
+                    initialScrollDate: faceNamingInitialDate,
+                    bottomBarHeight: tabBarHeight
                 )
             }
         }
@@ -553,7 +599,7 @@ struct ContentView: View {
         QuickInputBottomBar(
             selectedTab: $selectedTab,
             isQuickInputExpanded: $isQuickInputExpanded,
-            canShowQuickInput: !showQuizView,
+            canShowQuickInput: !showQuizView && !(selectedTab == .nameFaces && nameFacesIsFeedMode),
             showNameFacesButton: selectedTab != .nameFaces,
             onNameFacesTap: {
                 faceNamingInitialDate = nil
@@ -848,7 +894,16 @@ struct ContentView: View {
         showDeletedView = false
         showBulkAddFaces = false
     }
-    
+
+    /// Switches to the practice tab and shows the choose-practice-mode view (QuizMenuView). Called when the user taps the quiz reminder notification.
+    private func navigateToChoosePracticeMode() {
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+            selectedTab = .practice
+            showQuizView = false
+            selectedQuizType = nil
+        }
+    }
+
     private func tagDateOptions() -> [(date: Date, tags: String)] {
         if cloudKitResetCoordinator?.isSyncResetInProgress == true { return [] }
         return groups

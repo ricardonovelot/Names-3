@@ -44,6 +44,34 @@ enum Diagnostics {
         os_signpost(.end, log: signpostLog, name: name, signpostID: sid)
     }
 
+    // #region agent log
+    private static let debugLogPath = "/Users/ricardolopeznovelo/Documents/XCode Projects/Names-3/.cursor/debug-cf9e96.log"
+    static func debugBridge(hypothesisId: String, location: String, message: String, data: [String: Any] = [:]) {
+        let payload: [String: Any] = [
+            "sessionId": "cf9e96",
+            "hypothesisId": hypothesisId,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": Int(Date().timeIntervalSince1970 * 1000)
+        ]
+        guard let json = try? JSONSerialization.data(withJSONObject: payload),
+              let line = String(data: json, encoding: .utf8) else { return }
+        let url = URL(fileURLWithPath: debugLogPath)
+        if FileManager.default.fileExists(atPath: url.path) {
+            if let h = try? FileHandle(forUpdating: url) {
+                h.seekToEndOfFile()
+                h.write((line + "\n").data(using: .utf8)!)
+                try? h.close()
+            }
+        } else {
+            try? (line + "\n").write(to: url, atomically: true, encoding: .utf8)
+        }
+        let dataStr = data.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
+        print("[Bridge] hyp=\(hypothesisId) \(message) \(dataStr)")
+    }
+    // #endregion
+
     static func log(_ message: String) {
         guard shouldEmit(message) else { return }
         switch DiagnosticsConfig.shared.verbosity {

@@ -2,12 +2,12 @@
 //  Video_Feed_TestApp.swift
 //  Video Feed Test
 //
-//  Created by Ricardo Lopez Novelo on 10/1/25.
+//  Standalone app entry for Video Feed Test. When integrated into Names 3,
+//  @main is on Names_3App; this struct is unused but kept for reference.
 //
 
 import SwiftUI
 
-@main
 struct Video_Feed_TestApp: App {
     @StateObject private var settings = AppSettings()
     
@@ -31,10 +31,10 @@ struct Video_Feed_TestApp: App {
     
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            VideoFeedContentView()
                 .environmentObject(settings)
                 .onAppear {
-                    BootTimeline.mark("Root ContentView appeared")
+                    BootTimeline.mark("Root VideoFeedContentView appeared")
                     Diagnostics.log("App root content appeared")
                     Task { @MainActor in
                         // Safe to kick; services themselves will wait for gates.

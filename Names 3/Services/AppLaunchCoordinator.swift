@@ -60,15 +60,12 @@ final class AppLaunchCoordinator {
         LaunchProfiler.endPhase("PostLaunchPhase1", state1)
         LaunchProfiler.logCheckpoint("PostLaunch Phase 1 done (deferring TipKit + photo)")
 
-        // Phase 1b: run after delay so UI and Core Data get the main thread first.
-        let deferredDelay: TimeInterval = 2.0
-        DispatchQueue.main.asyncAfter(deadline: .now() + deferredDelay) {
-            LaunchProfiler.logCheckpoint("PostLaunch Phase 1b (TipKit + photo) starting")
-            TipManager.shared.configure()
-            LaunchProfiler.logCheckpoint("PostLaunch Phase 1b after TipManager")
-            appDelegate.registerPhotoLibraryObserverIfNeeded()
-            LaunchProfiler.logCheckpoint("PostLaunch Phase 1b done")
-        }
+        // Phase 1b: run immediately (main thread no longer blocked by ContentView @Query).
+        LaunchProfiler.logCheckpoint("PostLaunch Phase 1b (TipKit + photo) starting")
+        TipManager.shared.configure()
+        LaunchProfiler.logCheckpoint("PostLaunch Phase 1b after TipManager")
+        appDelegate.registerPhotoLibraryObserverIfNeeded()
+        LaunchProfiler.logCheckpoint("PostLaunch Phase 1b done")
 
         // Phase 2: run UUID migration and storage shrink off main so launch stays interactive (no blocking)
         let state2 = LaunchProfiler.beginPhase("PostLaunchPhase2")
@@ -119,15 +116,9 @@ final class AppLaunchCoordinator {
             LaunchProfiler.markTimeToInteractive()
         }
 
-        // Phase 3: onboarding check after 1 s (edge case: e.g. onboarding reset from Settings).
-        // First-launch onboarding is shown by LaunchRootView via OnboardingGateView, so the main
-        // app is never shown empty; Phase 3 may no-op if onboarding is already active.
-        LaunchProfiler.logCheckpoint("PostLaunch Phase 3 scheduled in 1s")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            Task { @MainActor in
-                self?.runPhase3Onboarding(modelContainer: modelContainer)
-            }
-        }
+        // Phase 3: onboarding check (edge case: e.g. onboarding reset from Settings).
+        LaunchProfiler.logCheckpoint("PostLaunch Phase 3 starting")
+        runPhase3Onboarding(modelContainer: modelContainer)
 
         LaunchProfiler.logCheckpoint("PostLaunch orchestration finished")
     }

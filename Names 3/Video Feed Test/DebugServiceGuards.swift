@@ -13,8 +13,8 @@ enum StartPolicy: String {
     case onUserIntent = "On User Intent (UI)"
 }
 
-@MainActor
 enum DebugServiceGuards {
+    /// Can be called from any context; the actual gate check runs on the main actor.
     static func assertPhaseGate(_ subsystem: RiskySubsystem, policy: StartPolicy, file: StaticString = #file, line: UInt = #line) {
         Task { @MainActor in
             let isActiveOk = await PhaseGate.shared.hasReached(.appActive)

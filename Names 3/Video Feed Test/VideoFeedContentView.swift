@@ -1,13 +1,13 @@
 //
-//  ContentView.swift
+//  VideoFeedContentView.swift
 //  Video Feed Test
 //
-//  Created by Ricardo Lopez Novelo on 10/1/25.
+//  Root view for the standalone Video Feed Test app. Names 3 uses TikTokFeedView directly in its tab.
 //
 
 import SwiftUI
 
-struct ContentView: View {
+struct VideoFeedContentView: View {
     @EnvironmentObject private var settings: AppSettings
     @Environment(\.scenePhase) private var scenePhase
     
@@ -28,8 +28,8 @@ struct ContentView: View {
         .statusBar(hidden: true)
         .reportFirstFrame()
         .onAppear {
-            BootTimeline.mark("ContentView onAppear")
-            Diagnostics.log("ContentView onAppear")
+            BootTimeline.mark("VideoFeedContentView onAppear")
+            Diagnostics.log("VideoFeedContentView onAppear")
             FirstLaunchProbe.shared.contentAppear()
             FirstLaunchProbe.shared.startMainDriftMonitor()
         }
@@ -40,6 +40,6 @@ struct ContentView: View {
 }
 
 #Preview {
-    ContentView()
+    VideoFeedContentView()
         .environmentObject(AppSettings())
 }

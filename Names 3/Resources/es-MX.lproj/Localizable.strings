@@ -34,6 +34,13 @@
 "tab.people" = "Personas";
 "tab.practice" = "Práctica";
 "tab.nameFaces" = "Nombrar Caras";
+"tab.feed" = "Feed";
+
+/* Name Faces + Feed combined view – mode toggle */
+"combined.toggle.nameFaces" = "Nombrar Caras";
+"combined.toggle.feed" = "Feed";
+"combined.toggle.nameFaces.accessibility" = "Cambiar a carrusel de caras";
+"combined.toggle.feed.accessibility" = "Cambiar a vista de feed";
 
 /* Contacts feed – movement undo */
 "contacts.undo.move" = "Deshacer movimiento";

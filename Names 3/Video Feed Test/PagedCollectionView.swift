@@ -4,6 +4,8 @@ import UIKit
 struct PagedCollectionView<Item, Content: View>: UIViewControllerRepresentable {
     let items: [Item]
     @Binding var index: Int
+    /// When non-nil, the collection view starts at this index (no scroll). Used for Carousel→Feed bridge.
+    var initialIndex: Int? = nil
     let id: (Item) -> String
     let onPrefetch: (IndexSet, CGSize) -> Void
     let onCancelPrefetch: (IndexSet, CGSize) -> Void
@@ -37,12 +39,14 @@ struct PagedCollectionView<Item, Content: View>: UIViewControllerRepresentable {
         vc.contentBuilder = { idx, item, isActive in AnyView(content(idx, item, isActive)) }
         vc.captureIDs()
         vc.onScrollInteracting = onScrollInteracting
+        vc.initialIndexOverride = initialIndex
         return vc
     }
     
     func updateUIViewController(_ uiViewController: Controller, context: Context) {
         Diagnostics.log("PagedCollection updateUIViewController items=\(items.count) index=\(index)")
         uiViewController.indexBinding = self.$index
+        uiViewController.initialIndexOverride = initialIndex
         uiViewController.contentBuilder = { idx, item, isActive in AnyView(content(idx, item, isActive)) }
         uiViewController.idProvider = id
         uiViewController.onPrefetch = onPrefetch
@@ -54,6 +58,7 @@ struct PagedCollectionView<Item, Content: View>: UIViewControllerRepresentable {
     
     final class Controller: UICollectionViewController, UICollectionViewDataSourcePrefetching, UICollectionViewDelegateFlowLayout {
         var indexBinding: Binding<Int>!
+        var initialIndexOverride: Int? = nil
         var items: [Item] = []
         var idProvider: ((Item) -> String)!
         var contentBuilder: ((Int, Item, Bool) -> AnyView)!
@@ -63,6 +68,10 @@ struct PagedCollectionView<Item, Content: View>: UIViewControllerRepresentable {
         var onScrollInteracting: ((Bool) -> Void)!
         
         private var didInitialScroll = false
+        /// When we have initialIndexOverride but bounds=0, we can't scroll yet. Use this in viewDidLayoutSubviews.
+        private var pendingBridgeTargetIndex: Int?
+        /// When true, we own the index — block scrollViewDidScroll and commitPageChange from writing.
+        private var isBridgeLockActive: Bool { pendingBridgeTargetIndex != nil }
         private var lastIDs: [String] = []
         private var prefetchedIndices: Set<Int> = []
         private let gateFraction: CGFloat = 0.2
@@ -79,28 +88,64 @@ struct PagedCollectionView<Item, Content: View>: UIViewControllerRepresentable {
         func captureIDs() {
             lastIDs = items.map(idProvider)
         }
-        
+
+        /// Defer Binding writes to next run loop to avoid "Modifying state during view update" (applyUpdates is called from updateUIViewController).
+        private func deferBindingWrite(_ block: @escaping () -> Void) {
+            DispatchQueue.main.async(execute: block)
+        }
+
         func applyUpdates(items: [Item], index: Int) {
             let newIDs = items.map(idProvider)
             let changed = newIDs != lastIDs
-            Diagnostics.log("PagedCollection applyUpdates changed=\(changed) items=\(items.count) targetIndex=\(index)")
+            let targetIdx = initialIndexOverride ?? index
+            // #region agent log
+            Diagnostics.debugBridge(hypothesisId: "H", location: "PagedCollection.applyUpdates", message: "applyUpdates", data: ["index": index, "targetIdx": targetIdx, "initialOverride": initialIndexOverride ?? -1, "itemsCount": items.count, "changed": changed, "boundsH": collectionView.bounds.height])
+            // #endregion
+            Diagnostics.log("PagedCollection applyUpdates changed=\(changed) items=\(items.count) targetIndex=\(targetIdx)")
             self.items = items
+
             if changed {
                 lastIDs = newIDs
                 collectionView.collectionViewLayout.invalidateLayout()
                 collectionView.reloadData()
-                didInitialScroll = false
                 prefetchedIndices = []
             }
-            if items.indices.contains(index) {
-                let currentPage = computedPage()
-                if currentPage != index {
-                    scrollTo(index, animated: false)
+
+            // Bridge: capture target whenever we have override and haven't scrolled yet (works even when changed=false)
+            if let override = initialIndexOverride, items.indices.contains(override), !didInitialScroll {
+                if collectionView.bounds.height > 0 {
+                    collectionView.layoutIfNeeded()
+                    setContentOffsetDirectly(to: override)
+                    deferBindingWrite { self.indexBinding.wrappedValue = override }
+                    didInitialScroll = true
+                    pendingBridgeTargetIndex = nil
                 } else {
-                    refreshVisibleCellsActiveState()
-                    updatePrefetchWindow(for: index)
+                    pendingBridgeTargetIndex = override
+                    deferBindingWrite { self.indexBinding.wrappedValue = override }
                 }
             }
+
+            let effectiveTarget = pendingBridgeTargetIndex ?? targetIdx
+            if items.indices.contains(effectiveTarget) {
+                let currentPage = computedPage()
+                if currentPage != effectiveTarget, collectionView.bounds.height > 0 {
+                    setContentOffsetDirectly(to: effectiveTarget)
+                    deferBindingWrite { self.indexBinding.wrappedValue = effectiveTarget }
+                    didInitialScroll = true
+                    pendingBridgeTargetIndex = nil
+                }
+                refreshVisibleCellsActiveState()
+                updatePrefetchWindow(for: effectiveTarget)
+            }
+        }
+
+        /// Sets content offset directly without animation. Used for initial position.
+        private func setContentOffsetDirectly(to index: Int) {
+            guard items.indices.contains(index), collectionView.bounds.height > 0 else { return }
+            collectionView.layoutIfNeeded()
+            let offsetY = collectionView.bounds.height * CGFloat(index)
+            collectionView.setContentOffset(CGPoint(x: 0, y: offsetY), animated: false)
+            Diagnostics.log("PagedCollection setContentOffsetDirectly index=\(index) offsetY=\(String(format: "%.1f", offsetY))")
         }
         
         override func viewDidLoad() {
@@ -113,11 +158,17 @@ struct PagedCollectionView<Item, Content: View>: UIViewControllerRepresentable {
         override func viewDidLayoutSubviews() {
             super.viewDidLayoutSubviews()
             (collectionView.collectionViewLayout as? UICollectionViewFlowLayout)?.itemSize = collectionView.bounds.size
-            Diagnostics.log("PagedCollection viewDidLayoutSubviews size=\(NSCoder.string(for: collectionView.bounds.size)) didInitialScroll=\(didInitialScroll) items=\(items.count)")
-            if !didInitialScroll, items.indices.contains(indexBinding.wrappedValue) {
-                scrollTo(indexBinding.wrappedValue, animated: false)
+            let targetIdx = pendingBridgeTargetIndex ?? initialIndexOverride ?? indexBinding.wrappedValue
+            // #region agent log
+            Diagnostics.debugBridge(hypothesisId: "I", location: "PagedCollection.viewDidLayoutSubviews", message: "viewDidLayoutSubviews", data: ["targetIdx": targetIdx, "initialOverride": initialIndexOverride ?? -1, "pendingBridge": pendingBridgeTargetIndex ?? -1, "boundsH": collectionView.bounds.height, "didInitialScroll": didInitialScroll, "itemsCount": items.count])
+            // #endregion
+            Diagnostics.log("PagedCollection viewDidLayoutSubviews size=\(NSCoder.string(for: collectionView.bounds.size)) didInitialScroll=\(didInitialScroll) pendingBridge=\(pendingBridgeTargetIndex?.description ?? "nil")")
+            if !didInitialScroll, items.indices.contains(targetIdx), collectionView.bounds.height > 0 {
+                setContentOffsetDirectly(to: targetIdx)
                 didInitialScroll = true
-                updatePrefetchWindow(for: indexBinding.wrappedValue)
+                indexBinding.wrappedValue = targetIdx
+                pendingBridgeTargetIndex = nil
+                updatePrefetchWindow(for: targetIdx)
             }
             layoutGateUI()
         }
@@ -221,6 +272,7 @@ struct PagedCollectionView<Item, Content: View>: UIViewControllerRepresentable {
         
         override func scrollViewDidScroll(_ scrollView: UIScrollView) {
             guard collectionView.bounds.height > 0 else { return }
+            guard !isBridgeLockActive else { return }  // We own the index until bridge scroll completes
 
             let target = computedPage()
             if target != indexBinding.wrappedValue {
@@ -288,6 +340,7 @@ struct PagedCollectionView<Item, Content: View>: UIViewControllerRepresentable {
         }
         
         private func commitPageChange() {
+            guard !isBridgeLockActive else { return }  // Don't overwrite during bridge
             let target = computedPage()
             guard indexBinding.wrappedValue != target else {
                 refreshVisibleCellsActiveState()

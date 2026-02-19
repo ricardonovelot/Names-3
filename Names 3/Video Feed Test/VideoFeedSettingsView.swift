@@ -1,7 +1,7 @@
 import SwiftUI
 import StoreKit
 
-struct SettingsView: View {
+struct VideoFeedSettingsView: View {
     @EnvironmentObject private var settings: AppSettings
     @ObservedObject var appleMusic: MusicLibraryModel
     

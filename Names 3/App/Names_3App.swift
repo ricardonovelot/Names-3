@@ -17,6 +17,9 @@ struct Names_3App: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @Environment(\.scenePhase) private var scenePhase
 
+    /// Bootstraps PhaseGate for Video Feed (AVAudioSession, MediaPlayer guards).
+    private let feedLifecycleMonitor = AppLifecycleMonitor()
+
     private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Names3", category: "SwiftData")
     private static let launchLogger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Names3", category: "Launch")
 
@@ -121,9 +124,18 @@ struct Names_3App: App {
         .modelContainer(sharedModelContainer)
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
-                // Run post-launch as soon as the scene is active so it isn't starved by the
-                // view's .task when the main thread is busy with Core Data / SwiftUI.
-                Task { @MainActor in
+                // Ensure window receives touches on device (fixes unresponsive tap on physical device).
+                if let window = UIApplication.shared.connectedScenes
+                    .compactMap({ $0 as? UIWindowScene })
+                    .flatMap({ $0.windows })
+                    .first(where: { $0.isKeyWindow }) ?? UIApplication.shared.connectedScenes
+                    .compactMap({ $0 as? UIWindowScene })
+                    .flatMap({ $0.windows })
+                    .first {
+                    window.makeKeyAndVisible()
+                }
+                // Run post-launch immediately when scene is active (user-initiated priority).
+                Task(priority: .userInitiated) { @MainActor in
                     await AppLaunchCoordinator.shared.runPostLaunchPhases(
                         modelContainer: sharedModelContainer,
                         appDelegate: appDelegate
