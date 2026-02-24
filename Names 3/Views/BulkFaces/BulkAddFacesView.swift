@@ -465,6 +465,7 @@ struct BulkAddFacesView: View {
         do {
             try contactsContext.save()
             try batchContext.save()
+            NotificationCenter.default.post(name: .contactsDidChange, object: nil)
         } catch {
             print("Bulk save failed: \(error)")
         }
@@ -499,6 +500,7 @@ struct BulkAddFacesView: View {
 
         do {
             try contactsContext.save()
+            NotificationCenter.default.post(name: .contactsDidChange, object: nil)
         } catch {
             print("Bulk save (transient) failed: \(error)")
         }

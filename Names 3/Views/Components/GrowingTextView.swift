@@ -26,6 +26,7 @@ struct GrowingTextView: UIViewRepresentable {
         tv.smartQuotesType = .no
         tv.smartDashesType = .no
         tv.smartInsertDeleteType = .no
+        tv.textContentType = .none  // Avoid OTP/autofill completion list positioning errors
         tv.returnKeyType = .send
         tv.minHeight = minHeight
         tv.maxHeight = maxHeight

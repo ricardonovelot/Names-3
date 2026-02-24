@@ -513,7 +513,11 @@ final class WelcomeFaceNamingViewController: UIViewController {
     var onPrioritizedAssetsDidChange: (([PHAsset]) -> Void)?
 
     /// When set (e.g. by CombinedMediaCoordinator), called when the visible carousel asset changes.
-    var onCurrentAssetDidChange: ((String?) -> Void)?
+    /// Parameters: (assetID, isVideo)
+    var onCurrentAssetDidChange: ((String?, Bool) -> Void)?
+
+    /// Current carousel assets (for Feed↔Carousel mode switch handoff).
+    var currentPrioritizedAssets: [PHAsset] { prioritizedAssets }
 
     init(prioritizedAssets: [PHAsset], modelContext: ModelContext, initialScrollDate: Date? = nil, initialAssetID: String? = nil, useQuickInputForName: Bool = false, coordinator: CombinedMediaCoordinator? = nil) {
         self.prioritizedAssets = prioritizedAssets
@@ -530,7 +534,23 @@ final class WelcomeFaceNamingViewController: UIViewController {
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
-    
+
+    /// Pause video when tab is switched away. Called by NameFacesFeedCombinedViewController.
+    func notifyTabBecameInactive() {
+        videoPlayer?.pause()
+    }
+
+    /// Resume video when tab becomes active again. Called by NameFacesFeedCombinedViewController.
+    func notifyTabBecameActive() {
+        guard videoPlayer != nil else { return }
+        if isUsingSharedVideoPlayer, let coord = combinedMediaCoordinator {
+            coord.sharedVideoPlayer.setActive(true)
+        } else {
+            videoPlayer?.play()
+        }
+        updatePlayPauseButton(isPlaying: true)
+    }
+
     deinit {
         NotificationCenter.default.removeObserver(self, name: UIResponder.keyboardWillShowNotification, object: nil)
         NotificationCenter.default.removeObserver(self, name: UIResponder.keyboardWillHideNotification, object: nil)
@@ -725,6 +745,26 @@ final class WelcomeFaceNamingViewController: UIViewController {
         jumpToPhotoAtIndex(0)
     }
     
+    /// Replaces assets for Feed→Carousel mode switch. Always replaces—ensures same assets in both modes.
+    func replacePrioritizedAssetsForModeSwitch(_ newAssets: [PHAsset], scrollToAssetID: String?) {
+        guard !newAssets.isEmpty else { return }
+        prioritizedAssets = newAssets
+        carouselThumbnails = Array(repeating: nil, count: carouselItemCount)
+        if let id = scrollToAssetID, let index = newAssets.firstIndex(where: { $0.localIdentifier == id }) {
+            currentCarouselIndex = index
+        } else {
+            currentCarouselIndex = 0
+        }
+        cachedDisplayImages.removeAll()
+        lastCachedDisplayWindow = nil
+        lastCarouselThumbnailWindow = nil
+        photoCarouselCollectionView.reloadData()
+        scrollCarouselToCurrentIndex()
+        loadPhotoAtCarouselIndex(currentCarouselIndex)
+        startCachingDisplayImages(around: currentCarouselIndex)
+        loadVisibleAndNearbyThumbnails()
+    }
+
     /// Called when SwiftUI passes a new asset list (e.g. after background merge of screenshots-with-faces). Only updates if the list actually changed.
     func updatePrioritizedAssetsIfNeeded(_ newAssets: [PHAsset]) {
         guard newAssets.count != prioritizedAssets.count ||
@@ -986,7 +1026,13 @@ final class WelcomeFaceNamingViewController: UIViewController {
         // #region agent log
         Diagnostics.debugBridge(hypothesisId: "G", location: "WelcomeFaceNamingVC.reportCurrentAssetToCoordinator", message: "Carousel reports asset", data: ["assetID": assetID ?? "nil", "currentCarouselIndex": currentCarouselIndex])
         // #endregion
-        onCurrentAssetDidChange?(assetID)
+        let isVideo: Bool
+        if let id = assetID, let idx = prioritizedAssets.firstIndex(where: { $0.localIdentifier == id }) {
+            isVideo = prioritizedAssets[idx].mediaType == .video
+        } else {
+            isVideo = false
+        }
+        onCurrentAssetDidChange?(assetID, isVideo)
     }
     
     private func clearSavedPosition() {
@@ -2713,8 +2759,8 @@ final class WelcomeFaceNamingViewController: UIViewController {
                 generator.appliesPreferredTrackTransform = true
                 generator.maximumSize = self.detectionTargetSize
                 
-                // Extract frame at 1 second (or start if video is shorter)
-                let time = CMTime(seconds: 1.0, preferredTimescale: 600)
+                // Extract first frame (time 0) for seamless match with video playback
+                let time = CMTime.zero
                 
                 do {
                     let cgImage = try generator.copyCGImage(at: time, actualTime: nil)
@@ -2933,6 +2979,7 @@ final class WelcomeFaceNamingViewController: UIViewController {
         
         do {
             try modelContext.save()
+            NotificationCenter.default.post(name: .contactsDidChange, object: nil)
             print("✅ Saved \(faceAssignments.filter { !$0.isEmpty }.count) faces from current photo")
         } catch {
             print("❌ Failed to save faces: \(error)")
@@ -2995,6 +3042,7 @@ final class WelcomeFaceNamingViewController: UIViewController {
         await MainActor.run {
             do {
                 try self.modelContext.save()
+                NotificationCenter.default.post(name: .contactsDidChange, object: nil)
                 print("✅ Saved \(savedCount) faces from current photo")
             } catch {
                 print("❌ Failed to save faces: \(error)")

@@ -4,12 +4,44 @@ import StoreKit
 struct VideoFeedSettingsView: View {
     @EnvironmentObject private var settings: AppSettings
     @ObservedObject var appleMusic: MusicLibraryModel
-    
+    @State private var feedMode: FeedImplementationMode = FeedImplementationMode.current
+    @State private var photoGroupingMode: FeedPhotoGroupingMode = FeedPhotoGroupingMode.current
+
     var body: some View {
         NavigationView {
             Form {
                 Section("Overlay") {
                     Toggle("Show download overlay", isOn: $settings.showDownloadOverlay)
+                }
+
+                Section("Feed Implementation (A/B Test)") {
+                    Picker("Mode", selection: $feedMode) {
+                        ForEach(FeedImplementationMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .onChange(of: feedMode) { _, new in
+                        FeedImplementationMode.current = new
+                    }
+                    Text(feedMode.description)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Photo Grouping") {
+                    Picker("Mode", selection: $photoGroupingMode) {
+                        ForEach(FeedPhotoGroupingMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .onChange(of: photoGroupingMode) { _, new in
+                        FeedPhotoGroupingMode.current = new
+                    }
+                    Text(photoGroupingMode.description)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("Media") {
@@ -86,6 +118,10 @@ struct VideoFeedSettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+            .onAppear {
+                feedMode = FeedImplementationMode.current
+                photoGroupingMode = FeedPhotoGroupingMode.current
+            }
             .task {
                 appleMusic.bootstrap()
             }

@@ -852,6 +852,7 @@ struct PhotoDetailContentView: View {
         
         do {
             try contactsContext.save()
+            NotificationCenter.default.post(name: .contactsDidChange, object: nil)
         } catch {
             print("❌ Save failed: \(error)")
         }
@@ -1012,6 +1013,7 @@ struct PhotoDetailContentView: View {
         
         do {
             try contactsContext.save()
+            NotificationCenter.default.post(name: .contactsDidChange, object: nil)
         } catch {
             print("❌ Save failed: \(error)")
         }

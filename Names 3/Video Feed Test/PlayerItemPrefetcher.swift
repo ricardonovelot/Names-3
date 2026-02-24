@@ -157,7 +157,7 @@ actor PlayerItemPrefetchStore {
         }
         
         await MainActor.run {
-            PhotoKitDiagnostics.logResultInfo(prefix: "PlayerItemPrefetcher result", info: info)
+            PhotoKitDiagnostics.logResultInfoIfNotable(prefix: "PlayerItemPrefetcher result", info: info)
             NotificationCenter.default.post(name: .playerItemPrefetcherDidFinish, object: nil, userInfo: ["id": id, "success": item != nil])
             if item != nil {
                 DownloadTracker.shared.updateProgress(for: id, phase: .playerItem, progress: 1.0)

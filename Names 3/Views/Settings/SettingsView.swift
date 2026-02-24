@@ -5,10 +5,50 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Environment(\.connectivityMonitor) private var connectivityMonitor
+    @State private var feedMode: FeedImplementationMode = FeedImplementationMode.current
+    @State private var photoGroupingMode: FeedPhotoGroupingMode = FeedPhotoGroupingMode.current
 
     var body: some View {
         NavigationStack {
             List {
+                Section {
+                    Picker("Feed Implementation", selection: $feedMode) {
+                        ForEach(FeedImplementationMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .onChange(of: feedMode) { _, new in
+                        FeedImplementationMode.current = new
+                    }
+                    Text(feedMode.description)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("Video Feed (A/B Test)")
+                } footer: {
+                    Text("Switch mode and re-enter the feed to compare stability and load.")
+                }
+
+                Section {
+                    Picker("Photo Grouping", selection: $photoGroupingMode) {
+                        ForEach(FeedPhotoGroupingMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .onChange(of: photoGroupingMode) { _, new in
+                        FeedPhotoGroupingMode.current = new
+                    }
+                    Text(photoGroupingMode.description)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("Feed Photos")
+                } footer: {
+                    Text("How photos are grouped: Off = videos only. Between Videos = carousel per video gap.")
+                }
+
                 if let connectivityMonitor {
                     Section {
                         HStack {
@@ -78,6 +118,10 @@ struct SettingsView: View {
             }
             .navigationTitle(LocalizedStringKey("settings.title"))
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                feedMode = FeedImplementationMode.current
+                photoGroupingMode = FeedPhotoGroupingMode.current
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(LocalizedStringKey("settings.button.done")) {

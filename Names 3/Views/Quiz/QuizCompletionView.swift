@@ -11,6 +11,7 @@ struct QuizCompletionView: View {
     
     @State private var showConfetti = false
     @State private var autoDismissTimer: Timer?
+    @State private var contentVisible = false
     
     private let streakManager = QuizStreakManager.shared
     
@@ -109,6 +110,8 @@ struct QuizCompletionView: View {
                     }
                     .padding(.horizontal, 20)
                     .padding(.bottom, 100)
+                    .opacity(contentVisible ? 1 : 0)
+                    .offset(y: contentVisible ? 0 : 12)
                 }
                 
                 if showConfetti {
@@ -118,17 +121,20 @@ struct QuizCompletionView: View {
             }
             .safeAreaInset(edge: .bottom) {
                 actionButtons
+                    .opacity(contentVisible ? 1 : 0)
                     .background(.thinMaterial)
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .principal) {
                     if isFullCompletion && streakManager.currentStreak > 0 {
-                        HStack(spacing: 6) {
-                            Text("🔥")
-                                .font(.body)
+                        HStack(spacing: 5) {
+                            Image(systemName: "flame.fill")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
                             Text("\(streakManager.currentStreak) day streak")
-                                .font(.subheadline.weight(.semibold))
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -137,13 +143,16 @@ struct QuizCompletionView: View {
         .onAppear {
             recordCompletion()
             
+            withAnimation(.easeOut(duration: 0.45)) {
+                contentVisible = true
+            }
+            
             if isPerfectScore || isNewBest {
-                withAnimation(.spring(response: 0.6, dampingFraction: 0.7)) {
+                withAnimation(.spring(response: 0.6, dampingFraction: 0.7).delay(0.2)) {
                     showConfetti = true
                 }
             }
             
-            // Auto-dismiss on perfect score
             if isPerfectScore {
                 autoDismissTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: false) { _ in
                     onDismiss()
@@ -157,41 +166,44 @@ struct QuizCompletionView: View {
     
     @ViewBuilder
     private var heroSection: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 14) {
             Image(systemName: performanceIcon)
-                .font(.system(size: 64, weight: .semibold))
+                .font(.system(size: 48, weight: .medium))
                 .foregroundStyle(iconColor)
                 .symbolEffect(.bounce, value: showConfetti)
-                .padding(.bottom, 4)
             
             Text(performanceMessage)
-                .font(.system(size: 32, weight: .bold, design: .rounded))
+                .font(.system(size: 24, weight: .semibold))
             
             if questionsAttempted > 0 {
-                VStack(spacing: 4) {
+                VStack(spacing: 6) {
                     if isFullCompletion {
-                        Text("\(correctAnswers) of \(totalQuestions)")
-                            .font(.title2.weight(.medium))
+                        Text("\(correctAnswers) of \(totalQuestions) correct")
+                            .font(.subheadline)
                             .foregroundStyle(.secondary)
                     } else {
-                        Text("Attempted \(questionsAttempted) of \(totalQuestions)")
-                            .font(.title2.weight(.medium))
+                        Text("\(questionsAttempted) of \(totalQuestions) attempted")
+                            .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
                     
                     if isNewBest {
-                        Text("🎉 Personal Record!")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.yellow)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 6)
-                            .background(.yellow.opacity(0.15))
-                            .clipShape(Capsule())
+                        HStack(spacing: 5) {
+                            Image(systemName: "star.fill")
+                                .font(.caption2)
+                            Text("Personal record")
+                                .font(.caption.weight(.medium))
+                        }
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 5)
+                        .background(Color(UIColor.tertiarySystemFill))
+                        .clipShape(Capsule())
                     }
                 }
             } else {
                 Text("No questions attempted")
-                    .font(.title3)
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
         }
@@ -251,7 +263,7 @@ struct QuizCompletionView: View {
         }
         .padding(16)
         .background(Color(UIColor.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
     
     @ViewBuilder
@@ -291,7 +303,7 @@ struct QuizCompletionView: View {
         .frame(maxWidth: .infinity)
         .padding(16)
         .background(Color(UIColor.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
     
     @ViewBuilder
@@ -301,30 +313,33 @@ struct QuizCompletionView: View {
                 Button {
                     onReview()
                 } label: {
-                    HStack {
+                    HStack(spacing: 8) {
                         Image(systemName: "arrow.uturn.backward")
+                            .font(.subheadline.weight(.medium))
                         Text("Review Skipped (\(skippedCount))")
+                            .font(.subheadline.weight(.medium))
                     }
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(.primary)
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .background(Color.orange)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .padding(.vertical, 12)
+                    .background(Color(UIColor.tertiarySystemFill))
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
+                .buttonStyle(.plain)
             }
             
             Button {
                 onDismiss()
             } label: {
                 Text("Done")
-                    .font(.body.weight(.semibold))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.white)
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
+                    .padding(.vertical, 12)
                     .background(Color.accentColor)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 16)

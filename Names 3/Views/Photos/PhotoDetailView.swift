@@ -277,6 +277,7 @@ struct PhotoDetailView: View {
         
         do {
             try modelContext.save()
+            NotificationCenter.default.post(name: .contactsDidChange, object: nil)
         } catch {
             print("❌ Save failed: \(error)")
         }

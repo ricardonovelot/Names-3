@@ -410,28 +410,26 @@ final class QuizViewModel {
         
         showCorrectionSheet = false
         isCorrect = false
-        
         hapticManager.error()
-        showFeedback = true
         wrongAnswers += 1
         item.performance.recordFailure()
         saveSessionState()
         saveContext()
+        advance()
     }
     
     func revealAndFail() {
         hintLevel = 3
         isCorrect = false
         wrongAnswers += 1
-        
         hapticManager.warning()
-        showFeedback = true
         
         if let item = currentItem {
             item.performance.recordFailure()
             saveSessionState()
             saveContext()
         }
+        advance()
     }
     
     func requestHint() {

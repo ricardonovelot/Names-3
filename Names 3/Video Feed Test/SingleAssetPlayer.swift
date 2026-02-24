@@ -54,6 +54,7 @@ final class SingleAssetPlayer: ObservableObject {
     private var timeJumpedObserver: NSObjectProtocol?
     private var failedToEndObserver: NSObjectProtocol?
     private var stallWatchdog: Task<Void, Never>?
+    private var blackScreenWatchdog: Task<Void, Never>?
     private var spApplyToReady: OSSignpostID?
     private var spApplyToFirstFrame: OSSignpostID?
     private var lastObservedTime: CMTime = .zero
@@ -282,6 +283,7 @@ final class SingleAssetPlayer: ObservableObject {
     
     func setAsset(_ asset: PHAsset) {
         guard currentAssetID != asset.localIdentifier else { return }
+        VideoStateLog.log(id: asset.localIdentifier, state: "S01_requested")
         cancel()
         currentAssetID = asset.localIdentifier
         hasPresentedFirstFrame = false
@@ -381,6 +383,8 @@ final class SingleAssetPlayer: ObservableObject {
         }
         stallWatchdog?.cancel()
         stallWatchdog = nil
+        blackScreenWatchdog?.cancel()
+        blackScreenWatchdog = nil
         spApplyToReady = nil
         isStalledFlag = false
         lastObservedTime = .zero
@@ -395,6 +399,8 @@ final class SingleAssetPlayer: ObservableObject {
         }
         stallWatchdog?.cancel()
         stallWatchdog = nil
+        blackScreenWatchdog?.cancel()
+        blackScreenWatchdog = nil
         spApplyToReady = nil
         isStalledFlag = false
         lastObservedTime = .zero
@@ -477,6 +483,7 @@ final class SingleAssetPlayer: ObservableObject {
         failedToEndObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemFailedToPlayToEndTime, object: item, queue: .main) { [weak self] note in
             guard let self else { return }
             let err = note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? NSError
+            Diagnostics.log("[FeedPlayback] BLACK_SCREEN_FAILED_TO_END asset=\(self.currentAssetID ?? "nil") domain=\(err?.domain ?? "nil") code=\(err?.code ?? 0) desc=\(err?.localizedDescription ?? "nil")")
             Diagnostics.log("[TikTokCell] FailedToPlayToEnd id=\(self.currentAssetID ?? "nil") error=\(String(describing: err?.localizedDescription)) domain=\(err?.domain ?? "nil") code=\(err?.code ?? 0)")
         }
 
@@ -484,12 +491,18 @@ final class SingleAssetPlayer: ObservableObject {
             guard let self else { return }
             Diagnostics.log("[TikTokCell] item.status=\(item.status.rawValue) error=\(String(describing: item.error)) dur=\(CMTimeGetSeconds(item.asset.duration))s tag=\(Diagnostics.shortTag(for: self.currentAssetID ?? ""))")
             if item.status == .failed {
+                VideoStateLog.log(id: self.currentAssetID ?? "nil", state: "S06_status_failed", extra: "code=\(String(describing: item.error))")
+                let err = item.error as NSError?
+                let url = (item.asset as? AVURLAsset)?.url.absoluteString ?? "non-URL"
+                Diagnostics.log("[FeedPlayback] BLACK_SCREEN_FAILED asset=\(self.currentAssetID ?? "nil") domain=\(err?.domain ?? "nil") code=\(err?.code ?? 0) desc=\(err?.localizedDescription ?? "nil") underlying=\(err?.userInfo[NSUnderlyingErrorKey] ?? "nil") url=\(url)")
+                Diagnostics.videoPerf("[FeedPlayback] BLACK_SCREEN_FAILED id=\(self.currentAssetID ?? "nil") code=\(err?.code ?? 0)")
                 self.loadProbe?.finish(failed: true)
                 if let id = self.currentAssetID {
                     Task { await NextVideoTraceCenter.shared.finish(cancelled: false, failed: true) }
                 }
                 self.player.replaceCurrentItem(with: nil)
             } else if item.status == .readyToPlay {
+                VideoStateLog.log(id: self.currentAssetID ?? "nil", state: "S06_status_ready")
                 Diagnostics.signpostEnd("ApplyItemToReady", id: self.spApplyToReady)
                 self.spApplyToReady = nil
                 self.loadProbe?.markReady()
@@ -519,15 +532,18 @@ final class SingleAssetPlayer: ObservableObject {
                     guard let self else { return }
                     if let id = self.currentAssetID, let pos = await PlaybackPositionStore.shared.position(for: id, duration: item.duration) {
                         self.player.seek(to: pos, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+                            VideoStateLog.log(id: id, state: "S07_seek_done", extra: "position")
                             self.updatePlaybackForCurrentState()
                         }
                     } else {
                         self.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+                            VideoStateLog.log(id: self.currentAssetID ?? "nil", state: "S07_seek_done", extra: "zero")
                             self.updatePlaybackForCurrentState()
                         }
                     }
                 }
             } else if item.status == .unknown {
+                VideoStateLog.log(id: self.currentAssetID ?? "nil", state: "S05_status_unknown")
                 if !self.didLogUnknownOnce, let id = self.currentAssetID {
                     self.didLogUnknownOnce = true
                     FirstLaunchProbe.shared.playerItemStatusUnknownFirst(id: id)
@@ -589,9 +605,7 @@ final class SingleAssetPlayer: ObservableObject {
         }
         if isActive {
             if item.isPlaybackLikelyToKeepUp {
-                if let id = currentAssetID {
-                    Diagnostics.log("[TikTokCell] asset=\(id) updatePlayback: play (likelyToKeepUp=true)")
-                }
+                VideoStateLog.log(id: currentAssetID ?? "nil", state: "S08_play_called")
                 PlaybackRegistry.shared.willPlay(player)
                 player.play()
             } else {
@@ -653,7 +667,7 @@ final class SingleAssetPlayer: ObservableObject {
         }
 
         player.replaceCurrentItem(with: item)
-        Diagnostics.log("[TikTokCell] replaceCurrentItem applied for asset ID: \(currentAssetID ?? "nil"). Player current item set.")
+        VideoStateLog.log(id: currentAssetID ?? "nil", state: "S04_applied")
         if let id = currentAssetID {
             FirstLaunchProbe.shared.playerApplyItem(id: id)
         }
@@ -666,7 +680,10 @@ final class SingleAssetPlayer: ObservableObject {
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.05, preferredTimescale: 600), queue: .main) { [weak self] t in
             guard let self else { return }
             if !self.hasPresentedFirstFrame, t.seconds > 0 {
+                VideoStateLog.log(id: self.currentAssetID ?? "nil", state: "S09_first_frame_decoded", extra: "t=\(String(format: "%.2f", t.seconds))")
                 Diagnostics.log("[TikTokCell] First frame presented for asset ID: \(self.currentAssetID ?? "nil") at time: \(t.seconds) tag=\(Diagnostics.shortTag(for: self.currentAssetID ?? ""))")
+                self.blackScreenWatchdog?.cancel()
+                self.blackScreenWatchdog = nil
                 self.hasPresentedFirstFrame = true
                 self.loadProbe?.markFirstFrame()
                 Task { await NextVideoTraceCenter.shared.markFirstFrame() }
@@ -685,9 +702,20 @@ final class SingleAssetPlayer: ObservableObject {
         installDiagnostics(for: item)
 
         stallWatchdog?.cancel()
+        blackScreenWatchdog?.cancel()
         isStalledFlag = false
         lastObservedTime = .zero
         lastAdvanceWall = CACurrentMediaTime()
+        blackScreenWatchdog = Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled else { return }
+            guard let curItem = self.player.currentItem, curItem === item else { return }
+            guard self.isActive, curItem.status == .readyToPlay, !self.hasPresentedFirstFrame else { return }
+            let err = curItem.error as NSError?
+            Diagnostics.log("[FeedPlayback] BLACK_SCREEN_STUCK asset=\(self.currentAssetID ?? "nil") readyButNoFrame status=\(curItem.status.rawValue) itemError=\(err?.localizedDescription ?? "nil") code=\(err?.code ?? 0)")
+            Diagnostics.videoPerf("[FeedPlayback] BLACK_SCREEN_STUCK id=\(self.currentAssetID ?? "nil") FigFilePlayer_err=-12860_likely")
+        }
         stallWatchdog = Task { @MainActor [weak self] in
             guard let self else { return }
             while !Task.isCancelled {
@@ -773,6 +801,7 @@ final class SingleAssetPlayer: ObservableObject {
     private func loadAsset(_ asset: PHAsset) async {
         // try prefetched AVPlayerItem first for fastest ready path
         if let item = await PlayerItemPrefetcher.shared.item(for: asset.localIdentifier, timeout: .milliseconds(800)) {
+            VideoStateLog.log(id: asset.localIdentifier, state: "S02_prefetch_item_hit")
             loadProbe?.markPath(.prefetchedItem)
             Task { await NextVideoTraceCenter.shared.markPath(.prefetchedItem) }
             diagProbe?.startPhase("TikTok_UsePrefetchedItem")
@@ -783,6 +812,7 @@ final class SingleAssetPlayer: ObservableObject {
         }
 
         if let warm = await VideoPrefetcher.shared.asset(for: asset.localIdentifier, timeout: .milliseconds(450)) {
+            VideoStateLog.log(id: asset.localIdentifier, state: "S02_prefetch_asset_hit")
             loadProbe?.markPath(.prefetchedAsset)
             Task { await NextVideoTraceCenter.shared.markPath(.prefetchedAsset) }
             diagProbe?.startPhase("TikTok_UsePrefetchedAsset")
@@ -794,6 +824,7 @@ final class SingleAssetPlayer: ObservableObject {
             return
         }
 
+        VideoStateLog.log(id: asset.localIdentifier, state: "S02_direct_request_start")
         loadProbe?.markPath(.directRequest)
         Task { await NextVideoTraceCenter.shared.markPath(.directRequest) }
 
@@ -827,6 +858,7 @@ final class SingleAssetPlayer: ObservableObject {
             return
         }
         if let item {
+            VideoStateLog.log(id: asset.localIdentifier, state: "S03_item_received")
             diagProbe?.attach(item: item)
             applyItem(item)
         } else {

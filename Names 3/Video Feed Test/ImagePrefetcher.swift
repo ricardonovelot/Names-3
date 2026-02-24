@@ -1,6 +1,7 @@
 import Foundation
 import Photos
 import UIKit
+import AVFoundation
 
 @MainActor
 final class ImagePrefetcher {
@@ -28,6 +29,31 @@ final class ImagePrefetcher {
         await withCheckedContinuation { (cont: CheckedContinuation<UIImage?, Never>) in
             manager.requestImage(for: asset, targetSize: targetSize, contentMode: .aspectFill, options: options) { image, _ in
                 cont.resume(returning: image)
+            }
+        }
+    }
+
+    /// Extracts the first frame (time 0) of a video for use as a seamless preview before playback.
+    func requestVideoFirstFrame(for asset: PHAsset, targetSize: CGSize) async -> UIImage? {
+        await withCheckedContinuation { (cont: CheckedContinuation<UIImage?, Never>) in
+            let opts = PHVideoRequestOptions()
+            opts.deliveryMode = .fastFormat
+            opts.isNetworkAccessAllowed = true
+            PHImageManager.default().requestAVAsset(forVideo: asset, options: opts) { avAsset, _, _ in
+                guard let avAsset else {
+                    cont.resume(returning: nil)
+                    return
+                }
+                let gen = AVAssetImageGenerator(asset: avAsset)
+                gen.appliesPreferredTrackTransform = true
+                gen.maximumSize = targetSize
+                let time = CMTime.zero
+                do {
+                    let cgImage = try gen.copyCGImage(at: time, actualTime: nil)
+                    cont.resume(returning: UIImage(cgImage: cgImage))
+                } catch {
+                    cont.resume(returning: nil)
+                }
             }
         }
     }

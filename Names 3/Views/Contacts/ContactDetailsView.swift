@@ -16,14 +16,11 @@ struct ContactDetailsView: View {
 
     @State var viewState = CGSize.zero
 
-    @State private var showPhotosPicker = false
     @State private var showDatePicker = false
     @State private var showTagPicker = false
-    @State private var showCropView = false
-    
-    @State private var pendingPhotoImage: UIImage?
-    @State private var pendingPhotoDate: Date?
     @State private var faceDetectionViewModel: FaceDetectionViewModel?
+
+    @StateObject private var photoSelectorCoordinator = ContactPhotoSelectorCoordinator()
 
     @Query private var notes: [Note]
 
@@ -38,6 +35,7 @@ struct ContactDetailsView: View {
 
     @StateObject private var faceRecognitionCoordinator = FaceRecognitionCoordinator()
     @State private var showPhotoFacesSheet = false
+    @State private var showPhotoActionSheet = false
 
     /// Accessible colors derived from contact photo for content-below-image gradient (nil when no photo or not yet computed).
     @State private var derivedBackgroundColors: (base: Color, end: Color)?
@@ -97,6 +95,10 @@ struct ContactDetailsView: View {
         .onAppear {
             TipManager.shared.donateContactViewed()
         }
+        .onDisappear {
+            // Refresh feed when leaving detail (e.g. after photo update) so contacts list shows latest
+            NotificationCenter.default.post(name: .contactsDidChange, object: nil)
+        }
         .task(id: contact.photo.count) {
             await updateDerivedBackgroundIfNeeded()
         }
@@ -119,19 +121,13 @@ struct ContactDetailsView: View {
                 .modifier(GlassContainerWhenPhotoModifier(hasPhoto: image != UIImage()))
         }
         .toolbarBackground(.hidden)
-        .sheet(isPresented: $showPhotosPicker) {
-            PhotosDayPickerView(
-                scope: .all,
-                contactsContext: modelContext,
-                presentationMode: .directSelection,
-                faceDetectionViewModel: $faceDetectionViewModel,
-                onPick: { selectedImage, selectedDate in
-                    pendingPhotoImage = selectedImage
-                    pendingPhotoDate = selectedDate
-                    showCropView = true
-                }
-            )
-        }
+        .modifier(ContactPhotoSelectorModifier(
+            contact: contact,
+            coordinator: photoSelectorCoordinator,
+            modelContext: modelContext,
+            faceDetectionViewModel: $faceDetectionViewModel,
+            onPhotoApplied: { }
+        ))
         .sheet(isPresented: $showDatePicker) {
             CustomDatePicker(contact: contact)
         }
@@ -171,17 +167,6 @@ struct ContactDetailsView: View {
                 .navigationBarTitle("Edit Note Date", displayMode: .inline)
             }
         }
-        .fullScreenCover(isPresented: $showCropView){
-            if let image = UIImage(data: contact.photo) {
-                SimpleCropView(
-                    image: image,
-                    initialScale: CGFloat(contact.cropScale),
-                    initialOffset: CGSize(width: CGFloat(contact.cropOffsetX), height: CGFloat(contact.cropOffsetY))
-                ) { croppedImage, scale, offset in
-                    updateCroppingParameters(croppedImage: croppedImage, scale: scale, offset: offset)
-                }
-            }
-        }
         .sheet(isPresented: $faceRecognitionCoordinator.showingResults) {
             FaceRecognitionResultsView(
                 contact: contact,
@@ -205,11 +190,29 @@ struct ContactDetailsView: View {
                 Text(error)
             }
         }
+        .confirmationDialog("Photo", isPresented: $showPhotoActionSheet, titleVisibility: .visible) {
+            Button("Change Photo") {
+                photoSelectorCoordinator.startSelection()
+            }
+            Button("Find Similar Faces") {
+                showPhotoFacesSheet = true
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Choose an action for \(contact.displayName)'s photo")
+        }
     }
     
     @ViewBuilder
     private var optionsMenuButton: some View {
         Menu {
+            if image != UIImage() {
+                Button {
+                    photoSelectorCoordinator.startSelection()
+                } label: {
+                    Label("Change Photo", systemImage: "photo")
+                }
+            }
             Button {
             } label: {
                 Text("Duplicate")
@@ -288,6 +291,8 @@ struct ContactDetailsView: View {
         ZStack(alignment: .bottom) {
             if image != UIImage() {
                 photoHeader
+            } else {
+                addPhotoPlaceholder
             }
             
             VStack(spacing: 0) {
@@ -295,6 +300,30 @@ struct ContactDetailsView: View {
                 summaryField
             }
         }
+    }
+
+    /// Placeholder when contact has no photo. Large tappable area to add a photo.
+    @ViewBuilder
+    private var addPhotoPlaceholder: some View {
+        Button {
+            photoSelectorCoordinator.startSelection()
+        } label: {
+            VStack(spacing: 12) {
+                Image(systemName: "person.crop.rectangle.badge.plus")
+                    .font(.system(size: 44))
+                    .foregroundStyle(.secondary.opacity(0.8))
+                Text("Add Photo")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 200)
+            .background(Color(UIColor.tertiarySystemFill).opacity(0.5))
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Add photo for \(contact.displayName)")
+        .accessibilityHint("Opens options to choose from photo library or take a new photo")
     }
     
     /// Photo-derived color used for the gradient that starts over the bottom of the photo (Apple Maps style). Nil when no gradient.
@@ -337,8 +366,10 @@ struct ContactDetailsView: View {
         .contentShape(.rect)
         .frame(height: 400)
         .clipped()
+        .accessibilityLabel("\(contact.displayName)'s photo")
+        .accessibilityHint("Double tap to change photo or find similar faces")
         .onTapGesture {
-            showPhotoFacesSheet = true
+            showPhotoActionSheet = true
         }
     }
     
@@ -358,7 +389,7 @@ struct ContactDetailsView: View {
             
             if image == UIImage() {
                 Button {
-                    showPhotosPicker = true
+                    photoSelectorCoordinator.startSelection()
                 } label: {
                     Image(systemName: "camera")
                         .font(.system(size: 18))
@@ -366,6 +397,8 @@ struct ContactDetailsView: View {
                         .foregroundColor(.blue)
                         .liquidGlass(in: Circle(), stroke: true, style: .clear)
                 }
+                .accessibilityLabel("Add photo for \(contact.displayName)")
+                .accessibilityHint("Opens photo library and camera to choose a photo")
             }
             
             VStack(alignment: .trailing, spacing: 4){
@@ -560,21 +593,6 @@ struct ContactDetailsView: View {
     }
 
     // MARK: - Helper Methods
-
-    func updateCroppingParameters(croppedImage: UIImage?, scale: CGFloat, offset: CGSize) {
-        if let croppedImage = croppedImage {
-            contact.photo = jpegDataForStoredContactPhoto(croppedImage)
-            ImageAccessibleBackground.updateContactPhotoGradient(contact, image: croppedImage)
-        }
-        contact.cropScale = Float(scale)
-        contact.cropOffsetX = Float(offset.width)
-        contact.cropOffsetY = Float(offset.height)
-        do {
-            try modelContext.save()
-        } catch {
-            print("Save failed: \(error)")
-        }
-    }
 
     private func showNoteDatePickerFor(note: Note) {
         noteBeingEdited = note

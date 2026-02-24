@@ -15,6 +15,12 @@ import Combine
 final class TikTokFeedViewController: UIViewController {
 
     var coordinator: CombinedMediaCoordinator?
+    var currentFeedItems: [FeedItem] { viewModel.items }
+
+    // Implementation-specific coordinators (created lazily when mode selected)
+    private var impl1Coordinator: SingleSharedLayerCoordinator?
+    private var impl4Coordinator: PlayerLooperCoordinator?
+    private var impl5Coordinator: StrictUnbindCoordinator?
     var isFeedVisible: Bool = true {
         didSet {
             if isFeedVisible {
@@ -97,6 +103,16 @@ final class TikTokFeedViewController: UIViewController {
         // viewModel.onAppear will call loadWindowOrBridgeTarget which uses initialBridgeAssetID
     }
 
+    /// Injects Carousel assets when switching Carousel→Feed. No fetch—exact same assets.
+    func injectFromCarousel(assets: [PHAsset], scrollToAssetID: String?) {
+        viewModel.injectItemsFromCarousel(assets, scrollToAssetID: scrollToAssetID)
+        if let id = scrollToAssetID {
+            didSetInitialIndex = false
+            pendingScrollToAssetID = id
+        }
+        applyViewModelUpdates()
+    }
+
     private func consumeBridgeIfNeeded() {
         guard isFeedVisible, let coord = coordinator else { return }
         let bridgeID = coord.consumeBridgeTarget()
@@ -173,17 +189,50 @@ final class TikTokFeedViewController: UIViewController {
     private func buildContentView(for item: FeedItem, index: Int, isActive: Bool) -> UIView {
         switch item.kind {
         case .video(let asset):
-            return MediaFeedCellView(content: .video(
-                asset: asset,
-                isActive: isActive && isFeedVisible,
-                sharedPlayer: coordinator?.sharedVideoPlayer
-            ))
+            return buildVideoCell(asset: asset, isActive: isActive && isFeedVisible)
         case .photoCarousel(let assets):
             if FeatureFlags.enablePhotoPosts || !assets.isEmpty {
                 return MediaFeedCellView(content: .photoCarousel(assets))
             } else {
                 return UIView()
             }
+        }
+    }
+
+    private func buildVideoCell(asset: PHAsset, isActive: Bool) -> UIView {
+        switch FeedImplementationMode.current {
+        case .baseline:
+            return MediaFeedCellView(content: .video(
+                asset: asset,
+                isActive: isActive,
+                sharedPlayer: coordinator?.sharedVideoPlayer
+            ))
+        case .singleSharedLayer:
+            let coord = impl1Coordinator ?? {
+                let c = SingleSharedLayerCoordinator()
+                c.installParkingView(in: view)
+                impl1Coordinator = c
+                return c
+            }()
+            return FeedImpl1CellView(asset: asset, isActive: isActive, coordinator: coord)
+        case .twoLayers:
+            return FeedImpl2CellView(asset: asset, isActive: isActive, sharedPlayer: coordinator?.sharedVideoPlayer)
+        case .perCellPlayer:
+            return FeedImpl3CellView(asset: asset, isActive: isActive, sharedPlayer: nil)
+        case .playerLooper:
+            let coord = impl4Coordinator ?? {
+                let c = PlayerLooperCoordinator()
+                impl4Coordinator = c
+                return c
+            }()
+            return FeedImpl4CellView(asset: asset, isActive: isActive, coordinator: coord)
+        case .strictUnbind:
+            let coord = impl5Coordinator ?? {
+                let c = StrictUnbindCoordinator()
+                impl5Coordinator = c
+                return c
+            }()
+            return FeedImpl5CellView(asset: asset, isActive: isActive, coordinator: coord)
         }
     }
 
@@ -198,24 +247,43 @@ final class TikTokFeedViewController: UIViewController {
     private func updateCoordinatorCurrentAsset(index: Int) {
         guard viewModel.items.indices.contains(index) else { return }
         let assetID: String?
+        let isVideo: Bool
         switch viewModel.items[index].kind {
-        case .video(let a): assetID = a.localIdentifier
-        case .photoCarousel(let arr): assetID = arr.first?.localIdentifier
+        case .video(let a):
+            assetID = a.localIdentifier
+            isVideo = true
+        case .photoCarousel(let arr):
+            assetID = arr.first?.localIdentifier
+            isVideo = false
         }
-        coordinator?.currentAssetID = assetID
-        if case .video = viewModel.items[index].kind {
-            CurrentPlayback.shared.currentAssetID = assetID
-        } else {
-            CurrentPlayback.shared.currentAssetID = nil
-        }
+        coordinator?.setFocusedAsset(assetID, isVideo: isVideo)
     }
 
-    private func refreshVisibleCellsActiveState() {
+    func refreshVisibleCellsActiveState() {
         pagedController?.refreshVisibleCells()
     }
 
     private func handlePrefetch(indices: IndexSet, size: CGSize) {
         guard !viewModel.items.isEmpty else { return }
+        let viewportPx = CGSize(width: size.width, height: size.height)
+        if let coord = coordinator {
+            coord.prefetchForFeed(indices: indices, items: viewModel.items, viewportPx: viewportPx)
+        } else {
+            fallbackPrefetchForFeed(indices: indices, viewportPx: viewportPx)
+        }
+    }
+
+    private func handleCancelPrefetch(indices: IndexSet, size: CGSize) {
+        guard !viewModel.items.isEmpty else { return }
+        let viewportPx = CGSize(width: size.width, height: size.height)
+        if let coord = coordinator {
+            coord.cancelPrefetchForFeed(indices: indices, items: viewModel.items, viewportPx: viewportPx)
+        } else {
+            fallbackCancelPrefetchForFeed(indices: indices, viewportPx: viewportPx)
+        }
+    }
+
+    private func fallbackPrefetchForFeed(indices: IndexSet, viewportPx: CGSize) {
         var videoAssets: [PHAsset] = []
         var photoAssets: [PHAsset] = []
         for i in indices {
@@ -231,14 +299,12 @@ final class TikTokFeedViewController: UIViewController {
             PlayerItemPrefetcher.shared.prefetch(videoAssets)
         }
         if FeatureFlags.enablePhotoPosts, !photoAssets.isEmpty {
-            let viewportPx = UIScreen.main.nativeBounds.size
             let photoPx = photoTargetSizePx(for: viewportPx)
             ImagePrefetcher.shared.preheat(photoAssets, targetSize: photoPx)
         }
     }
 
-    private func handleCancelPrefetch(indices: IndexSet, size: CGSize) {
-        guard !viewModel.items.isEmpty else { return }
+    private func fallbackCancelPrefetchForFeed(indices: IndexSet, viewportPx: CGSize) {
         var videoAssets: [PHAsset] = []
         var photoAssets: [PHAsset] = []
         for i in indices {
@@ -254,7 +320,6 @@ final class TikTokFeedViewController: UIViewController {
             PlayerItemPrefetcher.shared.cancel(videoAssets)
         }
         if FeatureFlags.enablePhotoPosts, !photoAssets.isEmpty {
-            let viewportPx = UIScreen.main.nativeBounds.size
             let photoPx = photoTargetSizePx(for: viewportPx)
             ImagePrefetcher.shared.stopPreheating(photoAssets, targetSize: photoPx)
         }

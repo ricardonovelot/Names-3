@@ -147,9 +147,9 @@ private struct WelcomeFaceNamingViewContent: UIViewControllerRepresentable {
         )
         viewController.delegate = context.coordinator
         viewController.onPrioritizedAssetsDidChange = onCarouselAssetsChange
-        viewController.onCurrentAssetDidChange = { id in
+        viewController.onCurrentAssetDidChange = { id, isVideo in
             Task { @MainActor in
-                coordinator?.currentAssetID = id
+                coordinator?.setFocusedAsset(id, isVideo: isVideo)
             }
         }
         return viewController

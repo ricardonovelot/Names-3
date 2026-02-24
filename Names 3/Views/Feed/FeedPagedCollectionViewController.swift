@@ -13,6 +13,11 @@ protocol FeedCellContentUpdatable: UIView {
     func updateIsActive(_ isActive: Bool)
 }
 
+/// Protocol for feed cell content that must be torn down when evicted from cache.
+protocol FeedCellTeardownable: UIView {
+    func tearDown()
+}
+
 final class FeedPagedCollectionViewController: UICollectionViewController, UICollectionViewDataSourcePrefetching, UICollectionViewDelegateFlowLayout {
 
     var items: [FeedItem] = []
@@ -33,7 +38,6 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
     private var didInitialScroll = false
     private var prefetchedIndices: Set<Int> = []
     private var activeIndexUpdate: ((Int) -> Void)?
-
     init(items: [FeedItem], index: Int, idProvider: @escaping (FeedItem) -> String, contentBuilder: @escaping (Int, FeedItem, Bool) -> UIView, onPrefetch: @escaping (IndexSet, CGSize) -> Void, onCancelPrefetch: @escaping (IndexSet, CGSize) -> Void, isPageReady: @escaping (Int) -> Bool, onIndexChange: @escaping (Int) -> Void) {
         let layout = UICollectionViewFlowLayout()
         layout.scrollDirection = .vertical
@@ -60,11 +64,17 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
         let changed = newItems.map(idProvider) != items.map(idProvider)
         items = newItems
         if changed {
-            contentCache = contentCache.filter { key, _ in newItems.contains { idProvider($0) == key } }
+            let newIds = Set(newItems.map(idProvider))
+            for (key, view) in contentCache where !newIds.contains(key) {
+                (view as? FeedCellTeardownable)?.tearDown()
+            }
+            contentCache = contentCache.filter { key, _ in newIds.contains(key) }
             collectionView.reloadData()
             prefetchedIndices = []
         }
     }
+
+    private static let maxContentCacheSize = 7
 
     private func getOrCreateContent(for item: FeedItem, index: Int, isActive: Bool) -> UIView {
         let id = idProvider(item)
@@ -74,9 +84,23 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
             }
             return cached
         }
+        evictDistantContentIfNeeded(keeping: index)
         let view = contentBuilder(index, item, isActive)
         contentCache[id] = view
         return view
+    }
+
+    private func evictDistantContentIfNeeded(keeping currentIndex: Int) {
+        guard contentCache.count >= Self.maxContentCacheSize else { return }
+        let indices = items.enumerated().compactMap { idx, it -> (Int, String)? in
+            let id = idProvider(it)
+            return contentCache[id] != nil ? (idx, id) : nil
+        }
+        guard indices.count >= Self.maxContentCacheSize else { return }
+        let furthest = indices.max(by: { abs($0.0 - currentIndex) < abs($1.0 - currentIndex) })
+        guard let (_, id) = furthest else { return }
+        (contentCache[id] as? FeedCellTeardownable)?.tearDown()
+        contentCache.removeValue(forKey: id)
     }
 
     func scrollToIndex(_ idx: Int) {
@@ -84,16 +108,25 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
         let offsetY = collectionView.bounds.height * CGFloat(idx)
         collectionView.setContentOffset(CGPoint(x: 0, y: offsetY), animated: false)
         currentIndex = idx
+        activeIndexUpdate?(idx)
         refreshVisibleCells()
         updatePrefetchWindow(for: idx)
     }
 
     func refreshVisibleCells() {
-        for indexPath in collectionView.indexPathsForVisibleItems {
+        let indexPaths = collectionView.indexPathsForVisibleItems.sorted { a, b in
+            let aActive = isActiveForIndex(a.item)
+            let bActive = isActiveForIndex(b.item)
+            return !aActive && bActive
+        }
+        for indexPath in indexPaths {
             guard let cell = collectionView.cellForItem(at: indexPath) as? FeedCell,
                   items.indices.contains(indexPath.item) else { continue }
             let item = items[indexPath.item]
-            let isActive = effectiveIsActive?(currentIndex, indexPath.item) ?? (currentIndex == indexPath.item)
+            let isActive = isActiveForIndex(indexPath.item)
+            if isActive, case .video(let asset) = item.kind {
+                print("[FeedPlayback] refreshVisibleCells: activating index=\(indexPath.item) asset=\(String(asset.localIdentifier.prefix(12)))...")
+            }
             cell.setContent(getOrCreateContent(for: item, index: indexPath.item, isActive: isActive))
         }
     }
@@ -116,16 +149,21 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
         if !didInitialScroll, items.indices.contains(currentIndex), collectionView.bounds.height > 0 {
             scrollToIndex(currentIndex)
             didInitialScroll = true
+            applyScrollSettledState()
         }
     }
 
     override func numberOfSections(in collectionView: UICollectionView) -> Int { 1 }
     override func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { items.count }
 
+    private func isActiveForIndex(_ index: Int) -> Bool {
+        effectiveIsActive?(currentIndex, index) ?? (currentIndex == index)
+    }
+
     override func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
         let cell = collectionView.dequeueReusableCell(withReuseIdentifier: FeedCell.reuseId, for: indexPath) as! FeedCell
         let item = items[indexPath.item]
-        let isActive = effectiveIsActive?(currentIndex, indexPath.item) ?? (currentIndex == indexPath.item)
+        let isActive = isActiveForIndex(indexPath.item)
         cell.setContent(getOrCreateContent(for: item, index: indexPath.item, isActive: isActive))
         return cell
     }
@@ -133,7 +171,7 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
     override func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
         guard let feedCell = cell as? FeedCell, items.indices.contains(indexPath.item) else { return }
         let item = items[indexPath.item]
-        let isActive = effectiveIsActive?(currentIndex, indexPath.item) ?? (currentIndex == indexPath.item)
+        let isActive = isActiveForIndex(indexPath.item)
         feedCell.setContent(getOrCreateContent(for: item, index: indexPath.item, isActive: isActive))
     }
 
@@ -157,9 +195,10 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
         guard collectionView.bounds.height > 0 else { return }
         let target = computedPage()
         if target != currentIndex {
+            print("[FeedPlayback] scrollViewDidScroll: page \(currentIndex)→\(target) (offset=\(scrollView.contentOffset.y / collectionView.bounds.height))")
             currentIndex = target
             onIndexChange(target)
-            activeIndexUpdate?(target)
+            evictDistantContentIfNeeded(keeping: target)
             refreshVisibleCells()
             updatePrefetchWindow(for: target)
         }
@@ -167,23 +206,63 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
 
     override func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
         didInitialScroll = true
+        applyScrollSettledState()
     }
 
     override func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
-        if !decelerate { didInitialScroll = true }
+        if !decelerate {
+            didInitialScroll = true
+            applyScrollSettledState()
+        }
     }
 
+    override func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
+        applyScrollSettledState()
+    }
+
+    private func applyScrollSettledState() {
+        guard collectionView.bounds.height > 0 else { return }
+        let target = computedPage()
+        if target != currentIndex {
+            currentIndex = target
+            onIndexChange(target)
+            evictDistantContentIfNeeded(keeping: target)
+        }
+        print("[FeedPlayback] applyScrollSettledState: currentIndex=\(currentIndex)")
+        if items.indices.contains(currentIndex), case .video(let asset) = items[currentIndex].kind {
+            VideoStateLog.log(id: asset.localIdentifier, state: "S14_fully_visible")
+        }
+        activeIndexUpdate?(currentIndex)
+        refreshVisibleCells()
+        updatePrefetchWindow(for: currentIndex)
+    }
+
+    /// Uses 0.55 threshold so we switch when ~55% into new page (avoids flip at exact midpoint).
     private func computedPage() -> Int {
         guard collectionView.bounds.height > 0 else { return currentIndex }
-        let page = Int(round(collectionView.contentOffset.y / collectionView.bounds.height))
+        let page = Int(collectionView.contentOffset.y / collectionView.bounds.height + 0.55)
         return max(0, min(items.count - 1, page))
     }
 
     private func updatePrefetchWindow(for page: Int) {
-        let desired = Set([page - 1, page, page + 1, page + 2, page + 3].filter { $0 >= 0 && $0 < items.count })
+        // Base window: 4 behind, 8 ahead (expanded for more buffer)
+        var desired = Set((page - 4)...(page + 8)).filter { $0 >= 0 && $0 < items.count }
+        // Long videos (>30s): add from extended range so they have more time to load
+        for i in (page - 6)...(page + 10) where i >= 0 && i < items.count {
+            if case .video(let asset) = items[i].kind, asset.duration > 30 {
+                desired.insert(i)
+            }
+        }
         let adds = desired.subtracting(prefetchedIndices)
-        let removes = prefetchedIndices.subtracting(desired)
+        var removes = prefetchedIndices.subtracting(desired)
+        // Never cancel current ±1: user may scroll back; keeps active item loading
+        let protected = Set([page - 1, page, page + 1].filter { $0 >= 0 && $0 < items.count })
+        removes.subtract(protected)
         let sizePx = CGSize(width: collectionView.bounds.width * UIScreen.main.scale, height: collectionView.bounds.height * UIScreen.main.scale)
+        // Prioritize current item when unready (TikTok/Instagram pattern)
+        if adds.contains(page), !isPageReady(page) {
+            onPrefetch(IndexSet([page]), sizePx)
+        }
         if !adds.isEmpty { onPrefetch(IndexSet(adds), sizePx) }
         if !removes.isEmpty { onCancelPrefetch(IndexSet(removes), sizePx) }
         prefetchedIndices = desired
@@ -202,7 +281,6 @@ final class FeedCell: UICollectionViewCell {
 
     func setContent(_ view: UIView) {
         if contentViewHost === view { return }
-        contentViewHost?.removeFromSuperview()
         view.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(view)
         NSLayoutConstraint.activate([
@@ -211,6 +289,8 @@ final class FeedCell: UICollectionViewCell {
             view.topAnchor.constraint(equalTo: contentView.topAnchor),
             view.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
         ])
+        contentView.layoutIfNeeded()
+        contentViewHost?.removeFromSuperview()
         contentViewHost = view
     }
 }

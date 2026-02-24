@@ -31,8 +31,9 @@ final class TikTokFeedViewModel: ObservableObject {
     private var videosSinceLastCarousel = 0
     private var usedPhotoIDs: Set<String> = []
 
-    /// When true, we loaded via bridge (loadWindowContaining); skip loadMore until user-triggered load.
+    /// When true, we loaded via bridge (loadWindowContaining); load more via loadMoreForBridgeMode when near end.
     private var isBridgeWindowActive = false
+    private var bridgeLoadMoreInFlight = false
 
     // Day-hopping explore mode state
     private var exploreModeActive = false
@@ -598,20 +599,138 @@ final class TikTokFeedViewModel: ObservableObject {
         }
     }
 
-    /// Converts a flat mixed [PHAsset] list to [FeedItem]: videos as .video, photos as single-photo carousels.
+    /// Injects assets from Carousel when switching Carousel→Feed. No fetch—uses exact same assets.
+    func injectItemsFromCarousel(_ assets: [PHAsset], scrollToAssetID: String?) {
+        guard !assets.isEmpty else { return }
+        let feedItems = buildFeedItemsFromMixedAssets(assets)
+        guard !feedItems.isEmpty else { return }
+        items = feedItems
+        isBridgeWindowActive = true
+        exploreModeActive = false
+        segmentEndIndices.removeAll()
+        if let id = scrollToAssetID, let idx = feedItems.firstIndex(where: { Self.itemContainsAsset($0, assetID: id) }) {
+            initialIndexInWindow = idx
+        } else {
+            initialIndexInWindow = 0
+        }
+        isLoading = false
+        Diagnostics.log("BridgeInject: Carousel→Feed \(feedItems.count) items, scrollTo=\(scrollToAssetID ?? "nil")")
+    }
+
+    /// Converts a flat mixed [PHAsset] list to [FeedItem] using FeedPhotoGroupingMode.
     private func buildFeedItemsFromMixedAssets(_ assets: [PHAsset]) -> [FeedItem] {
         let hidden = DeletedVideosStore.snapshot()
+        let mode = FeedPhotoGroupingMode.current
+        switch mode {
+        case .off:
+            return buildFeedItemsMixedOff(assets, hidden: hidden)
+        case .betweenVideo:
+            return buildFeedItemsMixedBetweenVideo(assets, hidden: hidden)
+        case .byDay:
+            return buildFeedItemsMixedByDay(assets, hidden: hidden)
+        case .byCount:
+            return buildFeedItemsMixedByCount(assets, hidden: hidden)
+        }
+    }
+
+    private func buildFeedItemsMixedOff(_ assets: [PHAsset], hidden: Set<String>) -> [FeedItem] {
         var out: [FeedItem] = []
+        for a in assets {
+            if a.mediaType == .video, !hidden.contains(a.localIdentifier) {
+                out.append(.video(a))
+            }
+        }
+        return out
+    }
+
+    private func buildFeedItemsMixedBetweenVideo(_ assets: [PHAsset], hidden: Set<String>) -> [FeedItem] {
+        var out: [FeedItem] = []
+        var photoBuffer: [PHAsset] = []
         for a in assets {
             switch a.mediaType {
             case .video:
                 if !hidden.contains(a.localIdentifier) {
+                    if !photoBuffer.isEmpty {
+                        out.append(.carousel(photoBuffer))
+                        photoBuffer = []
+                    }
                     out.append(.video(a))
                 }
             case .image:
-                out.append(.carousel([a]))
+                photoBuffer.append(a)
             default:
                 break
+            }
+        }
+        if !photoBuffer.isEmpty {
+            out.append(.carousel(photoBuffer))
+        }
+        return out
+    }
+
+    private func buildFeedItemsMixedByDay(_ assets: [PHAsset], hidden: Set<String>) -> [FeedItem] {
+        let cal = Calendar.current
+        var out: [FeedItem] = []
+        var photoBuffer: [PHAsset] = []
+        var lastPhotoDayStart: Date?
+        for a in assets {
+            switch a.mediaType {
+            case .video:
+                if !hidden.contains(a.localIdentifier) {
+                    if !photoBuffer.isEmpty {
+                        out.append(.carousel(photoBuffer))
+                        photoBuffer = []
+                        lastPhotoDayStart = nil
+                    }
+                    out.append(.video(a))
+                }
+            case .image:
+                let dayStart = a.creationDate.map { cal.startOfDay(for: $0) }
+                if let last = lastPhotoDayStart, let d = dayStart, d != last {
+                    if !photoBuffer.isEmpty {
+                        out.append(.carousel(photoBuffer))
+                        photoBuffer = []
+                    }
+                }
+                lastPhotoDayStart = dayStart
+                photoBuffer.append(a)
+            default:
+                break
+            }
+        }
+        if !photoBuffer.isEmpty {
+            out.append(.carousel(photoBuffer))
+        }
+        return out
+    }
+
+    private func buildFeedItemsMixedByCount(_ assets: [PHAsset], hidden: Set<String>) -> [FeedItem] {
+        let batchSize = 5
+        var out: [FeedItem] = []
+        var photoBuffer: [PHAsset] = []
+        for a in assets {
+            switch a.mediaType {
+            case .video:
+                if !hidden.contains(a.localIdentifier) {
+                    if !photoBuffer.isEmpty {
+                        for i in stride(from: 0, to: photoBuffer.count, by: batchSize) {
+                            let end = min(i + batchSize, photoBuffer.count)
+                            out.append(.carousel(Array(photoBuffer[i..<end])))
+                        }
+                        photoBuffer = []
+                    }
+                    out.append(.video(a))
+                }
+            case .image:
+                photoBuffer.append(a)
+            default:
+                break
+            }
+        }
+        if !photoBuffer.isEmpty {
+            for i in stride(from: 0, to: photoBuffer.count, by: batchSize) {
+                let end = min(i + batchSize, photoBuffer.count)
+                out.append(.carousel(Array(photoBuffer[i..<end])))
             }
         }
         return out
@@ -619,7 +738,12 @@ final class TikTokFeedViewModel: ObservableObject {
 
     func loadMoreIfNeeded(currentIndex: Int) {
         Diagnostics.log("LoadMore: currentIndex=\(currentIndex) items=\(items.count) cursor=\(videoCursor) explore=\(exploreModeActive) bridge=\(isBridgeWindowActive)")
-        if isBridgeWindowActive { return }
+        if isBridgeWindowActive {
+            if currentIndex >= items.count - prefetchThreshold {
+                loadMoreForBridgeMode()
+            }
+            return
+        }
         if exploreModeActive {
             guard let lastEnd = segmentEndIndices.last else { return }
             // EARLY PREWARM: start warming next day earlier to overlap network
@@ -676,7 +800,38 @@ final class TikTokFeedViewModel: ObservableObject {
         Diagnostics.log("StartWindow: appended videos=[\(videoCursor)..<\(nextVEnd)] carouselsAdded=\(carousels.count) totalItems=\(items.count)")
         videoCursor = nextVEnd
     }
-    
+
+    /// Load more mixed assets when in bridge mode and near the end.
+    private func loadMoreForBridgeMode() {
+        guard !bridgeLoadMoreInFlight, !items.isEmpty else { return }
+        let oldestDate = items.flatMap { item -> [Date] in
+            switch item.kind {
+            case .video(let a): return (a.creationDate).map { [$0] } ?? []
+            case .photoCarousel(let arr): return arr.compactMap(\.creationDate)
+            }
+        }.min()
+        guard let date = oldestDate else { return }
+        bridgeLoadMoreInFlight = true
+        Task { @MainActor in
+            defer { bridgeLoadMoreInFlight = false }
+            let moreAssets = await NameFacesCarouselAssetFetcher.fetchAssetsOlderThan(date, limit: 60)
+            guard !moreAssets.isEmpty else {
+                Diagnostics.log("BridgeLoadMore: no older assets")
+                return
+            }
+            let existingIDs = Set(FeedItem.flattenToAssets(items).map(\.localIdentifier))
+            let newAssets = moreAssets.filter { !existingIDs.contains($0.localIdentifier) }
+            guard !newAssets.isEmpty else {
+                Diagnostics.log("BridgeLoadMore: all \(moreAssets.count) already in feed")
+                return
+            }
+            let newItems = buildFeedItemsFromMixedAssets(newAssets)
+            guard !newItems.isEmpty else { return }
+            items.append(contentsOf: newItems)
+            Diagnostics.log("BridgeLoadMore: appended \(newItems.count) items, total=\(items.count)")
+        }
+    }
+
     func configureAudioSession(active: Bool) {
         if active {
             Task { @MainActor in
@@ -727,25 +882,77 @@ final class TikTokFeedViewModel: ObservableObject {
     }
     
     private func makeCarousels(from photos: [PHAsset]) -> [[PHAsset]] {
-        if !FeatureFlags.enablePhotoPosts { return [] }
-        guard !photos.isEmpty else { return [] }
-        var res: [[PHAsset]] = []
-        var i = 0
-        while i < photos.count {
-            let n = min(Int.random(in: carouselMin...carouselMax), photos.count - i)
-            let group = Array(photos[i..<(i + n)])
-            res.append(group)
-            i += n
+        switch FeedPhotoGroupingMode.current {
+        case .off:
+            return []
+        case .betweenVideo, .byCount:
+            if !FeatureFlags.enablePhotoPosts { return [] }
+            guard !photos.isEmpty else { return [] }
+            var res: [[PHAsset]] = []
+            var i = 0
+            while i < photos.count {
+                let n = min(Int.random(in: carouselMin...carouselMax), photos.count - i)
+                res.append(Array(photos[i..<(i + n)]))
+                i += n
+            }
+            return res
+        case .byDay:
+            if !FeatureFlags.enablePhotoPosts { return [] }
+            return makeCarouselsByDay(from: photos)
         }
+    }
+
+    private func makeCarouselsByDay(from photos: [PHAsset]) -> [[PHAsset]] {
+        guard !photos.isEmpty else { return [] }
+        let cal = Calendar.current
+        var res: [[PHAsset]] = []
+        var current: [PHAsset] = []
+        var lastDayStart: Date?
+        for a in photos {
+            let dayStart = a.creationDate.map { cal.startOfDay(for: $0) }
+            if let last = lastDayStart, let d = dayStart, d != last, !current.isEmpty {
+                res.append(current)
+                current = []
+            }
+            lastDayStart = dayStart
+            current.append(a)
+        }
+        if !current.isEmpty { res.append(current) }
         return res
     }
     
     private func interleave(videos: [PHAsset], carousels: [[PHAsset]], startVideoStride: Int) -> (items: [FeedItem], usedPhotos: Int, videosTailCount: Int) {
+        switch FeedPhotoGroupingMode.current {
+        case .off:
+            return (videos.map { .video($0) }, 0, videos.count)
+        case .betweenVideo:
+            return interleaveBetweenVideo(videos: videos, carousels: carousels)
+        case .byDay, .byCount:
+            return interleaveByStride(videos: videos, carousels: carousels, startVideoStride: startVideoStride)
+        }
+    }
+
+    private func interleaveBetweenVideo(videos: [PHAsset], carousels: [[PHAsset]]) -> (items: [FeedItem], usedPhotos: Int, videosTailCount: Int) {
+        var out: [FeedItem] = []
+        var usedPhotos = 0
+        var cIdx = 0
+        for v in videos {
+            out.append(.video(v))
+            if cIdx < carousels.count {
+                let c = carousels[cIdx]
+                out.append(.carousel(c))
+                usedPhotos += c.count
+                cIdx += 1
+            }
+        }
+        return (out, usedPhotos, 0)
+    }
+
+    private func interleaveByStride(videos: [PHAsset], carousels: [[PHAsset]], startVideoStride: Int) -> (items: [FeedItem], usedPhotos: Int, videosTailCount: Int) {
         var out: [FeedItem] = []
         var usedPhotos = 0
         var cIdx = 0
         var stride = startVideoStride
-        
         for v in videos {
             out.append(.video(v))
             stride += 1
@@ -761,6 +968,7 @@ final class TikTokFeedViewModel: ObservableObject {
     }
     
     private func photosAround(for videos: [PHAsset], limit: Int) -> [PHAsset] {
+        if FeedPhotoGroupingMode.current == .off { return [] }
         if !FeatureFlags.enablePhotoPosts { return [] }
         let dates = videos.compactMap(\.creationDate)
         guard let minVideoDate = dates.min(), let maxVideoDate = dates.max() else {

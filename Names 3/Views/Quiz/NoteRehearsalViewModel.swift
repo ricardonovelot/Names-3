@@ -9,7 +9,6 @@ final class NoteRehearsalViewModel {
     var rehearsalItems: [RehearsalItem] = []
     var currentIndex: Int = 0
     var currentNoteIndex: Int = 0 // Which note within current contact
-    var showRecallPromptBool: Bool = false
     var revealedNotes: Set<UUID> = [] // Track which notes have been revealed
     var noteDifficulties: [UUID: Int] = [:] // Track difficulty for each note
     
@@ -120,7 +119,6 @@ final class NoteRehearsalViewModel {
         rehearsalItems = Array(items.prefix(5))
         currentIndex = 0
         currentNoteIndex = 0
-        showRecallPromptBool = false
         revealedNotes = []
         noteDifficulties = [:]
     }
@@ -137,10 +135,6 @@ final class NoteRehearsalViewModel {
     }
     
     // MARK: - Session Flow
-    func showRecallPrompt() {
-        showRecallPromptBool = true
-    }
-    
     func revealCurrentNote() {
         guard let note = currentNote else { return }
         revealedNotes.insert(note.uuid)
@@ -188,7 +182,6 @@ final class NoteRehearsalViewModel {
         // Move to next contact
         currentIndex += 1
         currentNoteIndex = 0
-        showRecallPromptBool = false // Reset for next contact
         revealedNotes = []
         // Note: noteDifficulties persists across contacts, which is fine
     }
@@ -196,7 +189,6 @@ final class NoteRehearsalViewModel {
     func skipCurrentContact() {
         currentIndex += 1
         currentNoteIndex = 0
-        showRecallPromptBool = false
         revealedNotes = []
     }
 }

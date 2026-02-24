@@ -460,14 +460,11 @@ struct TikTokFeedView: View {
             Diagnostics.log("Feed index=\(newIndex)")
             let items = viewModel.items
             if items.indices.contains(newIndex) {
-                let assetID = currentAssetID()
-                if case .video = items[newIndex].kind {
-                    CurrentPlayback.shared.currentAssetID = assetID
+                let (assetID, isVideo) = currentAssetIDAndIsVideo()
+                coordinator?.setFocusedAsset(assetID, isVideo: isVideo)
+                if isVideo {
                     Task { await NextVideoTraceCenter.shared.begin(assetID: assetID ?? "", idx: newIndex, total: items.count) }
-                } else {
-                    CurrentPlayback.shared.currentAssetID = nil
                 }
-                coordinator?.currentAssetID = assetID
             }
             viewModel.loadMoreIfNeeded(currentIndex: newIndex)
             let sizePts = UIScreen.main.bounds.size
@@ -475,9 +472,9 @@ struct TikTokFeedView: View {
             preheatActiveCarouselIfAny(at: newIndex)
         }
         .onAppear {
-            // Only update coordinator when we have a valid asset to report (don't overwrite carousel's value with nil when Feed is still loading)
-            if let coord = coordinator, let id = currentAssetID() {
-                coord.currentAssetID = id
+            let (id, isVideo) = currentAssetIDAndIsVideo()
+            if let coord = coordinator, let id = id {
+                coord.setFocusedAsset(id, isVideo: isVideo)
             }
             applyPendingScrollIfNeeded()
         }
@@ -653,10 +650,14 @@ struct TikTokFeedView: View {
 
     /// Current asset ID (video or first photo of carousel) for coordinator sync.
     private func currentAssetID() -> String? {
-        guard viewModel.items.indices.contains(index) else { return nil }
+        currentAssetIDAndIsVideo().0
+    }
+
+    private func currentAssetIDAndIsVideo() -> (String?, Bool) {
+        guard viewModel.items.indices.contains(index) else { return (nil, false) }
         switch viewModel.items[index].kind {
-        case .video(let a): return a.localIdentifier
-        case .photoCarousel(let arr): return arr.first?.localIdentifier
+        case .video(let a): return (a.localIdentifier, true)
+        case .photoCarousel(let arr): return (arr.first?.localIdentifier, false)
         }
     }
 

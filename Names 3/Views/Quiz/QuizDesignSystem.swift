@@ -42,10 +42,15 @@ enum QuizDesign {
     
     // MARK: - Layout
     enum Layout {
-        static func photoHeight(compact: Bool) -> CGFloat { compact ? 180 : 260 }
+        /// Compact height sized so photo + chips + hint + answer fit above keyboard without scrolling.
+        static func photoHeight(compact: Bool) -> CGFloat { compact ? 140 : 420 }
+        /// Fixed aspect ratio (width:height) so photo stays consistent regardless of keyboard state
+        static let photoAspectRatio: CGFloat = 300 / 420
         static let horizontalPadding: CGFloat = 20
         static let cornerRadius: CGFloat = 12
         static let cornerRadiusCompact: CGFloat = 10
+        /// Bottom safe area above this = keyboard visible. Home indicator ~34pt; keyboard ~250pt+.
+        static let compactModeKeyboardThreshold: CGFloat = 80
     }
     
     // MARK: - Animation

@@ -60,24 +60,16 @@ struct NotesQuizView: View {
                         personCueSection(contact: item.contact)
                             .padding(.top, 60)
                         
-                        // Soft Recall Prompt
-                        if !viewModel.showRecallPromptBool {
-                            softRecallPrompt
-                                .transition(.opacity.combined(with: .scale(scale: 0.95)))
-                        }
+                        // Notes Section — "He mentioned something about…" shown right away
+                        notesSection(viewModel: viewModel, item: item)
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
                         
-                        // Notes Section
-                        if viewModel.showRecallPromptBool {
-                            notesSection(viewModel: viewModel, item: item)
-                                .transition(.opacity.combined(with: .move(edge: .bottom)))
-                            
-                            // Show indicator if multiple notes
-                            if item.notes.count > 1 {
-                                Text("Note \(viewModel.currentNoteIndex + 1) of \(item.notes.count)")
-                                    .font(.caption)
-                                    .foregroundStyle(.tertiary)
-                                    .padding(.top, 8)
-                            }
+                        // Show indicator if multiple notes
+                        if item.notes.count > 1 {
+                            Text("Note \(viewModel.currentNoteIndex + 1) of \(item.notes.count)")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                                .padding(.top, 8)
                         }
                         
                         Spacer(minLength: 120)
@@ -152,41 +144,6 @@ struct NotesQuizView: View {
             .filter { !$0.isArchived }
             .sorted(by: { $0.creationDate > $1.creationDate })
             .first
-    }
-    
-    // MARK: - Soft Recall Prompt
-    private var softRecallPrompt: some View {
-        VStack(spacing: 20) {
-            Text("What's been going on in their life lately?")
-                .font(.title3)
-                .fontWeight(.medium)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal)
-            
-            Text("Take a moment to remember what matters to them.")
-                .font(.subheadline)
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal)
-            
-            Button {
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                    viewModel?.showRecallPrompt()
-                }
-            } label: {
-                Text("Continue")
-                    .font(.headline)
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .background(Color.accentColor)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            }
-            .padding(.horizontal, 40)
-            .padding(.top, 8)
-        }
-        .padding(.vertical, 32)
     }
     
     // MARK: - Notes Section

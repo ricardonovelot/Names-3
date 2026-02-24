@@ -12,6 +12,11 @@ struct PhotoGridView: UIViewRepresentable {
     let imageManager: PHCachingImageManager
     let contactsContext: ModelContext
     let initialScrollDate: Date?
+    var sortNewestFirst: Bool = false
+    var showCameraCell: Bool = false
+    var onCameraTapped: (() -> Void)? = nil
+    /// When true, fullscreen shows "Use Photo" and "Back" overlay instead of tap-to-zoom-out.
+    var directSelectionMode: Bool = false
     let onPhotoTapped: (UIImage, Date?, String?) -> Void
     let onAppearAtIndex: (Int) -> Void
     let onDetailVisibilityChanged: (Bool) -> Void
@@ -33,6 +38,7 @@ struct PhotoGridView: UIViewRepresentable {
         collectionView.register(PhotoCell.self, forCellWithReuseIdentifier: PhotoCell.reuseIdentifier)
         collectionView.register(PhotoFullscreenCell.self, forCellWithReuseIdentifier: PhotoFullscreenCell.reuseIdentifier)
         collectionView.register(VideoCell.self, forCellWithReuseIdentifier: VideoCell.reuseIdentifier)
+        collectionView.register(CameraCell.self, forCellWithReuseIdentifier: CameraCell.reuseIdentifier)
 
         context.coordinator.configureDataSource(for: collectionView)
 
@@ -64,12 +70,33 @@ struct PhotoGridView: UIViewRepresentable {
             carouselContainer.heightAnchor.constraint(equalToConstant: 120)
         ])
 
+        let selectionOverlay = DirectSelectionOverlayView()
+        selectionOverlay.translatesAutoresizingMaskIntoConstraints = false
+        selectionOverlay.isHidden = true
+        let coordinator = context.coordinator
+        selectionOverlay.onUsePhoto = { [weak coordinator] in
+            coordinator?.handleDirectSelectionUsePhoto()
+        }
+        selectionOverlay.onBack = { [weak coordinator] in
+            coordinator?.zoomOutFromFullscreen()
+        }
+
+        containerView.addSubview(selectionOverlay)
+
         context.coordinator.collectionView = collectionView
         context.coordinator.floatingHeader = floatingHeader
         context.coordinator.containerView = containerView
         context.coordinator.carouselContainer = carouselContainer
+        context.coordinator.selectionOverlay = selectionOverlay
         context.coordinator.parentViewController = Self.findViewController(from: containerView)
         context.coordinator.installPinchGesture(on: collectionView)
+
+        NSLayoutConstraint.activate([
+            selectionOverlay.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            selectionOverlay.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
+            selectionOverlay.bottomAnchor.constraint(equalTo: containerView.safeAreaLayoutGuide.bottomAnchor),
+            selectionOverlay.heightAnchor.constraint(equalToConstant: 100)
+        ])
 
         return containerView
     }
@@ -86,6 +113,10 @@ struct PhotoGridView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.sortNewestFirst = sortNewestFirst
+        context.coordinator.showCameraCell = showCameraCell
+        context.coordinator.onCameraTapped = onCameraTapped
+        context.coordinator.directSelectionMode = directSelectionMode
         context.coordinator.updateAssets(assets, initialScrollDate: initialScrollDate)
         
         if context.coordinator.parentViewController == nil {
@@ -102,6 +133,10 @@ struct PhotoGridView: UIViewRepresentable {
         Coordinator(
             imageManager: imageManager,
             contactsContext: contactsContext,
+            sortNewestFirst: sortNewestFirst,
+            showCameraCell: showCameraCell,
+            onCameraTapped: onCameraTapped,
+            directSelectionMode: directSelectionMode,
             onPhotoTapped: onPhotoTapped,
             onAppearAtIndex: onAppearAtIndex,
             onDetailVisibilityChanged: onDetailVisibilityChanged,
@@ -111,9 +146,15 @@ struct PhotoGridView: UIViewRepresentable {
 
     // MARK: - Coordinator
 
+    private static let cameraCellIdentifier = "__camera__"
+
     final class Coordinator: NSObject {
         let imageManager: PHCachingImageManager
         let contactsContext: ModelContext
+        var sortNewestFirst: Bool = false
+        var showCameraCell: Bool = false
+        var onCameraTapped: (() -> Void)? = nil
+        var directSelectionMode: Bool = false
         let onPhotoTapped: (UIImage, Date?, String?) -> Void
         let onAppearAtIndex: (Int) -> Void
         let onDetailVisibilityChanged: (Bool) -> Void
@@ -125,6 +166,7 @@ struct PhotoGridView: UIViewRepresentable {
         weak var floatingHeader: FloatingDateHeaderView?
         weak var containerView: UIView?
         weak var carouselContainer: UIView?
+        weak var selectionOverlay: DirectSelectionOverlayView?
 
         private var dataSource: UICollectionViewDiffableDataSource<Int, String>?
         private var sortedAssets: [PHAsset] = []
@@ -161,6 +203,10 @@ struct PhotoGridView: UIViewRepresentable {
         init(
             imageManager: PHCachingImageManager,
             contactsContext: ModelContext,
+            sortNewestFirst: Bool = false,
+            showCameraCell: Bool = false,
+            onCameraTapped: (() -> Void)? = nil,
+            directSelectionMode: Bool = false,
             onPhotoTapped: @escaping (UIImage, Date?, String?) -> Void,
             onAppearAtIndex: @escaping (Int) -> Void,
             onDetailVisibilityChanged: @escaping (Bool) -> Void,
@@ -168,6 +214,10 @@ struct PhotoGridView: UIViewRepresentable {
         ) {
             self.imageManager = imageManager
             self.contactsContext = contactsContext
+            self.sortNewestFirst = sortNewestFirst
+            self.showCameraCell = showCameraCell
+            self.onCameraTapped = onCameraTapped
+            self.directSelectionMode = directSelectionMode
             self.onPhotoTapped = onPhotoTapped
             self.onAppearAtIndex = onAppearAtIndex
             self.onDetailVisibilityChanged = onDetailVisibilityChanged
@@ -299,13 +349,21 @@ struct PhotoGridView: UIViewRepresentable {
                 collectionView.decelerationRate = .fast
                 floatingHeader?.alpha = 0
                 updateCurrentVisibleFullscreenIndex()
-                showCarousel()
+                if directSelectionMode {
+                    selectionOverlay?.isHidden = false
+                    selectionOverlay?.alpha = 1
+                    hideCarousel()
+                } else {
+                    selectionOverlay?.isHidden = true
+                    showCarousel()
+                }
             } else {
                 collectionView.isPagingEnabled = false
                 collectionView.alwaysBounceVertical = true
                 collectionView.decelerationRate = .normal
                 floatingHeader?.alpha = 1.0
                 currentVisibleFullscreenIndex = nil
+                selectionOverlay?.isHidden = true
                 hideCarousel()
                 Task { @MainActor in
                     self.currentFaceViewModel.faces = []
@@ -354,9 +412,10 @@ struct PhotoGridView: UIViewRepresentable {
                             guard index >= 0, index < viewModel.faces.count else { return }
                             let faceImage = viewModel.faces[index].image
                             await MainActor.run {
-                                if let visibleIndices = self.collectionView?.indexPathsForVisibleItems.map({ $0.item }).sorted().first,
-                                   visibleIndices < self.sortedAssets.count {
-                                    let asset = self.sortedAssets[visibleIndices]
+                                if let visibleIndex = self.collectionView?.indexPathsForVisibleItems.map({ $0.item }).sorted().first {
+                                    let assetIndex = self.showCameraCell ? visibleIndex - 1 : visibleIndex
+                                    guard assetIndex >= 0, assetIndex < self.sortedAssets.count else { return }
+                                    let asset = self.sortedAssets[assetIndex]
                                     self.onPhotoTapped(faceImage, asset.creationDate, asset.localIdentifier)
                                 }
                             }
@@ -401,9 +460,20 @@ struct PhotoGridView: UIViewRepresentable {
         }
         
         private func cellProvider(collectionView: UICollectionView, indexPath: IndexPath, identifier: String) -> UICollectionViewCell {
+            if identifier == PhotoGridView.cameraCellIdentifier {
+                guard let cell = collectionView.dequeueReusableCell(
+                    withReuseIdentifier: CameraCell.reuseIdentifier,
+                    for: indexPath
+                ) as? CameraCell else {
+                    return UICollectionViewCell()
+                }
+                return cell
+            }
+
             let columns = self.availableColumns[self.currentColumnIndex]
-            guard indexPath.item < self.sortedAssets.count else { return UICollectionViewCell() }
-            let asset = self.sortedAssets[indexPath.item]
+            let assetIndex = self.showCameraCell ? indexPath.item - 1 : indexPath.item
+            guard assetIndex >= 0, assetIndex < self.sortedAssets.count else { return UICollectionViewCell() }
+            let asset = self.sortedAssets[assetIndex]
             let scale = UIScreen.main.scale
             
             if columns == 1 {
@@ -444,7 +514,7 @@ struct PhotoGridView: UIViewRepresentable {
                         self?.handleFaceTapped(observation: observation, image: image, asset: asset, faceIndex: faceIndex)
                     }
                     
-                    cell.onPhotoTapped = { [weak self] in
+                    cell.onPhotoTapped = directSelectionMode ? nil : { [weak self] in
                         self?.zoomOutFromFullscreen()
                     }
                     
@@ -509,7 +579,12 @@ struct PhotoGridView: UIViewRepresentable {
             if isZooming { return }
 
             let validAssets = newAssets.filter { !deletedAssetIDs.contains($0.localIdentifier) }
-            sortedAssets = validAssets.sorted { ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast) }
+            let ascending = !sortNewestFirst
+            sortedAssets = validAssets.sorted { a, b in
+                let da = a.creationDate ?? .distantPast
+                let db = b.creationDate ?? .distantPast
+                return ascending ? da < db : da > db
+            }
 
             if !hasPerformedInitialScroll && initialScrollDate != nil {
                 pendingScrollDate = initialScrollDate
@@ -517,10 +592,15 @@ struct PhotoGridView: UIViewRepresentable {
 
             var snapshot = NSDiffableDataSourceSnapshot<Int, String>()
             snapshot.appendSections([0])
-            snapshot.appendItems(sortedAssets.map { $0.localIdentifier }, toSection: 0)
+            var itemIDs = sortedAssets.map { $0.localIdentifier }
+            if showCameraCell {
+                itemIDs.insert(PhotoGridView.cameraCellIdentifier, at: 0)
+            }
+            snapshot.appendItems(itemIDs, toSection: 0)
 
             let shouldScrollToDate = !hasPerformedInitialScroll && pendingScrollDate != nil && !sortedAssets.isEmpty
-            let shouldScrollToBottom = !hasPerformedInitialScroll && !sortedAssets.isEmpty && initialScrollDate == nil
+            let shouldScrollToTop = !hasPerformedInitialScroll && !sortedAssets.isEmpty && initialScrollDate == nil && sortNewestFirst
+            let shouldScrollToBottom = !hasPerformedInitialScroll && !sortedAssets.isEmpty && initialScrollDate == nil && !sortNewestFirst
 
             dataSource?.apply(snapshot, animatingDifferences: false) { [weak self] in
                 guard let self = self else { return }
@@ -532,9 +612,15 @@ struct PhotoGridView: UIViewRepresentable {
                     self.scrollToDate(scrollDate)
                     self.hasPerformedInitialScroll = true
                     self.pendingScrollDate = nil
+                } else if shouldScrollToTop {
+                    collectionView.performBatchUpdates(nil) { _ in
+                        let indexPath = IndexPath(item: 0, section: 0)
+                        collectionView.scrollToItem(at: indexPath, at: .top, animated: false)
+                        self.hasPerformedInitialScroll = true
+                    }
                 } else if shouldScrollToBottom {
                     collectionView.performBatchUpdates(nil) { _ in
-                        let lastIndex = self.sortedAssets.count - 1
+                        let lastIndex = itemIDs.count - 1
                         let indexPath = IndexPath(item: lastIndex, section: 0)
                         collectionView.scrollToItem(at: indexPath, at: .bottom, animated: false)
                         self.hasPerformedInitialScroll = true
@@ -583,7 +669,8 @@ struct PhotoGridView: UIViewRepresentable {
                 }
             }
 
-            let indexPath = IndexPath(item: closestIndex, section: 0)
+            let collectionIndex = showCameraCell ? closestIndex + 1 : closestIndex
+            let indexPath = IndexPath(item: collectionIndex, section: 0)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 collectionView.scrollToItem(at: indexPath, at: .centeredVertically, animated: true)
             }
@@ -620,14 +707,19 @@ struct PhotoGridView: UIViewRepresentable {
                 y: collectionView.contentOffset.y + 100
             )
 
-            if let indexPath = collectionView.indexPathForItem(at: centerPoint),
-               indexPath.item < sortedAssets.count {
-                let asset = sortedAssets[indexPath.item]
-                floatingHeader.configure(with: asset.creationDate)
-                floatingHeader.alpha = availableColumns[currentColumnIndex] != 1 ? 1.0 : 0.0
-            } else if !sortedAssets.isEmpty {
+            let headerAlpha = availableColumns[currentColumnIndex] != 1 ? 1.0 : 0.0
+            if let indexPath = collectionView.indexPathForItem(at: centerPoint) {
+                let assetIndex = showCameraCell ? indexPath.item - 1 : indexPath.item
+                if assetIndex >= 0, assetIndex < sortedAssets.count {
+                    let asset = sortedAssets[assetIndex]
+                    floatingHeader.configure(with: asset.creationDate)
+                    floatingHeader.alpha = headerAlpha
+                    return
+                }
+            }
+            if !sortedAssets.isEmpty {
                 floatingHeader.configure(with: sortedAssets[0].creationDate)
-                floatingHeader.alpha = availableColumns[currentColumnIndex] != 1 ? 1.0 : 0.0
+                floatingHeader.alpha = headerAlpha
             } else {
                 floatingHeader.alpha = 0.0
             }
@@ -713,6 +805,37 @@ struct PhotoGridView: UIViewRepresentable {
             print("📍 [PhotoGrid] Current visible fullscreen index: \(currentVisibleFullscreenIndex ?? -1)")
         }
         
+        func handleDirectSelectionUsePhoto() {
+            guard let centerIndex = getCenterVisibleItemIndex() else { return }
+            let assetIndex = showCameraCell ? centerIndex - 1 : centerIndex
+            guard assetIndex >= 0, assetIndex < sortedAssets.count else { return }
+            let asset = sortedAssets[assetIndex]
+            guard asset.mediaType == .image else { return }
+
+            let options = PHImageRequestOptions()
+            options.deliveryMode = .highQualityFormat
+            options.resizeMode = .none
+            options.isNetworkAccessAllowed = true
+            options.isSynchronous = false
+
+            let targetSize = PHImageManagerMaximumSize
+            imageManager.requestImage(
+                for: asset,
+                targetSize: targetSize,
+                contentMode: .aspectFit,
+                options: options
+            ) { [weak self] image, info in
+                guard let self else { return }
+                let isCancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
+                guard !isCancelled, let image else { return }
+                let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+                if isDegraded { return }
+                Task { @MainActor in
+                    self.onPhotoTapped(image, asset.creationDate, asset.localIdentifier)
+                }
+            }
+        }
+
         private func hideAsset(_ asset: PHAsset) {
             let assetID = asset.localIdentifier
             deletedAssetIDs.insert(assetID)
@@ -734,7 +857,7 @@ struct PhotoGridView: UIViewRepresentable {
 
         // MARK: - Zoom Controls
 
-        private func zoomOutFromFullscreen() {
+        fileprivate func zoomOutFromFullscreen() {
             let targetColumnIndex = 1
             guard targetColumnIndex != currentColumnIndex else { return }
             guard let collectionView = collectionView else { return }
@@ -756,7 +879,7 @@ struct PhotoGridView: UIViewRepresentable {
             }
         }
         
-        private func getCenterVisibleItemIndex() -> Int? {
+        fileprivate func getCenterVisibleItemIndex() -> Int? {
             guard let collectionView = collectionView else { return nil }
             let centerPoint = CGPoint(
                 x: collectionView.bounds.midX,
@@ -852,6 +975,11 @@ extension PhotoGridView.Coordinator: UICollectionViewDelegate {
     }
 
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+        if showCameraCell && indexPath.item == 0 {
+            onCameraTapped?()
+            return
+        }
+
         let columns = availableColumns[currentColumnIndex]
         if columns == 1 { return }
         anchorIndex = indexPath.item
@@ -887,8 +1015,9 @@ extension PhotoGridView.Coordinator: UICollectionViewDataSourcePrefetching {
 
         var assetsToCache: [PHAsset] = []
         for indexPath in indexPaths.prefix(prefetchLimit) {
-            guard indexPath.item < sortedAssets.count else { continue }
-            let asset = sortedAssets[indexPath.item]
+            let assetIndex = showCameraCell ? indexPath.item - 1 : indexPath.item
+            guard assetIndex >= 0, assetIndex < sortedAssets.count else { continue }
+            let asset = sortedAssets[assetIndex]
             if asset.mediaType == .image {
                 let cacheKey = CacheKeyGenerator.key(for: asset, size: targetSize)
                 if imageCache.image(for: cacheKey) == nil {
@@ -914,8 +1043,9 @@ extension PhotoGridView.Coordinator: UICollectionViewDataSourcePrefetching {
         let targetSize = pixelTargetSize(for: cellSize, scale: UIScreen.main.scale)
 
         let assetsToStop = indexPaths.compactMap { indexPath -> PHAsset? in
-            guard indexPath.item < sortedAssets.count else { return nil }
-            return sortedAssets[indexPath.item]
+            let assetIndex = showCameraCell ? indexPath.item - 1 : indexPath.item
+            guard assetIndex >= 0, assetIndex < sortedAssets.count else { return nil }
+            return sortedAssets[assetIndex]
         }
 
         guard !assetsToStop.isEmpty else { return }
@@ -1064,6 +1194,49 @@ final class FloatingDateHeaderView: UIView {
         let formatter = DateFormatter()
         formatter.dateFormat = "MMMM yyyy"
         label.text = formatter.string(from: date)
+    }
+}
+
+// MARK: - Camera Cell (Take Photo placeholder)
+
+final class CameraCell: UICollectionViewCell {
+    static let reuseIdentifier = "CameraCell"
+
+    private let iconView: UIImageView = {
+        let iv = UIImageView()
+        iv.image = UIImage(systemName: "camera.fill")
+        iv.tintColor = .systemBlue
+        iv.contentMode = .scaleAspectFit
+        iv.translatesAutoresizingMaskIntoConstraints = false
+        return iv
+    }()
+
+    private let label: UILabel = {
+        let l = UILabel()
+        l.text = "Take Photo"
+        l.font = .systemFont(ofSize: 14, weight: .medium)
+        l.textColor = .systemBlue
+        l.translatesAutoresizingMaskIntoConstraints = false
+        return l
+    }()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        contentView.backgroundColor = UIColor.tertiarySystemFill
+        contentView.addSubview(iconView)
+        contentView.addSubview(label)
+        NSLayoutConstraint.activate([
+            iconView.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+            iconView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor, constant: -10),
+            iconView.widthAnchor.constraint(equalToConstant: 44),
+            iconView.heightAnchor.constraint(equalToConstant: 44),
+            label.topAnchor.constraint(equalTo: iconView.bottomAnchor, constant: 6),
+            label.centerXAnchor.constraint(equalTo: contentView.centerXAnchor)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
     }
 }
 
@@ -1253,5 +1426,70 @@ final class VideoCell: UICollectionViewCell {
         player?.pause()
         playerLayer.player = nil
         player = nil
+    }
+}
+
+// MARK: - DirectSelectionOverlayView
+
+final class DirectSelectionOverlayView: UIView {
+    var onUsePhoto: (() -> Void)?
+    var onBack: (() -> Void)?
+
+    private let blurView = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterialDark))
+    private let stackView = UIStackView()
+    private let usePhotoButton = UIButton(type: .system)
+    private let backButton = UIButton(type: .system)
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setupViews()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    private func setupViews() {
+        blurView.translatesAutoresizingMaskIntoConstraints = false
+        blurView.layer.cornerRadius = 16
+        blurView.clipsToBounds = true
+        addSubview(blurView)
+
+        stackView.axis = .horizontal
+        stackView.spacing = 16
+        stackView.distribution = .fillEqually
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+        blurView.contentView.addSubview(stackView)
+
+        usePhotoButton.setTitle("Use Photo", for: .normal)
+        usePhotoButton.titleLabel?.font = .systemFont(ofSize: 17, weight: .semibold)
+        usePhotoButton.addTarget(self, action: #selector(usePhotoTapped), for: .touchUpInside)
+
+        backButton.setTitle("Back", for: .normal)
+        backButton.titleLabel?.font = .systemFont(ofSize: 17, weight: .medium)
+        backButton.addTarget(self, action: #selector(backTapped), for: .touchUpInside)
+
+        stackView.addArrangedSubview(backButton)
+        stackView.addArrangedSubview(usePhotoButton)
+
+        NSLayoutConstraint.activate([
+            blurView.topAnchor.constraint(equalTo: topAnchor),
+            blurView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
+            blurView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
+            blurView.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            stackView.centerXAnchor.constraint(equalTo: blurView.contentView.centerXAnchor),
+            stackView.centerYAnchor.constraint(equalTo: blurView.contentView.centerYAnchor),
+            stackView.leadingAnchor.constraint(greaterThanOrEqualTo: blurView.contentView.leadingAnchor, constant: 24),
+            stackView.trailingAnchor.constraint(lessThanOrEqualTo: blurView.contentView.trailingAnchor, constant: -24)
+        ])
+    }
+
+    @objc private func usePhotoTapped() {
+        onUsePhoto?()
+    }
+
+    @objc private func backTapped() {
+        onBack?()
     }
 }

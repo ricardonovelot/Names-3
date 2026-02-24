@@ -157,7 +157,7 @@ struct ContactMovementSnapshot: Hashable {
     let tagNames: [String]
 }
 
-struct contactsGroup: Identifiable, Hashable {
+struct ContactsGroup: Identifiable, Hashable {
     var id: String {
         if isLongAgo { return "long-ago" }
         let day = Calendar.current.startOfDay(for: date).timeIntervalSince1970

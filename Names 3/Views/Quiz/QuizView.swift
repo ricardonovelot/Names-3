@@ -11,16 +11,16 @@ struct QuizView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     
-    @StateObject private var keyboardObserver = KeyboardHeightObserver.shared
     @State private var viewModel: QuizViewModel?
+    @State private var bottomSafeAreaInset: CGFloat = 0
     @State private var showResumeDialog: Bool = false
     @State private var showExitConfirmation: Bool = false
     
     @Namespace private var animation
     
-    /// Quiz assumes keyboard visible by default (input is first responder). Use compact layout until we know it's hidden.
+    /// Compact when keyboard occupies bottom safe area. Uses system safe area, no custom observers.
     private var isCompact: Bool {
-        keyboardObserver.isKeyboardVisible
+        bottomSafeAreaInset > QuizDesign.Layout.compactModeKeyboardThreshold
     }
     
     var body: some View {
@@ -66,7 +66,7 @@ struct QuizView: View {
                                 VStack(spacing: 0) {
                                     questionSection(item: item, viewModel: viewModel)
                                         .id("question")
-                                    Spacer(minLength: isCompact ? QuizDesign.Spacing.md : QuizDesign.Spacing.xxl)
+                                    Spacer(minLength: isCompact ? QuizDesign.Spacing.xs : QuizDesign.Spacing.xxl)
                                 }
                                 .contentShape(.rect)
                             }
@@ -83,6 +83,14 @@ struct QuizView: View {
                 } else {
                     emptyStateView
                 }
+            }
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(key: QuizSafeAreaBottomKey.self, value: geo.safeAreaInsets.bottom)
+                }
+            )
+            .onPreferenceChange(QuizSafeAreaBottomKey.self) { inset in
+                bottomSafeAreaInset = inset
             }
             .navigationTitle("Face Quiz")
             .navigationBarTitleDisplayMode(.inline)
@@ -115,7 +123,7 @@ struct QuizView: View {
         .sheet(isPresented: Binding(
             get: { viewModel.showCompletionSheet },
             set: { viewModel.showCompletionSheet = $0 }
-        )) {
+        ), onDismiss: onComplete) {
             QuizCompletionView(
                 totalQuestions: viewModel.quizItems.count,
                 correctAnswers: viewModel.score,
@@ -128,7 +136,6 @@ struct QuizView: View {
                 },
                 onDismiss: {
                     viewModel.showCompletionSheet = false
-                    onComplete()
                 }
             )
             .interactiveDismissDisabled()
@@ -179,18 +186,29 @@ struct QuizView: View {
     @ViewBuilder
     private func questionSection(item: QuizViewModel.QuizItem, viewModel: QuizViewModel) -> some View {
         VStack(alignment: .leading, spacing: QuizDesign.Spacing.content(compact: isCompact)) {
-            QuizPhotoCard(contact: item.contact, preferredHeight: QuizDesign.Layout.photoHeight(compact: isCompact), compact: isCompact)
-                .padding(.top, isCompact ? 4 : 12)
+            QuizPhotoCard(
+                contact: item.contact,
+                preferredHeight: QuizDesign.Layout.photoHeight(compact: isCompact),
+                compact: isCompact,
+                aspectRatio: QuizDesign.Layout.photoAspectRatio
+            )
+            .padding(.top, isCompact ? 4 : 12)
                 .transition(cardTransition)
                 .id(item.id)
             
             contextualChips(contact: item.contact, compact: isCompact)
                 .transition(.opacity.combined(with: .scale(scale: 0.95)))
             
-            if !viewModel.showFeedback {
-                hintSection(viewModel: viewModel, compact: isCompact)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+            Group {
+                if viewModel.showFeedback {
+                    inlineFeedbackBanner(viewModel: viewModel)
+                        .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                } else {
+                    hintSection(viewModel: viewModel, compact: isCompact)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
             }
+            .animation(QuizDesign.Animation.feedbackTransition, value: viewModel.showFeedback)
         }
         .padding(.horizontal, QuizDesign.Layout.horizontalPadding)
     }
@@ -340,32 +358,29 @@ struct QuizView: View {
             
             VStack(alignment: .leading, spacing: isCompact ? 8 : 12) {
                 if viewModel.showFeedback {
-                    HStack(alignment: .center, spacing: 12) {
-                        inlineFeedbackBanner(viewModel: viewModel)
-                            .frame(maxWidth: .infinity)
-                        Button {
-                            withAnimation(QuizDesign.Animation.feedbackTransition) {
-                                viewModel.advance()
-                            }
-                        } label: {
-                            HStack(spacing: QuizDesign.Spacing.xs) {
-                                Text("Next")
-                                Image(systemName: "arrow.right")
-                                    .font(.system(size: isCompact ? 10 : 11, weight: .semibold))
-                            }
-                            .font(QuizDesign.Typography.bodySemibold(compact: isCompact))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, isCompact ? QuizDesign.Spacing.md : QuizDesign.Spacing.lg)
-                            .padding(.vertical, isCompact ? QuizDesign.Spacing.sm : QuizDesign.Spacing.sm)
-                            .background(Color.accentColor.gradient, in: Capsule())
-                            .overlay(
-                                Capsule()
-                                    .strokeBorder(Color.white.opacity(0.25), lineWidth: 0.5)
-                            )
+                    Button {
+                        withAnimation(QuizDesign.Animation.feedbackTransition) {
+                            viewModel.advance()
                         }
-                        .buttonStyle(QuizPrimaryButtonStyle())
-                        .accessibilityLabel("Next question")
+                    } label: {
+                        HStack(spacing: QuizDesign.Spacing.xs) {
+                            Text("Next")
+                            Image(systemName: "arrow.right")
+                                .font(.system(size: isCompact ? 10 : 11, weight: .semibold))
+                        }
+                        .font(QuizDesign.Typography.bodySemibold(compact: isCompact))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, isCompact ? QuizDesign.Spacing.md : QuizDesign.Spacing.lg)
+                        .padding(.vertical, isCompact ? QuizDesign.Spacing.sm : QuizDesign.Spacing.sm)
+                        .background(Color.accentColor.gradient, in: Capsule())
+                        .overlay(
+                            Capsule()
+                                .strokeBorder(Color.white.opacity(0.25), lineWidth: 0.5)
+                        )
                     }
+                    .buttonStyle(QuizPrimaryButtonStyle())
+                    .accessibilityLabel("Next question")
+                    .frame(maxWidth: .infinity)
                 }
                 
                 VStack(alignment: .leading, spacing: isCompact ? 6 : 8) {
@@ -392,7 +407,7 @@ struct QuizView: View {
                 }
                 
                 HStack(spacing: isCompact ? 10 : 12) {
-                    ScoreDisplay(score: viewModel.score, total: max(1, viewModel.currentIndex + 1), compact: isCompact)
+                    ScoreDisplay(score: viewModel.score, total: viewModel.quizItems.count, compact: isCompact)
                     Spacer()
                     if !viewModel.showFeedback {
                         Button {
@@ -411,7 +426,6 @@ struct QuizView: View {
             }
             .padding(.horizontal, QuizDesign.Layout.horizontalPadding)
             .padding(.vertical, isCompact ? QuizDesign.Spacing.sm : QuizDesign.Spacing.md)
-            .background(.thinMaterial)
         }
     }
     
@@ -469,27 +483,27 @@ struct QuizView: View {
     private func hintSection(viewModel: QuizViewModel, compact: Bool = false) -> some View {
         if compact {
             HStack(spacing: 10) {
-                if viewModel.hintLevel > 0 {
-                    HintDisplay(text: viewModel.hintText, compact: true)
-                        .frame(maxWidth: .infinity)
-                }
                 HintButton(level: viewModel.hintLevel, compact: true, action: {
                     withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
                         viewModel.requestHint()
                     }
                 })
+                if viewModel.hintLevel > 0 {
+                    HintDisplay(text: viewModel.hintText, compact: true)
+                        .frame(maxWidth: .infinity)
+                }
             }
             .padding(.horizontal, 0)
         } else {
             VStack(spacing: 10) {
-                if viewModel.hintLevel > 0 {
-                    HintDisplay(text: viewModel.hintText, compact: false)
-                }
                 HintButton(level: viewModel.hintLevel, compact: false, action: {
                     withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
                         viewModel.requestHint()
                     }
                 })
+                if viewModel.hintLevel > 0 {
+                    HintDisplay(text: viewModel.hintText, compact: false)
+                }
             }
             .padding(.horizontal, 0)
         }
@@ -667,6 +681,13 @@ private struct QuizPrimaryButtonStyle: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .animation(QuizDesign.Animation.microInteraction, value: configuration.isPressed)
+    }
+}
+
+private struct QuizSafeAreaBottomKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 

@@ -2,8 +2,8 @@
 //  CombinedMediaCoordinator.swift
 //  Names 3
 //
-//  Syncs current media (PHAsset) between Feed and Carousel views.
-//  When switching views, both show the exact same asset in both directions.
+//  Single source of truth for focused media and asset loading across Feed↔Carousel.
+//  Syncs current media (PHAsset) between views. When switching, both show the exact same asset.
 //  Single bridge contract: set bridgeTargetAssetID before switching; target view consumes on appear.
 //
 //  Shared video playback: keeps one SingleAssetPlayer alive across Feed↔Carousel morph.
@@ -13,12 +13,13 @@
 import Foundation
 import SwiftUI
 import Photos
+import UIKit
 
-/// Shared state for Feed + Carousel: keeps them on the same media item bidirectionally.
+/// Single source for focused asset and playback state. Feed and Carousel update only through this.
 @MainActor
 final class CombinedMediaCoordinator: ObservableObject {
-    /// The currently focused asset's localIdentifier. Set by whichever view is active.
-    @Published var currentAssetID: String?
+    /// The currently focused asset's localIdentifier. Read-only; use setFocusedAsset to update.
+    @Published private(set) var currentAssetID: String?
 
     /// Shared video player used by both Feed and Carousel during morph. Stays alive across mode switch
     /// so playback continues without reload. Feed's implementation (SingleAssetPlayer) loads faster.
@@ -31,6 +32,20 @@ final class CombinedMediaCoordinator: ObservableObject {
     /// When set, the target view should scroll to this asset. Cleared after consumed.
     /// Kept for backward compatibility; prefer bridgeTargetAssetID for new flows.
     @Published var scrollToAssetID: String?
+
+    /// Callback when focused asset changes. Use for prefetch coordination.
+    var onFocusedAssetDidChange: ((String?, Bool) -> Void)?
+
+    /// Single update point for focused asset. Keeps currentAssetID and CurrentPlayback in sync.
+    /// Call from Feed or Carousel when the visible item changes.
+    func setFocusedAsset(_ assetID: String?, isVideo: Bool) {
+        let changed = currentAssetID != assetID
+        currentAssetID = assetID
+        CurrentPlayback.shared.currentAssetID = isVideo ? assetID : nil
+        if changed {
+            onFocusedAssetDidChange?(assetID, isVideo)
+        }
+    }
 
     /// Consume and return the bridge target, if any. Call once when target view appears.
     func consumeBridgeTarget() -> String? {
@@ -56,5 +71,59 @@ final class CombinedMediaCoordinator: ObservableObject {
     /// Request a switch to the other view, scrolling to the given asset.
     func requestScrollToAsset(_ assetID: String) {
         setBridgeTarget(assetID)
+    }
+
+    // MARK: - Unified Asset Loading
+
+    /// Single place for Feed prefetch. Call when visible indices change.
+    func prefetchForFeed(indices: IndexSet, items: [FeedItem], viewportPx: CGSize) {
+        var videoAssets: [PHAsset] = []
+        var photoAssets: [PHAsset] = []
+        for i in indices {
+            guard items.indices.contains(i) else { continue }
+            switch items[i].kind {
+            case .video(let a): videoAssets.append(a)
+            case .photoCarousel(let list):
+                if FeatureFlags.enablePhotoPosts { photoAssets.append(contentsOf: list) }
+            }
+        }
+        if !videoAssets.isEmpty {
+            VideoPrefetcher.shared.prefetch(videoAssets)
+            PlayerItemPrefetcher.shared.prefetch(videoAssets)
+        }
+        if FeatureFlags.enablePhotoPosts, !photoAssets.isEmpty {
+            let photoPx = photoTargetSizePx(for: viewportPx)
+            ImagePrefetcher.shared.preheat(photoAssets, targetSize: photoPx)
+        }
+    }
+
+    /// Cancel Feed prefetch for given indices.
+    func cancelPrefetchForFeed(indices: IndexSet, items: [FeedItem], viewportPx: CGSize) {
+        var videoAssets: [PHAsset] = []
+        var photoAssets: [PHAsset] = []
+        for i in indices {
+            guard items.indices.contains(i) else { continue }
+            switch items[i].kind {
+            case .video(let a): videoAssets.append(a)
+            case .photoCarousel(let list):
+                if FeatureFlags.enablePhotoPosts { photoAssets.append(contentsOf: list) }
+            }
+        }
+        if !videoAssets.isEmpty {
+            VideoPrefetcher.shared.cancel(videoAssets)
+            PlayerItemPrefetcher.shared.cancel(videoAssets)
+        }
+        if FeatureFlags.enablePhotoPosts, !photoAssets.isEmpty {
+            let photoPx = photoTargetSizePx(for: viewportPx)
+            ImagePrefetcher.shared.stopPreheating(photoAssets, targetSize: photoPx)
+        }
+    }
+
+    private func photoTargetSizePx(for viewportPx: CGSize) -> CGSize {
+        let isLandscape = viewportPx.width > viewportPx.height
+        let columns: CGFloat = isLandscape ? 4 : 3
+        let cell = min(viewportPx.width, viewportPx.height) / columns
+        let edge = max(160, min(cell, 512))
+        return CGSize(width: edge, height: edge)
     }
 }

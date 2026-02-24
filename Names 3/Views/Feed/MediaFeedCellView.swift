@@ -15,19 +15,17 @@ private enum MediaFeedConstants {
     static let maxHeightFraction: CGFloat = 0.7
 }
 
-final class MediaFeedCellView: UIView, FeedCellContentUpdatable {
+final class MediaFeedCellView: UIView, FeedCellContentUpdatable, FeedCellTeardownable {
 
     enum Content {
         case video(asset: PHAsset, isActive: Bool, sharedPlayer: SingleAssetPlayer?)
         case photoCarousel([PHAsset])
     }
 
-    private let content: Content
-    private var videoView: VideoContentView?
-    private var photoView: PhotoCarouselContentView?
+    private let contentView: MediaContentContentView
 
     init(content: Content) {
-        self.content = content
+        self.contentView = MediaContentContentView(content: content)
         super.init(frame: .zero)
         setupContent()
     }
@@ -37,23 +35,15 @@ final class MediaFeedCellView: UIView, FeedCellContentUpdatable {
     // MARK: - FeedCellContentUpdatable
 
     func updateIsActive(_ active: Bool) {
-        videoView?.setActive(active)
+        print("[FeedPlayback] MediaFeedCellView.updateIsActive(\(active))")
+        contentView.setActive(active)
     }
 
     // MARK: - Setup
 
     private func setupContent() {
         backgroundColor = .black
-        switch content {
-        case .video(let asset, let isActive, let sharedPlayer):
-            let v = VideoContentView(asset: asset, isActive: isActive, sharedPlayer: sharedPlayer)
-            videoView = v
-            addAndPin(v)
-        case .photoCarousel(let assets):
-            let v = PhotoCarouselContentView(assets: assets)
-            photoView = v
-            addAndPin(v)
-        }
+        addAndPin(contentView)
     }
 
     private func addAndPin(_ subview: UIView) {
@@ -67,65 +57,147 @@ final class MediaFeedCellView: UIView, FeedCellContentUpdatable {
         ])
     }
 
-    // MARK: - Lifecycle
-
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        if window == nil {
-            videoView?.tearDown()
-            photoView?.tearDown()
-        }
+    /// Call when content is evicted from cache (item removed from feed). Do not tear down when
+    /// moving between cells—that causes blinking when scrolling back to cached content.
+    func tearDown() {
+        contentView.tearDown()
     }
 }
 
-// MARK: - Video Content
+// MARK: - Media Content (Video + Photo Carousel)
 
-private final class VideoContentView: UIView {
+private final class MediaContentContentView: UIView {
 
-    private let asset: PHAsset
-    private var isActive: Bool
-    private let sharedPlayer: SingleAssetPlayer?
+    private enum Mode {
+        case video(asset: PHAsset, isActive: Bool, sharedPlayer: SingleAssetPlayer?)
+        case photoCarousel([PHAsset])
+    }
+
+    private let mode: Mode
+
+    // Video
+    private var videoAsset: PHAsset?
+    private var isActive: Bool = false
+    private var sharedPlayer: SingleAssetPlayer?
     private let ownPlayer = SingleAssetPlayer()
-    private var player: SingleAssetPlayer { sharedPlayer ?? ownPlayer }
-    private var usesSharedPlayer: Bool { sharedPlayer != nil }
+    /// When we have sharedPlayer: use ownPlayer when inactive (so we show our video, not the shared one).
+    /// When active, use sharedPlayer. When no sharedPlayer, always use ownPlayer.
+    private var effectivePlayer: SingleAssetPlayer {
+        if let shared = sharedPlayer {
+            return isActive ? shared : ownPlayer
+        }
+        return ownPlayer
+    }
     private let playerLayerView = PlayerLayerView()
+    private let firstFrameOverlay = UIImageView()
+    private var firstFrameLoadTask: Task<Void, Never>?
+    private var firstFrameTimeoutTask: Task<Void, Never>?
+    private var layerReadyObserver: NSKeyValueObservation?
 
-    init(asset: PHAsset, isActive: Bool, sharedPlayer: SingleAssetPlayer?) {
-        self.asset = asset
-        self.isActive = isActive
-        self.sharedPlayer = sharedPlayer
+    // Photo carousel
+    private var photoAssets: [PHAsset]?
+    private var collectionView: UICollectionView?
+    private var pageControl: UIPageControl?
+    private var layout: UICollectionViewFlowLayout?
+    private var loadTaskCancellables: [IndexPath: Task<Void, Never>] = [:]
+
+    init(content: MediaFeedCellView.Content) {
+        switch content {
+        case .video(let asset, let isActive, let sharedPlayer):
+            self.mode = .video(asset: asset, isActive: isActive, sharedPlayer: sharedPlayer)
+        case .photoCarousel(let assets):
+            self.mode = .photoCarousel(assets)
+        }
         super.init(frame: .zero)
-        setupView()
-        configurePlayback()
+        setupContent()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func setActive(_ active: Bool) {
+        guard let asset = videoAsset else { return }
         guard isActive != active else { return }
+        print("[FeedPlayback] MediaContentContentView.setActive(\(active)) asset=\(String(asset.localIdentifier.prefix(12)))... shared=\(sharedPlayer != nil)")
         isActive = active
-        if active {
-            player.setAsset(asset)
-            player.setActive(true)
-            CurrentPlayback.shared.currentAssetID = asset.localIdentifier
+        if let shared = sharedPlayer {
+            if active {
+                VideoStateLog.log(id: asset.localIdentifier, state: "S10_cell_active")
+                shared.setAsset(asset)
+                shared.setActive(true)
+                ownPlayer.cancel()
+                bindPlayerLayerToEffectivePlayer()
+            } else {
+                shared.setActive(false)
+                ownPlayer.setAsset(asset)
+                ownPlayer.setActive(false)
+                bindPlayerLayerToEffectivePlayer()
+            }
         } else {
-            player.setActive(false)
+            if active {
+                VideoStateLog.log(id: asset.localIdentifier, state: "S10_cell_active")
+                ownPlayer.setAsset(asset)
+                ownPlayer.setActive(true)
+            } else {
+                ownPlayer.setActive(false)
+            }
+            bindPlayerLayerToEffectivePlayer()
         }
+    }
+
+    private func bindPlayerLayerToEffectivePlayer() {
+        let player = effectivePlayer.player
+        if playerLayerView.playerLayer.player !== player, let asset = videoAsset {
+            VideoStateLog.log(id: asset.localIdentifier, state: "S11_layer_bound")
+            playerLayerView.playerLayer.player = nil
+            playerLayerView.playerLayer.player = player
+        }
+        playerLayerView.setNeedsLayout()
+        playerLayerView.layoutIfNeeded()
     }
 
     func tearDown() {
-        if usesSharedPlayer {
-            player.setActive(false)
+        if videoAsset != nil {
+            layerReadyObserver?.invalidate()
+            layerReadyObserver = nil
+            firstFrameTimeoutTask?.cancel()
+            firstFrameTimeoutTask = nil
+            firstFrameLoadTask?.cancel()
+            firstFrameLoadTask = nil
+            firstFrameOverlay.removeFromSuperview()
+            if sharedPlayer != nil {
+                sharedPlayer?.setActive(false)
+                ownPlayer.cancel()
+            } else {
+                ownPlayer.cancel()
+            }
         } else {
-            player.cancel()
+            loadTaskCancellables.values.forEach { $0.cancel() }
+            loadTaskCancellables.removeAll()
         }
     }
 
-    private func setupView() {
+    private func setupContent() {
         backgroundColor = .black
+        switch mode {
+        case .video(let asset, let active, let shared):
+            videoAsset = asset
+            isActive = active
+            sharedPlayer = shared
+            setupVideo()
+            configurePlayback()
+        case .photoCarousel(let assets):
+            photoAssets = assets
+            setupPhotoCarousel()
+        }
+    }
+
+    // MARK: - Video
+
+    private func setupVideo() {
+        guard let asset = videoAsset else { return }
         playerLayerView.backgroundColor = .black
         playerLayerView.playerLayer.videoGravity = .resizeAspectFill
-        playerLayerView.playerLayer.player = player.player
+        bindPlayerLayerToEffectivePlayer()
         addSubview(playerLayerView)
         playerLayerView.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -134,107 +206,138 @@ private final class VideoContentView: UIView {
             playerLayerView.topAnchor.constraint(equalTo: topAnchor),
             playerLayerView.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
-        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap))
+        firstFrameOverlay.contentMode = .scaleAspectFill
+        firstFrameOverlay.clipsToBounds = true
+        firstFrameOverlay.backgroundColor = .black
+        firstFrameOverlay.alpha = 0
+        addSubview(firstFrameOverlay)
+        firstFrameOverlay.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            firstFrameOverlay.leadingAnchor.constraint(equalTo: leadingAnchor),
+            firstFrameOverlay.trailingAnchor.constraint(equalTo: trailingAnchor),
+            firstFrameOverlay.topAnchor.constraint(equalTo: topAnchor),
+            firstFrameOverlay.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+        loadFirstFrameOverlay(for: asset)
+        layerReadyObserver = playerLayerView.playerLayer.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak self] layer, _ in
+            guard let self else { return }
+            guard layer.isReadyForDisplay else { return }
+            if let asset = self.videoAsset {
+                VideoStateLog.log(id: asset.localIdentifier, state: "S12_layer_ready")
+            }
+            DispatchQueue.main.async { [weak self] in
+                self?.hideFirstFrameOverlay()
+            }
+        }
+        firstFrameTimeoutTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard !Task.isCancelled else { return }
+            if firstFrameOverlay.superview != nil { hideFirstFrameOverlay() }
+        }
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleVideoTap))
         addGestureRecognizer(tap)
         isUserInteractionEnabled = true
     }
 
-    private func configurePlayback() {
-        if usesSharedPlayer {
-            if isActive {
-                player.setAsset(asset)
-                player.setActive(true)
-                CurrentPlayback.shared.currentAssetID = asset.localIdentifier
-            } else {
-                player.setActive(false)
-            }
-        } else {
-            player.setAsset(asset)
-            player.setActive(isActive)
-            if isActive {
-                CurrentPlayback.shared.currentAssetID = asset.localIdentifier
-            }
+    private func loadFirstFrameOverlay(for asset: PHAsset) {
+        let size = CGSize(width: 800, height: 800)
+        firstFrameLoadTask = Task { @MainActor in
+            let image = await ImagePrefetcher.shared.requestVideoFirstFrame(for: asset, targetSize: size)
+            guard !Task.isCancelled else { return }
+            firstFrameOverlay.image = image
+            UIView.animate(withDuration: 0.12) { self.firstFrameOverlay.alpha = 1 }
         }
     }
 
-    @objc private func handleTap() {
-        guard isActive else { return }
-        player.togglePlay()
-    }
-}
-
-// MARK: - Photo Carousel Content
-
-private final class PhotoCarouselContentView: UIView {
-
-    private let assets: [PHAsset]
-    private let collectionView: UICollectionView
-    private let pageControl = UIPageControl()
-    private let layout: UICollectionViewFlowLayout
-    private var loadTaskCancellables: [IndexPath: Task<Void, Never>] = [:]
-
-    init(assets: [PHAsset]) {
-        self.assets = assets
-        self.layout = UICollectionViewFlowLayout()
-        self.collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
-        super.init(frame: .zero)
-        setupCollectionView()
-        setupPageControl()
-        setupConstraints()
+    private func hideFirstFrameOverlay() {
+        guard firstFrameOverlay.superview != nil else { return }
+        if let asset = videoAsset {
+            VideoStateLog.log(id: asset.localIdentifier, state: "S13_overlay_hidden")
+        }
+        layerReadyObserver?.invalidate()
+        layerReadyObserver = nil
+        firstFrameTimeoutTask?.cancel()
+        firstFrameTimeoutTask = nil
+        firstFrameLoadTask?.cancel()
+        firstFrameLoadTask = nil
+        UIView.animate(withDuration: 0.06) {
+            self.firstFrameOverlay.alpha = 0
+        } completion: { _ in
+            self.firstFrameOverlay.removeFromSuperview()
+        }
     }
 
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    func tearDown() {
-        loadTaskCancellables.values.forEach { $0.cancel() }
-        loadTaskCancellables.removeAll()
+    private func configurePlayback() {
+        guard case .video(let asset, let active, let shared) = mode else { return }
+        if let shared = shared {
+            if active {
+                shared.setAsset(asset)
+                shared.setActive(true)
+            } else {
+                ownPlayer.setAsset(asset)
+                ownPlayer.setActive(false)
+            }
+        } else {
+            ownPlayer.setAsset(asset)
+            ownPlayer.setActive(active)
+        }
     }
 
-    private func setupCollectionView() {
-        backgroundColor = .black
+    @objc private func handleVideoTap() {
+        guard isActive, case .video = mode else { return }
+        effectivePlayer.togglePlay()
+    }
+
+    // MARK: - Photo Carousel
+
+    private func setupPhotoCarousel() {
+        guard let assets = photoAssets else { return }
+        let layout = UICollectionViewFlowLayout()
+        self.layout = layout
         layout.scrollDirection = .horizontal
         layout.minimumLineSpacing = 0
         layout.minimumInteritemSpacing = 0
         layout.sectionInset = .zero
-        collectionView.backgroundColor = .black
-        collectionView.isPagingEnabled = true
-        collectionView.showsHorizontalScrollIndicator = false
-        collectionView.delegate = self
-        collectionView.dataSource = self
-        collectionView.register(PhotoCarouselPageCell.self, forCellWithReuseIdentifier: PhotoCarouselPageCell.reuseId)
-        collectionView.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(collectionView)
-    }
 
-    private func setupPageControl() {
-        pageControl.numberOfPages = max(1, assets.count)
-        pageControl.currentPage = 0
-        pageControl.currentPageIndicatorTintColor = .white
-        pageControl.pageIndicatorTintColor = UIColor.white.withAlphaComponent(0.35)
-        pageControl.translatesAutoresizingMaskIntoConstraints = false
-        pageControl.isHidden = assets.count <= 1
-        addSubview(pageControl)
-    }
+        let cv = UICollectionView(frame: .zero, collectionViewLayout: layout)
+        self.collectionView = cv
+        cv.backgroundColor = .black
+        cv.isPagingEnabled = true
+        cv.showsHorizontalScrollIndicator = false
+        cv.delegate = self
+        cv.dataSource = self
+        cv.register(PhotoCarouselPageCell.self, forCellWithReuseIdentifier: PhotoCarouselPageCell.reuseId)
+        cv.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(cv)
 
-    private func setupConstraints() {
+        let pc = UIPageControl()
+        self.pageControl = pc
+        pc.numberOfPages = max(1, assets.count)
+        pc.currentPage = 0
+        pc.currentPageIndicatorTintColor = .white
+        pc.pageIndicatorTintColor = UIColor.white.withAlphaComponent(0.35)
+        pc.translatesAutoresizingMaskIntoConstraints = false
+        pc.isHidden = assets.count <= 1
+        addSubview(pc)
+
         NSLayoutConstraint.activate([
-            collectionView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            collectionView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            collectionView.topAnchor.constraint(equalTo: topAnchor),
-            collectionView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            pageControl.centerXAnchor.constraint(equalTo: centerXAnchor),
-            pageControl.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -28)
+            cv.leadingAnchor.constraint(equalTo: leadingAnchor),
+            cv.trailingAnchor.constraint(equalTo: trailingAnchor),
+            cv.topAnchor.constraint(equalTo: topAnchor),
+            cv.bottomAnchor.constraint(equalTo: bottomAnchor),
+            pc.centerXAnchor.constraint(equalTo: centerXAnchor),
+            pc.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -28)
         ])
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        guard bounds.width > 0, bounds.height > 0 else { return }
+        guard bounds.width > 0, bounds.height > 0, let layout = layout else { return }
         layout.itemSize = bounds.size
     }
 
     private func loadImage(for cell: PhotoCarouselPageCell, at indexPath: IndexPath) {
-        guard assets.indices.contains(indexPath.item) else { return }
+        guard let assets = photoAssets, assets.indices.contains(indexPath.item) else { return }
         let asset = assets[indexPath.item]
         let assetID = asset.localIdentifier
         loadTaskCancellables[indexPath]?.cancel()
@@ -263,10 +366,10 @@ private final class PhotoCarouselContentView: UIView {
     }
 }
 
-extension PhotoCarouselContentView: UICollectionViewDataSource {
+extension MediaContentContentView: UICollectionViewDataSource {
 
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
-        assets.count
+        photoAssets?.count ?? 0
     }
 
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
@@ -276,12 +379,12 @@ extension PhotoCarouselContentView: UICollectionViewDataSource {
     }
 }
 
-extension PhotoCarouselContentView: UICollectionViewDelegate {
+extension MediaContentContentView: UICollectionViewDelegate {
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        guard bounds.width > 0 else { return }
+        guard bounds.width > 0, let assets = photoAssets else { return }
         let page = Int(round(scrollView.contentOffset.x / bounds.width))
-        pageControl.currentPage = min(max(0, page), assets.count - 1)
+        pageControl?.currentPage = min(max(0, page), assets.count - 1)
     }
 
     func collectionView(_ collectionView: UICollectionView, didEndDisplaying cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
@@ -334,13 +437,16 @@ private final class PhotoCarouselPageCell: UICollectionViewCell {
 
     func applyImageIfMatching(_ image: UIImage?, assetID: String) {
         guard expectedAssetID == assetID else { return }
+        guard let image else { return }
         imageView.image = image
+        imageView.alpha = 1
     }
 
     override func prepareForReuse() {
         super.prepareForReuse()
         cancelPendingLoad()
         imageView.image = nil
+        imageView.alpha = 1
         expectedAssetID = nil
     }
 }

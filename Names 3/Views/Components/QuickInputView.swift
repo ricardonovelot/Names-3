@@ -541,6 +541,7 @@ struct QuickInputView: View {
         
         if parsedContacts.count > 0 {
             TipManager.shared.donateContactCreated()
+            NotificationCenter.default.post(name: .contactsDidChange, object: nil)
         }
         
         resetTextAndPreview()
@@ -771,6 +772,7 @@ struct QuickInputView: View {
         
         do {
             try modelContext.save()
+            NotificationCenter.default.post(name: .contactsDidChange, object: nil)
         } catch {
             print("❌ [QuickInput] Failed to save new contact: \(error)")
         }
@@ -908,6 +910,8 @@ extension Notification.Name {
     static let quickInputSetFaceName = Notification.Name("QuickInputSetFaceName")
     /// Face naming mode: user pressed Return; VC should advance to next face.
     static let quickInputFaceNameSubmit = Notification.Name("QuickInputFaceNameSubmit")
+    /// Posted when contacts are added; contacts feed should refresh.
+    static let contactsDidChange = Notification.Name("Names3.ContactsDidChange")
 }
 
 private extension View {

@@ -296,6 +296,17 @@ struct PhotoKitDiagnostics {
         let keysDesc = Array(info.keys).map { "\($0)" }.joined(separator: ",")
         Diagnostics.log("\(prefix) info: inCloud=\(inCloud) cancelled=\(cancelled) error=\(String(describing: error?.localizedDescription)) keys=\(keysDesc)")
     }
+
+    /// Log only when inCloud, cancelled, or error—reduces noise for normal success case.
+    static func logResultInfoIfNotable(prefix: String, info: [AnyHashable: Any]?) {
+        guard let info else { return }
+        let inCloud = (info[PHImageResultIsInCloudKey] as? NSNumber)?.boolValue ?? false
+        let cancelled = (info[PHImageCancelledKey] as? NSNumber)?.boolValue ?? false
+        let error = (info[PHImageErrorKey] as? NSError)
+        guard inCloud || cancelled || error != nil else { return }
+        let keysDesc = Array(info.keys).map { "\($0)" }.joined(separator: ",")
+        Diagnostics.log("\(prefix) info: inCloud=\(inCloud) cancelled=\(cancelled) error=\(String(describing: error?.localizedDescription)) keys=\(keysDesc)")
+    }
 }
 
 extension Notification.Name {
