@@ -94,8 +94,9 @@ private final class MediaContentContentView: UIView {
     private var firstFrameTimeoutTask: Task<Void, Never>?
     private var layerReadyObserver: NSKeyValueObservation?
 
-    // Photo carousel
+    // Photo carousel (driver-based for strategies 2–5)
     private var photoAssets: [PHAsset]?
+    private var carouselDriver: PhotoCarouselDriver?
     private var collectionView: UICollectionView?
     private var pageControl: UIPageControl?
     private var layout: UICollectionViewFlowLayout?
@@ -171,6 +172,7 @@ private final class MediaContentContentView: UIView {
                 ownPlayer.cancel()
             }
         } else {
+            carouselDriver?.onCarouselDisappeared()
             loadTaskCancellables.values.forEach { $0.cancel() }
             loadTaskCancellables.removeAll()
         }
@@ -240,7 +242,9 @@ private final class MediaContentContentView: UIView {
     }
 
     private func loadFirstFrameOverlay(for asset: PHAsset) {
-        let size = CGSize(width: 800, height: 800)
+        let size: CGSize = StorageMonitor.shared.isLowOnDeviceStorage
+            ? CGSize(width: 480, height: 480)
+            : CGSize(width: 800, height: 800)
         firstFrameLoadTask = Task { @MainActor in
             let image = await ImagePrefetcher.shared.requestVideoFirstFrame(for: asset, targetSize: size)
             guard !Task.isCancelled else { return }
@@ -292,6 +296,8 @@ private final class MediaContentContentView: UIView {
 
     private func setupPhotoCarousel() {
         guard let assets = photoAssets else { return }
+        carouselDriver = PhotoCarouselImageService.shared
+
         let layout = UICollectionViewFlowLayout()
         self.layout = layout
         layout.scrollDirection = .horizontal
@@ -306,6 +312,8 @@ private final class MediaContentContentView: UIView {
         cv.showsHorizontalScrollIndicator = false
         cv.delegate = self
         cv.dataSource = self
+        cv.prefetchDataSource = self
+        cv.isPrefetchingEnabled = true
         cv.register(PhotoCarouselPageCell.self, forCellWithReuseIdentifier: PhotoCarouselPageCell.reuseId)
         cv.translatesAutoresizingMaskIntoConstraints = false
         addSubview(cv)
@@ -328,6 +336,10 @@ private final class MediaContentContentView: UIView {
             pc.centerXAnchor.constraint(equalTo: centerXAnchor),
             pc.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -28)
         ])
+
+        let scale = UIScreen.main.scale
+        let viewportPx = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+        carouselDriver?.onCarouselAppeared(assets: assets, viewportSize: viewportPx)
     }
 
     override func layoutSubviews() {
@@ -337,22 +349,27 @@ private final class MediaContentContentView: UIView {
     }
 
     private func loadImage(for cell: PhotoCarouselPageCell, at indexPath: IndexPath) {
-        guard let assets = photoAssets, assets.indices.contains(indexPath.item) else { return }
+        guard let assets = photoAssets, assets.indices.contains(indexPath.item), let driver = carouselDriver else { return }
         let asset = assets[indexPath.item]
         let assetID = asset.localIdentifier
         loadTaskCancellables[indexPath]?.cancel()
         cell.cancelPendingLoad()
         cell.setExpectedAssetID(assetID)
+        cell.setLoadingPlaceholderVisible(true)
         let scale = UIScreen.main.scale
         let w = bounds.width > 0 ? bounds.width : UIScreen.main.bounds.width
         let h = bounds.height > 0 ? bounds.height : UIScreen.main.bounds.height
-        let targetSize = CGSize(
+        var targetSize = CGSize(
             width: min(max(1, w) - MediaFeedConstants.horizontalPadding * 2, CGFloat(asset.pixelWidth)) * scale,
             height: min(max(1, h) * MediaFeedConstants.maxHeightFraction, CGFloat(asset.pixelHeight)) * scale
         )
+        if StorageMonitor.shared.isLowOnDeviceStorage {
+            targetSize = CGSize(width: targetSize.width * 0.6, height: targetSize.height * 0.6)
+        }
         guard targetSize.width > 0, targetSize.height > 0 else { return }
+
         let task = Task { @MainActor in
-            let image = await ImagePrefetcher.shared.requestImage(for: asset, targetSize: targetSize)
+            let image = await driver.loadImage(for: asset, targetSize: targetSize)
             guard !Task.isCancelled else { return }
             cell.applyImageIfMatching(image, assetID: assetID)
         }
@@ -379,12 +396,55 @@ extension MediaContentContentView: UICollectionViewDataSource {
     }
 }
 
+extension MediaContentContentView: UICollectionViewDataSourcePrefetching {
+
+    func collectionView(_ collectionView: UICollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
+        guard let assets = photoAssets, let driver = carouselDriver else { return }
+        let page = Int(round(collectionView.contentOffset.x / collectionView.bounds.width))
+        let indices = driver.prefetchIndices(currentPage: page, totalCount: assets.count)
+        for indexPath in indexPaths.prefix(6) {
+            guard indices.contains(indexPath.item), assets.indices.contains(indexPath.item) else { continue }
+            preloadImage(at: indexPath.item)
+        }
+    }
+
+    func collectionView(_ collectionView: UICollectionView, cancelPrefetchingForItemsAt indexPaths: [IndexPath]) {
+        for indexPath in indexPaths {
+            carouselDriver?.cancelLoad(at: indexPath.item)
+            cancelLoad(for: indexPath)
+        }
+    }
+
+    private func preloadImage(at index: Int) {
+        guard let assets = photoAssets, assets.indices.contains(index), let driver = carouselDriver else { return }
+        let asset = assets[index]
+        let scale = UIScreen.main.scale
+        let w = bounds.width > 0 ? bounds.width : UIScreen.main.bounds.width
+        let h = bounds.height > 0 ? bounds.height : UIScreen.main.bounds.height
+        var targetSize = CGSize(
+            width: min(max(1, w) - MediaFeedConstants.horizontalPadding * 2, CGFloat(asset.pixelWidth)) * scale,
+            height: min(max(1, h) * MediaFeedConstants.maxHeightFraction, CGFloat(asset.pixelHeight)) * scale
+        )
+        if StorageMonitor.shared.isLowOnDeviceStorage {
+            targetSize = CGSize(width: targetSize.width * 0.6, height: targetSize.height * 0.6)
+        }
+        guard targetSize.width > 0, targetSize.height > 0 else { return }
+        Task { @MainActor in
+            _ = await driver.loadImage(for: asset, targetSize: targetSize)
+        }
+    }
+}
+
 extension MediaContentContentView: UICollectionViewDelegate {
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard bounds.width > 0, let assets = photoAssets else { return }
         let page = Int(round(scrollView.contentOffset.x / bounds.width))
         pageControl?.currentPage = min(max(0, page), assets.count - 1)
+    }
+
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        print("[PhotoGroupingScroll] MediaFeedCellView: carousel willBeginDragging (horizontal)")
     }
 
     func collectionView(_ collectionView: UICollectionView, didEndDisplaying cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
@@ -405,18 +465,44 @@ private final class PhotoCarouselPageCell: UICollectionViewCell {
         return v
     }()
 
+    // Solution 3: Loading placeholder instead of black
+    private let loadingOverlay: UIView = {
+        let v = UIView()
+        v.backgroundColor = UIColor.white.withAlphaComponent(0.06)
+        v.isHidden = true
+        v.translatesAutoresizingMaskIntoConstraints = false
+        return v
+    }()
+
+    private let activityIndicator: UIActivityIndicatorView = {
+        let v = UIActivityIndicatorView(style: .medium)
+        v.color = .white
+        v.hidesWhenStopped = true
+        v.translatesAutoresizingMaskIntoConstraints = false
+        return v
+    }()
+
     private var expectedAssetID: String?
     private var loadTask: Task<Void, Never>?
+    private var showLoadingPlaceholder = false
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         contentView.backgroundColor = .black
         contentView.addSubview(imageView)
+        contentView.addSubview(loadingOverlay)
+        loadingOverlay.addSubview(activityIndicator)
         NSLayoutConstraint.activate([
             imageView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: MediaFeedConstants.horizontalPadding),
             imageView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -MediaFeedConstants.horizontalPadding),
             imageView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
-            imageView.heightAnchor.constraint(lessThanOrEqualTo: contentView.heightAnchor, multiplier: MediaFeedConstants.maxHeightFraction)
+            imageView.heightAnchor.constraint(lessThanOrEqualTo: contentView.heightAnchor, multiplier: MediaFeedConstants.maxHeightFraction),
+            loadingOverlay.leadingAnchor.constraint(equalTo: imageView.leadingAnchor),
+            loadingOverlay.trailingAnchor.constraint(equalTo: imageView.trailingAnchor),
+            loadingOverlay.topAnchor.constraint(equalTo: imageView.topAnchor),
+            loadingOverlay.bottomAnchor.constraint(equalTo: imageView.bottomAnchor),
+            activityIndicator.centerXAnchor.constraint(equalTo: loadingOverlay.centerXAnchor),
+            activityIndicator.centerYAnchor.constraint(equalTo: loadingOverlay.centerYAnchor)
         ])
     }
 
@@ -430,6 +516,14 @@ private final class PhotoCarouselPageCell: UICollectionViewCell {
         loadTask = task
     }
 
+    func setLoadingPlaceholderVisible(_ visible: Bool) {
+        showLoadingPlaceholder = visible
+        if visible, imageView.image == nil {
+            loadingOverlay.isHidden = false
+            activityIndicator.startAnimating()
+        }
+    }
+
     func cancelPendingLoad() {
         loadTask?.cancel()
         loadTask = nil
@@ -440,6 +534,8 @@ private final class PhotoCarouselPageCell: UICollectionViewCell {
         guard let image else { return }
         imageView.image = image
         imageView.alpha = 1
+        loadingOverlay.isHidden = true
+        activityIndicator.stopAnimating()
     }
 
     override func prepareForReuse() {
@@ -447,6 +543,8 @@ private final class PhotoCarouselPageCell: UICollectionViewCell {
         cancelPendingLoad()
         imageView.image = nil
         imageView.alpha = 1
+        loadingOverlay.isHidden = true
+        activityIndicator.stopAnimating()
         expectedAssetID = nil
     }
 }

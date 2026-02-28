@@ -28,6 +28,8 @@ struct StorageManagerOtherDataView: View {
     @State private var showShrinkConfirmation = false
     @State private var showClearQuizConfirmation = false
     @State private var showClearRehearsalConfirmation = false
+    @State private var showClearNameFacesMemoryConfirmation = false
+    @State private var showClearCarouselCacheConfirmation = false
 
     private var otherBreakdownRows: [(title: String, icon: String, size: Int64)] {
         [
@@ -38,13 +40,15 @@ struct StorageManagerOtherDataView: View {
             (String(localized: "storage.app.other.breakdown.noteRehearsal"), "note.text", otherBreakdown.noteRehearsal),
             (String(localized: "storage.app.other.breakdown.quizSessions"), "list.bullet.clipboard", otherBreakdown.quizSessions),
             (String(localized: "storage.app.other.breakdown.deletedPhotos"), "photo.badge.plus", otherBreakdown.deletedPhotos),
+            (String(localized: "storage.app.other.breakdown.nameFacesMemory"), "person.crop.rectangle", otherBreakdown.nameFacesMemory),
+            (String(localized: "storage.app.other.breakdown.carouselCache"), "photo.on.rectangle.angled", otherBreakdown.carouselCache),
             (String(localized: "storage.app.other.breakdown.databaseOverhead"), "internaldrive", otherBreakdown.databaseOverhead),
         ]
     }
 
     var body: some View {
         List {
-            if otherMetadataSize > 0 {
+            if otherMetadataSize > 0 || otherBreakdown.nameFacesMemory > 0 || otherBreakdown.carouselCache > 0 {
                 actionsSection
             }
             if isLoading {
@@ -90,7 +94,7 @@ struct StorageManagerOtherDataView: View {
                     }
                 }
 
-                if otherMetadataSize > 0 {
+                if otherMetadataSize > 0 || otherBreakdown.nameFacesMemory > 0 || otherBreakdown.carouselCache > 0 {
                     Section {
                         ForEach(Array(otherBreakdownRows.enumerated()), id: \.offset) { _, row in
                             if row.size > 0 {
@@ -110,7 +114,7 @@ struct StorageManagerOtherDataView: View {
                     }
                 }
 
-                if notes.isEmpty && quickNotes.isEmpty && tags.isEmpty && otherMetadataSize <= 0 {
+                if notes.isEmpty && quickNotes.isEmpty && tags.isEmpty && otherMetadataSize <= 0 && otherBreakdown.nameFacesMemory <= 0 && otherBreakdown.carouselCache <= 0 {
                     ContentUnavailableView(
                         String(localized: "storage.other.empty.title"),
                         systemImage: "doc.text",
@@ -195,6 +199,22 @@ struct StorageManagerOtherDataView: View {
         } message: {
             Text(String(localized: "storage.other.clearRehearsal.message"))
         }
+        .confirmationDialog(String(localized: "storage.other.clearNameFacesMemory.title"), isPresented: $showClearNameFacesMemoryConfirmation) {
+            Button(String(localized: "storage.other.clearNameFacesMemory.action"), role: .destructive) {
+                clearNameFacesMemory()
+            }
+            Button(String(localized: "storage.cancel"), role: .cancel) { showClearNameFacesMemoryConfirmation = false }
+        } message: {
+            Text(String(localized: "storage.other.clearNameFacesMemory.message"))
+        }
+        .confirmationDialog(String(localized: "storage.other.clearCarouselCache.title"), isPresented: $showClearCarouselCacheConfirmation) {
+            Button(String(localized: "storage.other.clearCarouselCache.action"), role: .destructive) {
+                clearCarouselCache()
+            }
+            Button(String(localized: "storage.cancel"), role: .cancel) { showClearCarouselCacheConfirmation = false }
+        } message: {
+            Text(String(localized: "storage.other.clearCarouselCache.message"))
+        }
     }
 
     private var actionsSection: some View {
@@ -244,6 +264,22 @@ struct StorageManagerOtherDataView: View {
             } label: {
                 Label(String(localized: "storage.other.clearRehearsal.action"), systemImage: "note.text")
             }
+
+            if otherBreakdown.nameFacesMemory > 0 {
+                Button {
+                    showClearNameFacesMemoryConfirmation = true
+                } label: {
+                    Label(String(localized: "storage.other.clearNameFacesMemory.action"), systemImage: "person.crop.rectangle")
+                }
+            }
+
+            if otherBreakdown.carouselCache > 0 {
+                Button {
+                    showClearCarouselCacheConfirmation = true
+                } label: {
+                    Label(String(localized: "storage.other.clearCarouselCache.action"), systemImage: "photo.on.rectangle.angled")
+                }
+            }
         } header: {
             Text(LocalizedStringKey("storage.actions.freeSpace"))
         } footer: {
@@ -283,6 +319,16 @@ struct StorageManagerOtherDataView: View {
 
     private func clearRehearsalHistory() {
         _ = StorageManagerService.shared.clearNoteRehearsalHistory(context: modelContext)
+        NotificationCenter.default.post(name: .storageDidChange, object: nil)
+    }
+
+    private func clearNameFacesMemory() {
+        StorageManagerService.shared.clearNameFacesMemory()
+        NotificationCenter.default.post(name: .storageDidChange, object: nil)
+    }
+
+    private func clearCarouselCache() {
+        StorageManagerService.shared.clearCarouselCache()
         NotificationCenter.default.post(name: .storageDidChange, object: nil)
     }
 }

@@ -301,6 +301,14 @@ struct PagedCollectionView<Item, Content: View>: UIViewControllerRepresentable {
             }
             let readySpan = max(0, i - current - 1)
             let cap = CGFloat(readySpan) * h + h * gateFraction
+            // [PhotoGroupingScroll] Gate diagnostics: current=\(current) delta=\(String(format: "%.0f", delta)) readySpan=\(readySpan) cap=\(String(format: "%.0f", cap)) blocking=\(delta > cap)
+            let nextPageKind = itemKindString(at: current + 1)
+            let nextPageReady = (current + 1) < items.count ? isPageReady(current + 1) : false
+            if delta > cap {
+                print("[PhotoGroupingScroll] BLOCKING: current=\(current) delta=\(Int(delta)) readySpan=\(readySpan) cap=\(Int(cap)) nextPage=\(nextPageKind) nextReady=\(nextPageReady)")
+            } else if delta > 20, (current + 1) < 5 {
+                print("[PhotoGroupingScroll] Gate: current=\(current) delta=\(Int(delta)) readySpan=\(readySpan) cap=\(Int(cap)) nextPage=\(nextPageKind) nextReady=\(nextPageReady)")
+            }
             if delta > cap {
                 scrollView.contentOffset.y = baseY + cap
                 if scrollView.isDragging {
@@ -309,6 +317,14 @@ struct PagedCollectionView<Item, Content: View>: UIViewControllerRepresentable {
             } else if !scrollView.isDragging {
                 hideGateSpinner()
             }
+        }
+
+        private func itemKindString(at index: Int) -> String {
+            guard items.indices.contains(index) else { return "outOfRange" }
+            let id = idProvider(items[index])
+            if id.hasPrefix("v:") { return "video" }
+            if id.hasPrefix("c:") { return "carousel" }
+            return "unknown"
         }
         
         override func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {

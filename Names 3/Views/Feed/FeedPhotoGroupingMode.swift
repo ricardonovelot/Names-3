@@ -4,6 +4,7 @@
 //
 //  How photos are grouped into carousels in the feed.
 //  Structure: video - carousel - video - carousel - ...
+//  Only "Between Videos" is supported (other modes had scroll issues).
 //
 
 import Foundation
@@ -31,16 +32,9 @@ enum FeedPhotoGroupingMode: String, CaseIterable, Identifiable {
 
     private static let userDefaultsKey = "Names3.FeedPhotoGroupingMode"
 
+    /// Always returns .betweenVideo (only mode that works reliably with feed scrolling).
     static var current: FeedPhotoGroupingMode {
-        get {
-            guard let raw = UserDefaults.standard.string(forKey: userDefaultsKey),
-                  let mode = FeedPhotoGroupingMode(rawValue: raw) else {
-                return .off
-            }
-            return mode
-        }
-        set {
-            UserDefaults.standard.set(newValue.rawValue, forKey: userDefaultsKey)
-        }
+        get { .betweenVideo }
+        set { _ = newValue }
     }
 }

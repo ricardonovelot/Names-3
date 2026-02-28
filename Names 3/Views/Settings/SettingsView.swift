@@ -5,48 +5,42 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Environment(\.connectivityMonitor) private var connectivityMonitor
-    @State private var feedMode: FeedImplementationMode = FeedImplementationMode.current
-    @State private var photoGroupingMode: FeedPhotoGroupingMode = FeedPhotoGroupingMode.current
-
     var body: some View {
         NavigationStack {
             List {
                 Section {
-                    Picker("Feed Implementation", selection: $feedMode) {
-                        ForEach(FeedImplementationMode.allCases) { mode in
-                            Text(mode.rawValue).tag(mode)
-                        }
+                    HStack {
+                        Text("Photo Grouping")
+                        Spacer()
+                        Text("Between Videos")
+                            .foregroundStyle(.secondary)
                     }
-                    .pickerStyle(.menu)
-                    .onChange(of: feedMode) { _, new in
-                        FeedImplementationMode.current = new
-                    }
-                    Text(feedMode.description)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                } header: {
-                    Text("Video Feed (A/B Test)")
-                } footer: {
-                    Text("Switch mode and re-enter the feed to compare stability and load.")
-                }
-
-                Section {
-                    Picker("Photo Grouping", selection: $photoGroupingMode) {
-                        ForEach(FeedPhotoGroupingMode.allCases) { mode in
-                            Text(mode.rawValue).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .onChange(of: photoGroupingMode) { _, new in
-                        FeedPhotoGroupingMode.current = new
-                    }
-                    Text(photoGroupingMode.description)
+                    Text(FeedPhotoGroupingMode.betweenVideo.description)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 } header: {
                     Text("Feed Photos")
                 } footer: {
-                    Text("How photos are grouped: Off = videos only. Between Videos = carousel per video gap.")
+                    Text("Photos appear as carousels between videos in the feed.")
+                }
+
+                Section {
+                    Picker("Next day algorithm", selection: Binding(
+                        get: { FeedNextDayAlgorithm.current },
+                        set: { FeedNextDayAlgorithm.current = $0 }
+                    )) {
+                        ForEach(FeedNextDayAlgorithm.allCases) { algo in
+                            Text(algo.rawValue).tag(algo)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    Text(FeedNextDayAlgorithm.current.description)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("Explore Algorithm")
+                } footer: {
+                    Text("How the feed chooses which day to show next when you scroll.")
                 }
 
                 if let connectivityMonitor {
@@ -118,10 +112,6 @@ struct SettingsView: View {
             }
             .navigationTitle(LocalizedStringKey("settings.title"))
             .navigationBarTitleDisplayMode(.inline)
-            .onAppear {
-                feedMode = FeedImplementationMode.current
-                photoGroupingMode = FeedPhotoGroupingMode.current
-            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(LocalizedStringKey("settings.button.done")) {

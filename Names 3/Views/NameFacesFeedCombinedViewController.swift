@@ -54,6 +54,8 @@ final class NameFacesFeedCombinedViewController: UIViewController {
     private static let windowSize = 500
     private static let bridgeLimit = 80
     private static let bridgeRangeDays = 14
+    /// Max asset IDs to persist in carousel cache. Keeps UserDefaults small; 200 is enough for instant open.
+    private static let carouselCacheMaxSize = 200
 
     // MARK: - Init
 
@@ -232,6 +234,7 @@ final class NameFacesFeedCombinedViewController: UIViewController {
         showCarouselLoading()
 
         Task {
+            let isLowStorage = await MainActor.run { StorageMonitor.shared.isLowOnDeviceStorage }
             _ = await PhotoLibraryService.shared.requestAuthorization()
             let assets: [PHAsset]
 
@@ -242,12 +245,12 @@ final class NameFacesFeedCombinedViewController: UIViewController {
                 assets = Self.filterHiddenVideos(windowAssets.isEmpty
                     ? await NameFacesCarouselAssetFetcher.fetchInitialAssets(limit: Self.windowSize)
                     : windowAssets)
-            } else if let cached = Self.loadCarouselAssetsFromCache(limit: Self.windowSize) {
+            } else if !isLowStorage, let cached = Self.loadCarouselAssetsFromCache(limit: Self.windowSize) {
                 assets = Self.filterHiddenVideos(cached)
             } else {
                 let raw = await NameFacesCarouselAssetFetcher.fetchInitialAssets(limit: Self.windowSize)
                 assets = Self.filterHiddenVideos(raw)
-                if !assets.isEmpty {
+                if !assets.isEmpty, !isLowStorage {
                     Self.saveCarouselCache(assetIDs: assets.map { $0.localIdentifier })
                 }
             }
@@ -286,7 +289,8 @@ final class NameFacesFeedCombinedViewController: UIViewController {
     }
 
     private static func saveCarouselCache(assetIDs: [String]) {
-        UserDefaults.standard.set(assetIDs, forKey: WelcomeFaceNamingViewController.cachedCarouselAssetIDsKey)
+        let trimmed = Array(assetIDs.prefix(carouselCacheMaxSize))
+        UserDefaults.standard.set(trimmed, forKey: WelcomeFaceNamingViewController.cachedCarouselAssetIDsKey)
         UserDefaults.standard.set(false, forKey: WelcomeFaceNamingViewController.cacheInvalidatedKey)
     }
 

@@ -120,10 +120,12 @@ final class CombinedMediaCoordinator: ObservableObject {
     }
 
     private func photoTargetSizePx(for viewportPx: CGSize) -> CGSize {
-        let isLandscape = viewportPx.width > viewportPx.height
-        let columns: CGFloat = isLandscape ? 4 : 3
-        let cell = min(viewportPx.width, viewportPx.height) / columns
-        let edge = max(160, min(cell, 512))
-        return CGSize(width: edge, height: edge)
+        // Solution 1: Use viewport-sized preheat for feed carousel photos so PHCachingImageManager
+        // cache hits the actual display request. Previously used grid size (160–512) which never matched.
+        let horizontalPadding: CGFloat = 32  // MediaFeedConstants.horizontalPadding * 2
+        let maxHeightFraction: CGFloat = 0.7
+        let w = max(1, viewportPx.width - horizontalPadding)
+        let h = max(1, viewportPx.height * maxHeightFraction)
+        return CGSize(width: min(w, 2048), height: min(h, 2048))
     }
 }

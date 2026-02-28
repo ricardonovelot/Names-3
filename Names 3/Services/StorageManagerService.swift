@@ -24,6 +24,10 @@ struct OtherDataBreakdown: Sendable {
     var quizSessions: Int64 = 0       // QuizSession
     var deletedPhotos: Int64 = 0      // DeletedPhoto asset IDs
     var databaseOverhead: Int64 = 0   // WAL, indexes, fragmentation
+    /// Name Faces: unsaved face name assignments (UserDefaults). Cleared via storage manager.
+    var nameFacesMemory: Int64 = 0
+    /// Name Faces: carousel asset ID cache for quick load (UserDefaults). Cleared via storage manager.
+    var carouselCache: Int64 = 0
 
     var attributedTotal: Int64 {
         contactMetadata + faceMetadata + faceClusters + quizHistory + noteRehearsal + quizSessions + deletedPhotos
@@ -70,7 +74,7 @@ struct StorageBreakdown: Sendable {
     
     var peopleTotal: Int64 { peoplePhotos }
     var facesTotal: Int64 { faceThumbnails + faceEmbeddings }
-    var otherDataTotal: Int64 { notesSize + quickNotesSize + tagsSize + otherMetadataSize }
+    var otherDataTotal: Int64 { notesSize + quickNotesSize + tagsSize + otherMetadataSize + otherBreakdown.nameFacesMemory + otherBreakdown.carouselCache }
     
     private func formatBytes(_ bytes: Int64) -> String {
         let formatter = ByteCountFormatter()
@@ -222,6 +226,16 @@ final class StorageManagerService {
         ImageCacheService.shared.clearCache()
     }
     
+    /// Clear Name Faces unsaved assignments (UserDefaults). Next carousel open will show blank names.
+    func clearNameFacesMemory() {
+        NameFacesMemory.clearAll()
+    }
+    
+    /// Invalidate carousel asset cache. Next Name Faces open will refetch from photo library.
+    func clearCarouselCache() {
+        UserDefaults.standard.set(true, forKey: "WelcomeFaceNaming.CacheInvalidated")
+    }
+    
     private func computePeoplePhotosSize(context: ModelContext) -> Int64 {
         do {
             let contacts = try context.fetch(FetchDescriptor<Contact>())
@@ -332,7 +346,16 @@ final class StorageManagerService {
         } catch {
             Self.logger.warning("Could not fetch deleted photos for other breakdown: \(error.localizedDescription)")
         }
+        b.nameFacesMemory = NameFacesMemory.estimatedSize()
+        b.carouselCache = computeCarouselCacheSize()
         return b
+    }
+    
+    private func computeCarouselCacheSize() -> Int64 {
+        let idsKey = "WelcomeFaceNaming.CachedCarouselAssetIDs"
+        guard let ids = UserDefaults.standard.stringArray(forKey: idsKey) else { return 0 }
+        let data = (try? JSONEncoder().encode(ids)) ?? Data()
+        return Int64(data.count)
     }
     
     // MARK: - Item-level fetch (for identify & delete UI)

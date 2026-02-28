@@ -74,4 +74,26 @@ enum NameFacesMemory {
         }
         saveToUserDefaults(assignments: assignments, order: order)
     }
+    
+    /// Estimated storage size in bytes. Used for storage manager UI.
+    static func estimatedSize() -> Int64 {
+        let (assignments, order) = loadFromUserDefaults()
+        let assignmentsData = (try? JSONEncoder().encode(assignments)) ?? Data()
+        let orderData = (try? JSONEncoder().encode(order)) ?? Data()
+        return Int64(assignmentsData.count + orderData.count)
+    }
+    
+    /// Number of assets currently stored. Used for storage manager UI.
+    static func assetCount() -> Int {
+        let (_, order) = loadFromUserDefaults()
+        return order.count
+    }
+    
+    /// Clears all stored assignments. Use for storage manager "Clear Name Faces memory" action.
+    static func clearAll() {
+        queue.sync {
+            UserDefaults.standard.removeObject(forKey: key)
+            UserDefaults.standard.removeObject(forKey: orderKey)
+        }
+    }
 }

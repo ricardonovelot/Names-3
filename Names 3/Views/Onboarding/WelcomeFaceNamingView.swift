@@ -25,12 +25,14 @@ struct WelcomeFaceNamingView: View {
     @State private var reloadTrigger: Int = 0
 
     private static let windowSize: Int = 500
+    private static let carouselCacheMaxSize = 200
 
-    /// Tries to load carousel assets from cache. Returns nil if cache invalid, stale, or empty.
+    /// Tries to load carousel assets from cache. Returns nil if cache invalid, stale, empty, or device low on storage.
     private static func loadCarouselAssetsFromCache(limit: Int) -> [PHAsset]? {
         guard !UserDefaults.standard.bool(forKey: WelcomeFaceNamingViewController.cacheInvalidatedKey) else {
             return nil
         }
+        guard !StorageMonitor.shared.isLowOnDeviceStorage else { return nil }
         let ids = UserDefaults.standard.stringArray(forKey: WelcomeFaceNamingViewController.cachedCarouselAssetIDsKey)
         guard let ids = ids, !ids.isEmpty else { return nil }
         let idsToResolve = Array(ids.prefix(limit))
@@ -50,7 +52,9 @@ struct WelcomeFaceNamingView: View {
     }
 
     private static func saveCarouselCache(assetIDs: [String]) {
-        UserDefaults.standard.set(assetIDs, forKey: WelcomeFaceNamingViewController.cachedCarouselAssetIDsKey)
+        guard !StorageMonitor.shared.isLowOnDeviceStorage else { return }
+        let trimmed = Array(assetIDs.prefix(carouselCacheMaxSize))
+        UserDefaults.standard.set(trimmed, forKey: WelcomeFaceNamingViewController.cachedCarouselAssetIDsKey)
         UserDefaults.standard.set(false, forKey: WelcomeFaceNamingViewController.cacheInvalidatedKey)
     }
 

@@ -108,6 +108,8 @@
 "storage.app.other.breakdown.noteRehearsal" = "Historial de ensayo de notas";
 "storage.app.other.breakdown.quizSessions" = "Sesiones de quiz";
 "storage.app.other.breakdown.deletedPhotos" = "Lista de fotos eliminadas";
+"storage.app.other.breakdown.nameFacesMemory" = "Nombres sin guardar de Nombrar Caras";
+"storage.app.other.breakdown.carouselCache" = "Caché del carrusel de Nombrar Caras";
 "storage.app.other.breakdown.databaseOverhead" = "Sobrecarga de base de datos";
 "storage.app.peopleAndFaces" = "Personas y Caras";
 "storage.actions.compact" = "Compactar Base de Datos";
@@ -121,6 +123,12 @@
 "storage.other.clearRehearsal.title" = "¿Borrar historial de ensayo de notas?";
 "storage.other.clearRehearsal.action" = "Borrar historial de ensayo";
 "storage.other.clearRehearsal.message" = "Esto reinicia la programación de ensayos para todos los contactos. Puedes reconstruirlo ensayando notas de nuevo.";
+"storage.other.clearNameFacesMemory.title" = "¿Borrar memoria de Nombrar Caras?";
+"storage.other.clearNameFacesMemory.action" = "Borrar memoria de Nombrar Caras";
+"storage.other.clearNameFacesMemory.message" = "Esto quita los nombres de caras sin guardar del carrusel. Los nombres que ya guardaste en contactos se mantienen. Puedes volver a agregar nombres al regresar a cada foto.";
+"storage.other.clearCarouselCache.title" = "¿Borrar caché del carrusel?";
+"storage.other.clearCarouselCache.action" = "Borrar caché del carrusel";
+"storage.other.clearCarouselCache.message" = "Esto borra el orden de fotos en caché para Nombrar Caras. La próxima vez que abras Nombrar Caras, las fotos se cargarán de nuevo desde tu biblioteca. No se afectan los datos guardados.";
 "storage.app.batchData" = "Datos por Lotes";
 "storage.app.caches" = "Cachés";
 "storage.app.documents" = "Documentos";

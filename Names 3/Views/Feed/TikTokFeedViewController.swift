@@ -17,10 +17,7 @@ final class TikTokFeedViewController: UIViewController {
     var coordinator: CombinedMediaCoordinator?
     var currentFeedItems: [FeedItem] { viewModel.items }
 
-    // Implementation-specific coordinators (created lazily when mode selected)
-    private var impl1Coordinator: SingleSharedLayerCoordinator?
-    private var impl4Coordinator: PlayerLooperCoordinator?
-    private var impl5Coordinator: StrictUnbindCoordinator?
+    private var strictUnbindCoordinator: StrictUnbindCoordinator?
     var isFeedVisible: Bool = true {
         didSet {
             if isFeedVisible {
@@ -200,40 +197,12 @@ final class TikTokFeedViewController: UIViewController {
     }
 
     private func buildVideoCell(asset: PHAsset, isActive: Bool) -> UIView {
-        switch FeedImplementationMode.current {
-        case .baseline:
-            return MediaFeedCellView(content: .video(
-                asset: asset,
-                isActive: isActive,
-                sharedPlayer: coordinator?.sharedVideoPlayer
-            ))
-        case .singleSharedLayer:
-            let coord = impl1Coordinator ?? {
-                let c = SingleSharedLayerCoordinator()
-                c.installParkingView(in: view)
-                impl1Coordinator = c
-                return c
-            }()
-            return FeedImpl1CellView(asset: asset, isActive: isActive, coordinator: coord)
-        case .twoLayers:
-            return FeedImpl2CellView(asset: asset, isActive: isActive, sharedPlayer: coordinator?.sharedVideoPlayer)
-        case .perCellPlayer:
-            return FeedImpl3CellView(asset: asset, isActive: isActive, sharedPlayer: nil)
-        case .playerLooper:
-            let coord = impl4Coordinator ?? {
-                let c = PlayerLooperCoordinator()
-                impl4Coordinator = c
-                return c
-            }()
-            return FeedImpl4CellView(asset: asset, isActive: isActive, coordinator: coord)
-        case .strictUnbind:
-            let coord = impl5Coordinator ?? {
-                let c = StrictUnbindCoordinator()
-                impl5Coordinator = c
-                return c
-            }()
-            return FeedImpl5CellView(asset: asset, isActive: isActive, coordinator: coord)
-        }
+        let coord = strictUnbindCoordinator ?? {
+            let c = StrictUnbindCoordinator()
+            strictUnbindCoordinator = c
+            return c
+        }()
+        return FeedImpl5CellView(asset: asset, isActive: isActive, coordinator: coord)
     }
 
     private func pageIsReady(_ idx: Int) -> Bool {

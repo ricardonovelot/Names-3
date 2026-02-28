@@ -108,6 +108,8 @@
 "storage.app.other.breakdown.noteRehearsal" = "Note rehearsal history";
 "storage.app.other.breakdown.quizSessions" = "Quiz sessions";
 "storage.app.other.breakdown.deletedPhotos" = "Deleted photos list";
+"storage.app.other.breakdown.nameFacesMemory" = "Name Faces unsaved names";
+"storage.app.other.breakdown.carouselCache" = "Name Faces carousel cache";
 "storage.app.other.breakdown.databaseOverhead" = "Database overhead";
 "storage.app.peopleAndFaces" = "People & Faces";
 "storage.actions.compact" = "Compact Database";
@@ -121,6 +123,12 @@
 "storage.other.clearRehearsal.title" = "Clear Note Rehearsal History?";
 "storage.other.clearRehearsal.action" = "Clear Note Rehearsal";
 "storage.other.clearRehearsal.message" = "This resets rehearsal scheduling for all contacts. You can rebuild it by rehearsing notes again.";
+"storage.other.clearNameFacesMemory.title" = "Clear Name Faces Memory?";
+"storage.other.clearNameFacesMemory.action" = "Clear Name Faces Memory";
+"storage.other.clearNameFacesMemory.message" = "This removes unsaved face names from the Name Faces carousel. Names you've already saved to contacts will stay. You can add names again when you return to each photo.";
+"storage.other.clearCarouselCache.title" = "Clear Carousel Cache?";
+"storage.other.clearCarouselCache.action" = "Clear Carousel Cache";
+"storage.other.clearCarouselCache.message" = "This clears the cached photo order for Name Faces. The next time you open Name Faces, photos will load fresh from your library. No saved data is affected.";
 "storage.app.batchData" = "Batch Data";
 "storage.app.caches" = "Caches";
 "storage.app.documents" = "Documents";

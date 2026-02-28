@@ -150,6 +150,12 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
             scrollToIndex(currentIndex)
             didInitialScroll = true
             applyScrollSettledState()
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                let contentH = self.collectionView.contentSize.height
+                let boundsH = self.collectionView.bounds.height
+                print("[PhotoGroupingScroll] FeedPaged: initialLayout items=\(self.items.count) contentH=\(Int(contentH)) boundsH=\(Int(boundsH))")
+            }
         }
     }
 
@@ -195,7 +201,8 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
         guard collectionView.bounds.height > 0 else { return }
         let target = computedPage()
         if target != currentIndex {
-            print("[FeedPlayback] scrollViewDidScroll: page \(currentIndex)→\(target) (offset=\(scrollView.contentOffset.y / collectionView.bounds.height))")
+            let offsetRatio = scrollView.contentOffset.y / collectionView.bounds.height
+            print("[PhotoGroupingScroll] FeedPaged: page \(currentIndex)→\(target) offsetRatio=\(String(format: "%.2f", offsetRatio))")
             currentIndex = target
             onIndexChange(target)
             evictDistantContentIfNeeded(keeping: target)
@@ -204,12 +211,25 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
         }
     }
 
+    override func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        let contentH = scrollView.contentSize.height
+        let boundsH = collectionView.bounds.height
+        print("[PhotoGroupingScroll] FeedPaged: willBeginDragging items=\(items.count) contentH=\(Int(contentH)) boundsH=\(Int(boundsH))")
+    }
+
     override func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        let offsetY = scrollView.contentOffset.y
+        let contentH = scrollView.contentSize.height
+        let boundsH = collectionView.bounds.height
+        print("[PhotoGroupingScroll] FeedPaged: didEndDecelerating offsetY=\(Int(offsetY)) contentH=\(Int(contentH)) boundsH=\(Int(boundsH)) items=\(items.count)")
         didInitialScroll = true
         applyScrollSettledState()
     }
 
     override func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        let offsetY = scrollView.contentOffset.y
+        let contentH = scrollView.contentSize.height
+        print("[PhotoGroupingScroll] FeedPaged: didEndDragging decelerate=\(decelerate) offsetY=\(Int(offsetY)) contentH=\(Int(contentH)) items=\(items.count)")
         if !decelerate {
             didInitialScroll = true
             applyScrollSettledState()

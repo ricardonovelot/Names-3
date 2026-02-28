@@ -185,27 +185,22 @@ final class TikTokFeedViewModel: ObservableObject {
         Diagnostics.log("DayRanges built count=\(dayRanges.count)")
     }
 
-    // Biased pick favoring recent days to increase local/cache hit rate.
-    // Strategy: sample up to 6 unseen day indices and take the minimum (newest).
-    private func pickBiasedNextDayIndex() -> Int? {
+    /// Uses FeedNextDayAlgorithm.current to pick the next day. Replaces legacy pickBiased/pickRandom.
+    private func pickNextDayIndex() -> Int? {
         guard !dayRanges.isEmpty else { return nil }
-        var candidates = Array(dayRanges.indices).filter { !exploredDayIndices.contains($0) }
-        if candidates.isEmpty {
-            exploredDayIndices.removeAll()
-            candidates = Array(dayRanges.indices)
-            if let last = lastAppendedDayIndex, candidates.count > 1 {
-                candidates.removeAll { $0 == last }
-            }
+        let dayInfos = dayRanges.enumerated().map { idx, r in
+            FeedDaySelectionContext.DayInfo(dayIndex: idx, dayStart: r.dayStart, start: r.start, end: r.end)
         }
-        guard !candidates.isEmpty else { return nil }
-        let sampleCount = min(6, candidates.count)
-        var sample: [Int] = []
-        for _ in 0..<sampleCount {
-            if let pick = candidates.randomElement() { sample.append(pick) }
-        }
-        let chosen = sample.min()
+        let ctx = FeedDaySelectionContext(
+            dayInfos: dayInfos,
+            exploredDayIndices: exploredDayIndices,
+            lastAppendedDayIndex: lastAppendedDayIndex,
+            fetchVideos: fetchVideos,
+            now: Date()
+        )
+        let chosen = FeedNextDayAlgorithm.current.pickNextDay(context: ctx)
         if let c = chosen {
-            Diagnostics.log("ExploreBias: pickBiased dayIdx=\(c) of \(dayRanges.count) (sample=\(sample))")
+            Diagnostics.log("ExploreAlgo: \(FeedNextDayAlgorithm.current.rawValue) dayIdx=\(c) of \(dayRanges.count)")
         }
         return chosen
     }
@@ -214,7 +209,7 @@ final class TikTokFeedViewModel: ObservableObject {
     @discardableResult
     private func prewarmNextDayIfNeeded(biased: Bool = true) -> Int? {
         guard exploreModeActive, !prewarmInFlight, prewarmedNextDayIndex == nil else { return prewarmedNextDayIndex }
-        guard let dayIdx = biased ? pickBiasedNextDayIndex() : pickNextRandomDayIndex() else { return nil }
+        guard let dayIdx = pickNextDayIndex() else { return nil }
         guard let vResult = fetchVideos, dayRanges.indices.contains(dayIdx) else { return nil }
         let r = dayRanges[dayIdx]
         let baseSlice = vResult.objects(at: IndexSet(integersIn: r.start..<r.end))
@@ -232,22 +227,6 @@ final class TikTokFeedViewModel: ObservableObject {
         PlayerItemPrefetcher.shared.prefetch(warm)
         // Note: we don't block; warming continues while user scrolls.
         return dayIdx
-    }
-
-    // Pick a random unseen day index; when exhausted, reset the explored set to continue
-    private func pickNextRandomDayIndex() -> Int? {
-        guard !dayRanges.isEmpty else { return nil }
-        var candidates = Array(dayRanges.indices).filter { !exploredDayIndices.contains($0) }
-        if candidates.isEmpty {
-            // Reset but avoid immediately repeating the last day if possible
-            exploredDayIndices.removeAll()
-            candidates = Array(dayRanges.indices)
-            if let last = lastAppendedDayIndex, candidates.count > 1 {
-                candidates.removeAll { $0 == last }
-            }
-        }
-        guard !candidates.isEmpty else { return nil }
-        return candidates.randomElement()
     }
 
     // Append one day segment; returns true if items were appended
@@ -270,6 +249,7 @@ final class TikTokFeedViewModel: ObservableObject {
 
         if asInitial {
             items = built
+            logItemsStructure(built, source: "ExploreDay")
             initialIndexInWindow = 0
             isLoading = false
             Diagnostics.log("ExploreDay: initial publish items=\(items.count) day=\(r.dayStart) videos=\(vSlice.count) carousels=\(carousels.count)")
@@ -344,6 +324,7 @@ final class TikTokFeedViewModel: ObservableObject {
         let (itemsBuilt, _, videosTailCount) = interleave(videos: vSlice, carousels: carousels, startVideoStride: 0)
         
         items = itemsBuilt
+        logItemsStructure(itemsBuilt, source: "StartWindow")
         Diagnostics.log("StartWindow: publish items=\(items.count)")
         if let first = itemsBuilt.first {
             switch first.kind {
@@ -430,6 +411,7 @@ final class TikTokFeedViewModel: ObservableObject {
             let (itemsBuilt, _, videosTailCount) = interleave(videos: vSlice, carousels: carousels, startVideoStride: 0)
             
             items = itemsBuilt
+            logItemsStructure(itemsBuilt, source: "RandomWindow")
             Diagnostics.log("RandomWindow(legacy): publish items=\(items.count)")
             if let first = itemsBuilt.first {
                 switch first.kind {
@@ -506,6 +488,7 @@ final class TikTokFeedViewModel: ObservableObject {
         }()
 
         items = itemsBuilt
+        logItemsStructure(itemsBuilt, source: "DateWindow")
         Diagnostics.log("DateWindow: publish items=\(items.count)")
         if let first = itemsBuilt.first {
             switch first.kind {
@@ -567,6 +550,7 @@ final class TikTokFeedViewModel: ObservableObject {
             Diagnostics.debugBridge(hypothesisId: "E", location: "TikTokFeedViewModel.loadWindowContaining", message: "bridge SUCCESS", data: ["assetID": assetID, "finalIndex": finalIndex, "feedItemsCount": feedItems.count])
             // #endregion
             items = feedItems
+            logItemsStructure(feedItems, source: "BridgeWindow")
             initialIndexInWindow = finalIndex
             isLoading = false
             exploreModeActive = false
@@ -605,6 +589,7 @@ final class TikTokFeedViewModel: ObservableObject {
         let feedItems = buildFeedItemsFromMixedAssets(assets)
         guard !feedItems.isEmpty else { return }
         items = feedItems
+        logItemsStructure(feedItems, source: "BridgeInject")
         isBridgeWindowActive = true
         exploreModeActive = false
         segmentEndIndices.removeAll()
@@ -615,6 +600,20 @@ final class TikTokFeedViewModel: ObservableObject {
         }
         isLoading = false
         Diagnostics.log("BridgeInject: Carousel→Feed \(feedItems.count) items, scrollTo=\(scrollToAssetID ?? "nil")")
+    }
+
+    /// Logs item structure for scroll debugging. Call when items are published.
+    private func logItemsStructure(_ items: [FeedItem], source: String) {
+        let mode = FeedPhotoGroupingMode.current.rawValue
+        let pattern = items.prefix(12).map { item -> String in
+            switch item.kind {
+            case .video: return "V"
+            case .photoCarousel: return "C"
+            }
+        }.joined()
+        let videoCount = items.filter { if case .video = $0.kind { return true }; return false }.count
+        let carouselCount = items.filter { if case .photoCarousel = $0.kind { return true }; return false }.count
+        print("[PhotoGroupingScroll] Items published: source=\(source) mode=\(mode) count=\(items.count) V=\(videoCount) C=\(carouselCount) pattern=\(pattern)")
     }
 
     /// Converts a flat mixed [PHAsset] list to [FeedItem] using FeedPhotoGroupingMode.
@@ -760,7 +759,7 @@ final class TikTokFeedViewModel: ObservableObject {
                     var attempts = min(8, max(1, dayRanges.count - exploredDayIndices.count))
                     while attempts > 0 && !appended {
                         attempts -= 1
-                        let nextDay = pickBiasedNextDayIndex() ?? pickNextRandomDayIndex()
+                        let nextDay = pickNextDayIndex()
                         if let nextDay {
                             appended = appendDay(dayIndex: nextDay, asInitial: false)
                         } else {

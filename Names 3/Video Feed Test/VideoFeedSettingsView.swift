@@ -4,9 +4,6 @@ import StoreKit
 struct VideoFeedSettingsView: View {
     @EnvironmentObject private var settings: AppSettings
     @ObservedObject var appleMusic: MusicLibraryModel
-    @State private var feedMode: FeedImplementationMode = FeedImplementationMode.current
-    @State private var photoGroupingMode: FeedPhotoGroupingMode = FeedPhotoGroupingMode.current
-
     var body: some View {
         NavigationView {
             Form {
@@ -14,32 +11,29 @@ struct VideoFeedSettingsView: View {
                     Toggle("Show download overlay", isOn: $settings.showDownloadOverlay)
                 }
 
-                Section("Feed Implementation (A/B Test)") {
-                    Picker("Mode", selection: $feedMode) {
-                        ForEach(FeedImplementationMode.allCases) { mode in
-                            Text(mode.rawValue).tag(mode)
-                        }
+                Section("Photo Grouping") {
+                    HStack {
+                        Text("Mode")
+                        Spacer()
+                        Text("Between Videos")
+                            .foregroundStyle(.secondary)
                     }
-                    .pickerStyle(.menu)
-                    .onChange(of: feedMode) { _, new in
-                        FeedImplementationMode.current = new
-                    }
-                    Text(feedMode.description)
+                    Text(FeedPhotoGroupingMode.betweenVideo.description)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
 
-                Section("Photo Grouping") {
-                    Picker("Mode", selection: $photoGroupingMode) {
-                        ForEach(FeedPhotoGroupingMode.allCases) { mode in
-                            Text(mode.rawValue).tag(mode)
+                Section("Explore Algorithm") {
+                    Picker("Next day", selection: Binding(
+                        get: { FeedNextDayAlgorithm.current },
+                        set: { FeedNextDayAlgorithm.current = $0 }
+                    )) {
+                        ForEach(FeedNextDayAlgorithm.allCases) { algo in
+                            Text(algo.rawValue).tag(algo)
                         }
                     }
                     .pickerStyle(.menu)
-                    .onChange(of: photoGroupingMode) { _, new in
-                        FeedPhotoGroupingMode.current = new
-                    }
-                    Text(photoGroupingMode.description)
+                    Text(FeedNextDayAlgorithm.current.description)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -118,13 +112,10 @@ struct VideoFeedSettingsView: View {
                 }
             }
             .navigationTitle("Settings")
-            .onAppear {
-                feedMode = FeedImplementationMode.current
-                photoGroupingMode = FeedPhotoGroupingMode.current
-            }
             .task {
                 appleMusic.bootstrap()
             }
         }
     }
+
 }
