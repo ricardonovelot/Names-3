@@ -32,13 +32,13 @@ struct CustomDatePicker: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 24) {
-                    customDateSectionContent
+                VStack(spacing: 20) {
                     quickSelectSectionContent
+                    customDateSectionContent
                     tagBasedSectionContent
                 }
-                .padding(.top, 8)
-                .padding(.bottom, 24)
+                .padding(.top, 4)
+                .padding(.bottom, 28)
             }
             .scrollIndicators(.hidden)
             .navigationTitle("Change Date")
@@ -69,62 +69,56 @@ struct CustomDatePicker: View {
     // MARK: - Quick Select Section
 
     private var quickSelectSectionContent: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             Text("Quick Select")
-                .font(.footnote)
+                .font(.caption)
+                .fontWeight(.medium)
                 .foregroundStyle(.secondary)
-                .textCase(.uppercase)
                 .padding(.horizontal, 20)
-            VStack(spacing: 0) {
+            HStack(spacing: 8) {
                 ForEach(QuickDateOption.allOptions) { option in
-                    quickSelectRow(for: option)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                    if option.id != QuickDateOption.allOptions.last?.id {
-                        Divider()
-                            .padding(.leading, 56)
-                    }
+                    quickSelectChip(for: option)
                 }
             }
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(uiColor: .secondarySystemGroupedBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .padding(.horizontal, 20)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 20)
     }
     
-    private func quickSelectRow(for option: QuickDateOption) -> some View {
-        Button {
+    private func quickSelectChip(for option: QuickDateOption) -> some View {
+        let isSelected = selectedQuickOption == option.id
+        return Button {
             selectedQuickOption = option.id
             applyQuickOption(option)
         } label: {
-            HStack(spacing: 12) {
+            VStack(spacing: 4) {
                 Image(systemName: option.iconName)
-                    .font(.body)
-                    .foregroundStyle(option.isLongAgo ? .secondary : .primary)
-                    .frame(width: 24, alignment: .center)
-                
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(option.title)
-                        .foregroundStyle(.primary)
-                    
-                    if !option.isLongAgo {
-                        Text(dayOfWeek(for: option.date))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                
-                Spacer()
-                
-                if selectedQuickOption == option.id {
-                    Image(systemName: "checkmark")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(.blue)
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(option.isLongAgo ? Color.secondary : (isSelected ? Color.white : Color.primary))
+                Text(option.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(option.isLongAgo ? Color.secondary : (isSelected ? Color.white : Color.primary))
+                    .lineLimit(1)
+                if !option.isLongAgo {
+                    Text(dayOfWeek(for: option.date))
+                        .font(.caption2)
+                        .foregroundStyle(isSelected ? Color.white.opacity(0.85) : Color.secondary)
+                } else {
+                    Text("No specific date")
+                        .font(.caption2)
+                        .foregroundStyle(Color.secondary.opacity(0.8))
                 }
             }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(isSelected ? Color.accentColor : Color(uiColor: .tertiarySystemFill))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(isSelected ? Color.accentColor.opacity(0.5) : Color.clear, lineWidth: 1)
+            )
+            .shadow(color: isSelected ? Color.accentColor.opacity(0.25) : .clear, radius: 6, y: 2)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -134,77 +128,92 @@ struct CustomDatePicker: View {
 
     private var tagBasedSectionContent: some View {
         let options = tagDateOptions()
-        let limited = showAllTagOptions ? options : Array(options.prefix(3))
-        return VStack(alignment: .leading, spacing: 8) {
+        let limited = showAllTagOptions ? options : Array(options.prefix(5))
+        return VStack(alignment: .leading, spacing: 12) {
             Text("Recent Places & Groups")
-                .font(.footnote)
+                .font(.caption)
+                .fontWeight(.medium)
                 .foregroundStyle(.secondary)
-                .textCase(.uppercase)
                 .padding(.horizontal, 20)
             VStack(spacing: 0) {
                 if options.isEmpty {
-                    HStack {
+                    HStack(spacing: 4) {
                         Image(systemName: "tag.slash")
+                            .font(.body)
                             .foregroundStyle(.tertiary)
                         Text("No recent places or groups")
+                            .font(.subheadline)
                             .foregroundStyle(.secondary)
                         Spacer()
                     }
-                    .padding()
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 24)
                 } else {
                     ForEach(Array(limited.enumerated()), id: \.element.id) { index, opt in
                         tagDateRow(for: opt)
                             .padding(.horizontal, 16)
-                            .padding(.vertical, 12)
-                        if index < limited.count - 1 || (!showAllTagOptions && options.count > 3) {
+                            .padding(.vertical, 14)
+                        if index < limited.count - 1 || (!showAllTagOptions && options.count > 5) {
                             Divider()
-                                .padding(.leading, 56)
+                                .padding(.leading, 52)
                         }
                     }
-                    if !showAllTagOptions && options.count > 3 {
+                    if !showAllTagOptions && options.count > 5 {
                         Button {
-                            withAnimation {
+                            withAnimation(.easeInOut(duration: 0.25)) {
                                 showAllTagOptions = true
                             }
                         } label: {
                             HStack {
                                 Spacer()
                                 Text("Show All \(options.count)")
-                                    .font(.subheadline)
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(.secondary)
+                                Image(systemName: "chevron.down")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.tertiary)
                                 Spacer()
                             }
+                            .padding(.vertical, 12)
                         }
                         .buttonStyle(.plain)
                         .padding(.horizontal, 16)
                     }
                 }
             }
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(uiColor: .secondarySystemGroupedBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(Color(uiColor: .secondarySystemGroupedBackground))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color(uiColor: .separator).opacity(0.25), lineWidth: 0.5)
+            )
+            .padding(.horizontal, 20)
             if !options.isEmpty {
-                Text("Select from your existing places and group events")
-                    .font(.footnote)
+                Text("Places and group events you've used before")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 20)
             }
         }
-        .padding(.horizontal, 20)
     }
     
     private func tagDateRow(for option: TagDateOption) -> some View {
         Button {
             applyTagOption(option)
         } label: {
-            HStack(spacing: 12) {
+            HStack(spacing: 14) {
                 Image(systemName: "tag.fill")
-                    .font(.caption)
+                    .font(.system(size: 14))
                     .foregroundStyle(.orange)
-                    .frame(width: 24, alignment: .center)
+                    .frame(width: 28, height: 28)
+                    .background(Color.orange.opacity(0.15))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(option.name)
+                        .font(.subheadline.weight(.medium))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                     
@@ -240,13 +249,12 @@ struct CustomDatePicker: View {
     
     /// Calendar placed outside List to avoid UICollectionView self-sizing feedback loop (section 2-0).
     private var customDateSectionContent: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             Text("Custom Date")
-                .font(.footnote)
+                .font(.caption)
+                .fontWeight(.medium)
                 .foregroundStyle(.secondary)
-                .textCase(.uppercase)
                 .padding(.horizontal, 20)
-                .padding(.top, 8)
             PhotoCalendarView(
                 selection: $customDate,
                 thumbnailForDay: { dayStart in
@@ -260,17 +268,24 @@ struct CustomDatePicker: View {
             .onChange(of: customDate) { oldValue, newValue in
                 selectedQuickOption = nil
             }
+            .padding(16)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(Color(uiColor: .secondarySystemGroupedBackground))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color(uiColor: .separator).opacity(0.25), lineWidth: 0.5)
+            )
             .padding(.horizontal, 20)
-            Text("Choose any specific date up to today. Days show a photo from your library or someone you met that day.")
-                .font(.footnote)
+            Text("Pick any date up to today. Photos show library or contact images for that day.")
+                .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 20)
                 .padding(.top, 4)
-                .padding(.bottom, 16)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(uiColor: .secondarySystemGroupedBackground))
     }
 
     /// Prefer library thumbnail for the day; fall back to contact photo if no library photo for that day.

@@ -60,8 +60,9 @@ actor VideoPrefetchStore {
             }
 
             let options = PHVideoRequestOptions()
-            options.deliveryMode = .mediumQualityFormat
-            options.isNetworkAccessAllowed = true
+            // .automatic enables streaming without full download (like Apple Photos); .mediumQualityFormat triggers FIGSANDBOX -17507
+            options.deliveryMode = .automatic
+            options.isNetworkAccessAllowed = DataUsageGuardrails.shouldAllowNetworkForFeedMedia()
             options.progressHandler = { progress, _, _, _ in
                 Task { @MainActor in
                     DownloadTracker.shared.updateProgress(for: id, phase: .prefetch, progress: progress)
@@ -219,10 +220,14 @@ actor VideoPrefetchStore {
             let isTransientCloud = (nsErr?.domain == "CloudPhotoLibraryErrorDomain" && nsErr?.code == 1005)
             if isTransientCloud {
                 backoffUntil[id] = Date().addingTimeInterval(10)
+                StorageMonitor.reportIfCloudPhotoLowStorage(info: info)
             }
             await MainActor.run {
                 PhotoKitDiagnostics.logResultInfo(prefix: "Prefetcher AVAsset nil", info: info)
                 if !cancelled && !isTransientCloud {
+                    if let err = nsErr {
+                        StorageMonitor.reportIfENOSPC(err)
+                    }
                     DownloadTracker.shared.markFailed(id: id, note: nsErr?.localizedDescription)
                 }
             }

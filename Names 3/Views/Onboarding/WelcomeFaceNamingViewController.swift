@@ -551,6 +551,18 @@ final class WelcomeFaceNamingViewController: UIViewController {
         updatePlayPauseButton(isPlaying: true)
     }
 
+    /// Stop/start face detection when carousel is hidden/shown (Feed↔Carousel mode switch).
+    /// Prevents face detection from firing while the overlay is still visible or when switching back to Feed.
+    func notifyCarouselBecameVisible(_ visible: Bool) {
+        if visible {
+            if videoPlayer != nil, currentVideoAsset != nil {
+                startFaceDetectionTimer()
+            }
+        } else {
+            stopFaceDetectionTimer()
+        }
+    }
+
     deinit {
         NotificationCenter.default.removeObserver(self, name: UIResponder.keyboardWillShowNotification, object: nil)
         NotificationCenter.default.removeObserver(self, name: UIResponder.keyboardWillHideNotification, object: nil)
@@ -2617,8 +2629,6 @@ final class WelcomeFaceNamingViewController: UIViewController {
                     
                     // Setup time observer for progress slider
                     self.setupTimeObserver()
-                    
-                    // Start periodic face detection timer
                     self.startFaceDetectionTimer()
                     
                     // Auto-play the video

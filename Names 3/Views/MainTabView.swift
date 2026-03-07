@@ -6,25 +6,32 @@
 //
 
 import SwiftUI
+import os
 
 enum MainTab: Int, CaseIterable {
-    case nameFaces = 0   // combined: feed + face-naming carousel
-    case people = 1      // people middle
-    case practice = 2    // practice third
+    case photos = 0      // combined: feed + face-naming carousel (was Name Faces)
+    case people = 1
+    case journal = 2
+    case practice = 3    // accessed via People toolbar menu, not shown in tab bar
+
+    /// Tabs shown in the tab bar (Practice is in People toolbar menu).
+    static var tabBarTabs: [MainTab] { [.photos, .people, .journal] }
 
     var title: String {
         switch self {
+        case .photos: return String(localized: "tab.photos")
         case .people: return String(localized: "tab.people")
+        case .journal: return String(localized: "tab.journal")
         case .practice: return String(localized: "tab.practice")
-        case .nameFaces: return String(localized: "tab.nameFaces")
         }
     }
 
     var icon: String {
         switch self {
+        case .photos: return "photo.stack.fill"
         case .people: return "person.2.fill"
+        case .journal: return "sparkles"
         case .practice: return "rectangle.stack.fill"
-        case .nameFaces: return "camera.fill"
         }
     }
 }
@@ -42,6 +49,8 @@ enum TabBarHeightPreferenceKey: PreferenceKey {
 /// Minimum height to reserve for the tab bar when measured height isn't available yet (pill 64pt + padding 16pt).
 let tabBarMinimumHeight: CGFloat = 80
 
+private let tabBarLogger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Names3", category: "TabBar")
+
 // MARK: - Apple Music–Style Tab Bar
 
 /// [Name Faces] [People] [Practice] pill + [○] circle. Two separate containers, no nested bubble.
@@ -49,27 +58,31 @@ struct QuickInputBottomBar<InlineInputContent: View>: View {
     @Binding var selectedTab: MainTab
     @Binding var isQuickInputExpanded: Bool
     var canShowQuickInput: Bool
-    var showNameFacesButton: Bool = true
-    var onNameFacesTap: (() -> Void)? = nil
+    /// Called when user taps the already-selected tab (native bar behavior: scroll to top).
+    var onSameTabTapped: ((MainTab) -> Void)? = nil
+    @AppStorage(QuickInputExpandIconPreference.userDefaultsKey) private var expandIconRaw: String = QuickInputExpandIconPreference.magnifyingglass.rawValue
     @ViewBuilder var inlineInputContent: () -> InlineInputContent
+
+    @State private var pendingCollapseWorkItem: DispatchWorkItem?
 
     private let barSpring = Animation.spring(response: 0.42, dampingFraction: 0.82)
 
     var body: some View {
-        HStack(spacing: 0) {
-            if isQuickInputExpanded {
-                expandedBar
-                    .transition(.asymmetric(
-                        insertion: .scale(scale: 0.2, anchor: .trailing).combined(with: .opacity),
-                        removal: .scale(scale: 0.2, anchor: .trailing).combined(with: .opacity)
-                    ))
-            } else {
-                collapsedBar
-                    .transition(.asymmetric(
-                        insertion: .scale(scale: 0.5, anchor: .leading).combined(with: .opacity),
-                        removal: .scale(scale: 0.5, anchor: .leading).combined(with: .opacity)
-                    ))
-            }
+        ZStack(alignment: .leading) {
+            collapsedBar
+                .opacity(isQuickInputExpanded ? 0 : 1)
+                .allowsHitTesting(!isQuickInputExpanded)
+                .transition(.asymmetric(
+                    insertion: .scale(scale: 0.5, anchor: .leading).combined(with: .opacity),
+                    removal: .scale(scale: 0.5, anchor: .leading).combined(with: .opacity)
+                ))
+            expandedBar
+                .opacity(isQuickInputExpanded ? 1 : 0)
+                .allowsHitTesting(isQuickInputExpanded)
+                .transition(.asymmetric(
+                    insertion: .scale(scale: 0.2, anchor: .trailing).combined(with: .opacity),
+                    removal: .opacity
+                ))
         }
         .frame(maxWidth: .infinity)
         .animation(barSpring, value: isQuickInputExpanded)
@@ -93,9 +106,6 @@ struct QuickInputBottomBar<InlineInputContent: View>: View {
                 inlineInputContent()
                     .frame(maxWidth: .infinity)
                     .layoutPriority(1)
-                if showNameFacesButton, onNameFacesTap != nil {
-                    cameraBubble
-                }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
@@ -108,9 +118,16 @@ struct QuickInputBottomBar<InlineInputContent: View>: View {
         Button {
             let generator = UIImpactFeedbackGenerator(style: .light)
             generator.impactOccurred(intensity: 0.6)
-            withAnimation(barSpring) {
-                isQuickInputExpanded = false
+            pendingCollapseWorkItem?.cancel()
+            let work = DispatchWorkItem {
+                tabBarLogger.debug("Executing delayed collapse")
+                NotificationCenter.default.post(name: .quickInputLockFocus, object: nil)
+                withAnimation(barSpring) {
+                    isQuickInputExpanded = false
+                }
             }
+            pendingCollapseWorkItem = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.32, execute: work)
         } label: {
             Image(systemName: selectedTab.icon)
                 .font(.system(size: 20, weight: .medium))
@@ -123,23 +140,11 @@ struct QuickInputBottomBar<InlineInputContent: View>: View {
         .accessibilityLabel(selectedTab.title)
     }
 
-    /// Camera inside the input pill (not a separate bubble).
-    private var cameraBubble: some View {
-        Button {
-            onNameFacesTap?()
-        } label: {
-            Image(systemName: "camera.fill")
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(.secondary)
-        }
-        .buttonStyle(.plain)
-    }
-
     /// Two separate containers: [tabs pill] [search circle]. No inner bubble on active tab.
     private var collapsedBar: some View {
         HStack(spacing: 12) {
             HStack(spacing: 0) {
-                ForEach(MainTab.allCases, id: \.rawValue) { tab in
+                ForEach(MainTab.tabBarTabs, id: \.rawValue) { tab in
                     tabButton(tab)
                 }
             }
@@ -160,12 +165,16 @@ struct QuickInputBottomBar<InlineInputContent: View>: View {
         Button {
             let generator = UIImpactFeedbackGenerator(style: .light)
             generator.impactOccurred(intensity: 0.6)
+            pendingCollapseWorkItem?.cancel()
+            pendingCollapseWorkItem = nil
+            tabBarLogger.debug("Expand tapped, cancelled any pending collapse")
+            NotificationCenter.default.post(name: .quickInputLockFocus, object: nil)
             withAnimation(barSpring) {
                 isQuickInputExpanded = true
             }
         } label: {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 18, weight: .medium))
+            Image(systemName: (QuickInputExpandIconPreference(rawValue: expandIconRaw) ?? .magnifyingglass).systemImage)
+                .font(.system(size: 22, weight: .regular))
                 .foregroundStyle(.primary)
                 .frame(width: pillHeight, height: pillHeight)
                 .liquidGlass(in: Circle(), stroke: true, style: .translucent)
@@ -184,8 +193,12 @@ struct QuickInputBottomBar<InlineInputContent: View>: View {
         Button {
             let generator = UIImpactFeedbackGenerator(style: .light)
             generator.impactOccurred(intensity: 0.6)
-            withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
-                selectedTab = tab
+            if isSelected {
+                onSameTabTapped?(tab)
+            } else {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+                    selectedTab = tab
+                }
             }
         } label: {
             VStack(spacing: 4) {
@@ -205,7 +218,7 @@ struct QuickInputBottomBar<InlineInputContent: View>: View {
     }
 }
 
-private struct TabBarButtonStyle: ButtonStyle {
+struct TabBarButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .opacity(configuration.isPressed ? 0.6 : 1)
@@ -223,24 +236,19 @@ private struct TabBarButtonStyle: ButtonStyle {
                 QuickInputBottomBar(
                     selectedTab: $selectedTab,
                     isQuickInputExpanded: $isExpanded,
-                    canShowQuickInput: true,
-                    showNameFacesButton: true,
-                    onNameFacesTap: {}
+                    canShowQuickInput: true
                 ) {
                     RoundedRectangle(cornerRadius: 20)
                         .fill(.ultraThinMaterial)
                         .overlay(
                             HStack(spacing: 8) {
-                                Image(systemName: "magnifyingglass")
-                                    .font(.system(size: 16))
+                                Image(systemName: "pencil")
+                                    .font(.system(size: 18))
                                     .foregroundStyle(.secondary)
                                 Text("Add note…")
                                     .foregroundStyle(.secondary)
                                     .font(.subheadline)
                                 Spacer()
-                                Image(systemName: "camera.fill")
-                                    .font(.system(size: 16))
-                                    .foregroundStyle(.secondary)
                             }
                             .padding(.horizontal, 14)
                         )

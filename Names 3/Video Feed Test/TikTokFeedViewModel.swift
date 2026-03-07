@@ -66,10 +66,18 @@ final class TikTokFeedViewModel: ObservableObject {
         NotificationCenter.default.addObserver(forName: .deletedVideosChanged, object: nil, queue: .main) { [weak self] _ in
             self?.handleDeletedVideosChanged()
         }
+        if feedSettingsObserver == nil {
+            feedSettingsObserver = NotificationCenter.default.addObserver(forName: .feedSettingsDidChange, object: nil, queue: .main) { [weak self] _ in
+                self?.reload()
+            }
+        }
     }
+
+    private var feedSettingsObserver: NSObjectProtocol?
 
     deinit {
         NotificationCenter.default.removeObserver(self, name: .deletedVideosChanged, object: nil)
+        feedSettingsObserver.map { NotificationCenter.default.removeObserver($0) }
     }
     
     private func requestAuthorizationAndLoad() {
@@ -185,7 +193,7 @@ final class TikTokFeedViewModel: ObservableObject {
         Diagnostics.log("DayRanges built count=\(dayRanges.count)")
     }
 
-    /// Uses FeedNextDayAlgorithm.current to pick the next day. Replaces legacy pickBiased/pickRandom.
+    /// Uses recency-biased algorithm to pick the next day.
     private func pickNextDayIndex() -> Int? {
         guard !dayRanges.isEmpty else { return nil }
         let dayInfos = dayRanges.enumerated().map { idx, r in
@@ -198,9 +206,12 @@ final class TikTokFeedViewModel: ObservableObject {
             fetchVideos: fetchVideos,
             now: Date()
         )
-        let chosen = FeedNextDayAlgorithm.current.pickNextDay(context: ctx)
+        let chosen = FeedNextDayAlgorithm.pickNextDay(context: ctx)
         if let c = chosen {
-            Diagnostics.log("ExploreAlgo: \(FeedNextDayAlgorithm.current.rawValue) dayIdx=\(c) of \(dayRanges.count)")
+            let mode = ctx.exploredDaysCount >= FeedExploreSettings.recentDaysThreshold
+                ? FeedExploreSettings.exploreMode.rawValue
+                : "recent"
+            Diagnostics.log("ExploreAlgo: \(mode) dayIdx=\(c) of \(dayRanges.count) explored=\(ctx.exploredDaysCount)")
         }
         return chosen
     }
@@ -357,7 +368,7 @@ final class TikTokFeedViewModel: ObservableObject {
     
     func loadRandomWindow() {
         isLoading = true
-        Diagnostics.log("Explore: RandomDay begin")
+        Diagnostics.log("Explore: begin (recent-first like ahead-of-time)")
         commonFetchSetup()
         guard let vResult = fetchVideos, vResult.count > 0 else {
             items = []
@@ -375,70 +386,106 @@ final class TikTokFeedViewModel: ObservableObject {
             return
         }
         exploreModeActive = true
-        // Always try the most recent day first; advance only if empty/hidden.
-        var appended = false
-        let tryCap = min(12, dayRanges.count)
-        for dayIdx in 0..<tryCap {
-            let d = dayRanges[dayIdx].dayStart
-            Diagnostics.log("Explore: try initial newest day idx=\(dayIdx) date=\(d)")
-            if appendDay(dayIndex: dayIdx, asInitial: true) {
-                appended = true
-                break
-            }
-        }
-        if appended {
-            _ = prewarmNextDayIfNeeded(biased: true)
-        }
-        if !appended {
-            // Fallback to old behavior if all tried days are empty/hidden
-            Diagnostics.log("Explore: fallback to legacy random window (no appendable newest days found)")
-            exploreModeActive = false
 
+        // First items: recent content with variety — cap per day so we don't see 50 from one event.
+        let (vSlice, cursorEnd, usedRange) = buildVariedRecentSlice()
+
+        guard !vSlice.isEmpty else {
+            // All recent videos hidden; fallback to most recent window (not random)
+            Diagnostics.log("Explore: all recent hidden, fallback to most recent window")
             let vCount = vResult.count
             let windowSize = min(pageSizeVideos, vCount)
-            let globalRandom = Int.random(in: 0..<vCount)
-            let half = windowSize / 2
-            var start = max(0, globalRandom - half)
-            if start + windowSize > vCount {
-                start = max(0, vCount - windowSize)
+            let start = max(0, vCount - windowSize)
+            let end = vCount
+            let fallbackSlice = filterHidden(vResult.objects(at: IndexSet(integersIn: start..<end)))
+            if !fallbackSlice.isEmpty {
+                publishInitialWindow(videos: fallbackSlice, source: "ExploreFallback", cursorEnd: end)
+                markDaysExploredForIndices(start..<end)
+                lastAppendedDayIndex = dayIndexForFetchIndex(end - 1)
+            } else {
+                items = []
+                initialIndexInWindow = nil
             }
-            let end = min(vCount, start + windowSize)
-            let vSliceBase = vResult.objects(at: IndexSet(integersIn: start..<end))
-            let vSlice = filterHidden(vSliceBase)
-            
-            let pSlice = photosAround(for: vSlice, limit: pageSizePhotos)
-            let carousels = makeCarousels(from: pSlice)
-            let (itemsBuilt, _, videosTailCount) = interleave(videos: vSlice, carousels: carousels, startVideoStride: 0)
-            
-            items = itemsBuilt
-            logItemsStructure(itemsBuilt, source: "RandomWindow")
-            Diagnostics.log("RandomWindow(legacy): publish items=\(items.count)")
-            if let first = itemsBuilt.first {
-                switch first.kind {
-                case .video(let a):
-                    FirstLaunchProbe.shared.windowPublished(items: itemsBuilt.count, firstID: a.localIdentifier)
-                case .photoCarousel(let arr):
-                    FirstLaunchProbe.shared.windowPublished(items: itemsBuilt.count, firstID: arr.first?.localIdentifier ?? "n/a")
-                }
-            }
-            initialIndexInWindow = 0
             isLoading = false
-            
-            videoCursor = end
-            videosSinceLastCarousel = videosTailCount
-            markPhotosUsed(from: itemsBuilt)
-            
-            let chosenID: String = {
-                if let first = itemsBuilt.first {
-                    switch first.kind {
-                    case .video(let a): return a.localIdentifier
-                    case .photoCarousel(let arr): return arr.first?.localIdentifier ?? "n/a"
-                    }
-                }
-                return "n/a"
-            }()
-            Diagnostics.log("RandomWindow(legacy): totalVideos=\(vCount) window=[\(start)..<\(end)] first id=\(chosenID) carousels=\(carousels.count)")
+            return
         }
+
+        publishInitialWindow(videos: vSlice, source: "ExploreRecentFirst", cursorEnd: cursorEnd)
+        markDaysExploredForIndices(usedRange)
+        lastAppendedDayIndex = dayIndexForFetchIndex(cursorEnd - 1)
+        _ = prewarmNextDayIfNeeded(biased: true)
+        isLoading = false
+    }
+
+    /// Builds initial video slice with variety using heuristics (uniform, momentCluster, richDay).
+    private func buildVariedRecentSlice() -> (videos: [PHAsset], cursorEnd: Int, usedRange: Range<Int>) {
+        guard let vResult = fetchVideos, !dayRanges.isEmpty else {
+            return ([], 0, 0..<0)
+        }
+        let mode = FeedInitialVarietySettings.mode
+        var collected: [PHAsset] = []
+        var lastDayEndUsed = 0
+        for dayIdx in 0..<dayRanges.count {
+            guard collected.count < pageSizeVideos else { break }
+            let r = dayRanges[dayIdx]
+            let baseSlice = vResult.objects(at: IndexSet(integersIn: r.start..<r.end))
+            let filtered = filterHidden(baseSlice)
+            let maxRemaining = pageSizeVideos - collected.count
+            guard maxRemaining > 0, !filtered.isEmpty else { continue }
+            let sampled = FeedInitialVarietySampler.sample(filtered, mode: mode, maxTotal: maxRemaining)
+            guard !sampled.isEmpty else { continue }
+            collected.append(contentsOf: sampled)
+            lastDayEndUsed = r.end
+        }
+        let cursorEnd = lastDayEndUsed
+        let usedRange = 0..<cursorEnd
+        return (collected, cursorEnd, usedRange)
+    }
+
+    /// Publishes initial feed items from a video slice and sets cursor/segment state.
+    private func publishInitialWindow(videos: [PHAsset], source: String, cursorEnd: Int) {
+        let pSlice = photosAround(for: videos, limit: pageSizePhotos)
+        let carousels = makeCarousels(from: pSlice)
+        let (itemsBuilt, _, videosTailCount) = interleave(videos: videos, carousels: carousels, startVideoStride: 0)
+
+        items = itemsBuilt
+        logItemsStructure(itemsBuilt, source: source)
+        Diagnostics.log("\(source): publish items=\(items.count)")
+        if let first = itemsBuilt.first {
+            switch first.kind {
+            case .video(let a):
+                FirstLaunchProbe.shared.windowPublished(items: itemsBuilt.count, firstID: a.localIdentifier)
+                VideoPrefetcher.shared.prefetch([a])
+                PlayerItemPrefetcher.shared.prefetch([a])
+            case .photoCarousel(let arr):
+                FirstLaunchProbe.shared.windowPublished(items: itemsBuilt.count, firstID: arr.first?.localIdentifier ?? "n/a")
+            }
+        }
+        initialIndexInWindow = 0
+
+        videoCursor = cursorEnd
+        videosSinceLastCarousel = videosTailCount
+        markPhotosUsed(from: itemsBuilt)
+        segmentEndIndices.append(items.count - 1)
+    }
+
+    /// Marks day ranges that overlap the given fetch indices as explored.
+    private func markDaysExploredForIndices(_ range: Range<Int>) {
+        for (dayIdx, r) in dayRanges.enumerated() {
+            if r.start < range.upperBound && r.end > range.lowerBound {
+                exploredDayIndices.insert(dayIdx)
+            }
+        }
+    }
+
+    /// Returns the day index containing the given fetch result index.
+    private func dayIndexForFetchIndex(_ fetchIndex: Int) -> Int? {
+        for (dayIdx, r) in dayRanges.enumerated() {
+            if fetchIndex >= r.start && fetchIndex < r.end {
+                return dayIdx
+            }
+        }
+        return dayRanges.isEmpty ? nil : dayRanges.count - 1
     }
 
     func loadWindow(around targetDate: Date, targetAssetID: String? = nil) {
@@ -886,19 +933,37 @@ final class TikTokFeedViewModel: ObservableObject {
             return []
         case .betweenVideo, .byCount:
             if !FeatureFlags.enablePhotoPosts { return [] }
-            guard !photos.isEmpty else { return [] }
-            var res: [[PHAsset]] = []
-            var i = 0
-            while i < photos.count {
-                let n = min(Int.random(in: carouselMin...carouselMax), photos.count - i)
-                res.append(Array(photos[i..<(i + n)]))
-                i += n
-            }
-            return res
+            return makeCarouselsByMoment(from: photos)
         case .byDay:
             if !FeatureFlags.enablePhotoPosts { return [] }
             return makeCarouselsByDay(from: photos)
         }
+    }
+
+    /// Groups by time gap (moment), applies sampling (uniform or density-adaptive) when configured.
+    private func makeCarouselsByMoment(from photos: [PHAsset]) -> [[PHAsset]] {
+        guard !photos.isEmpty else { return [] }
+        let gapMinutes = 60
+        let gap = TimeInterval(gapMinutes * 60)
+        var res: [[PHAsset]] = []
+        var current: [PHAsset] = []
+        var lastDate: Date?
+        let sorted = photos.sorted { ($0.creationDate ?? .distantPast) > ($1.creationDate ?? .distantPast) }
+        for a in sorted {
+            let d = a.creationDate ?? .distantPast
+            if let last = lastDate, last.timeIntervalSince(d) > gap, !current.isEmpty {
+                let sampled = CarouselSampling.sample(current, mode: CarouselSamplingSettings.mode)
+                if sampled.count >= 2 { res.append(sampled) }
+                current = []
+            }
+            lastDate = d
+            current.append(a)
+        }
+        if !current.isEmpty {
+            let sampled = CarouselSampling.sample(current, mode: CarouselSamplingSettings.mode)
+            if sampled.count >= 2 { res.append(sampled) }
+        }
+        return res
     }
 
     private func makeCarouselsByDay(from photos: [PHAsset]) -> [[PHAsset]] {
@@ -910,13 +975,17 @@ final class TikTokFeedViewModel: ObservableObject {
         for a in photos {
             let dayStart = a.creationDate.map { cal.startOfDay(for: $0) }
             if let last = lastDayStart, let d = dayStart, d != last, !current.isEmpty {
-                res.append(current)
+                let sampled = CarouselSampling.sample(current, mode: CarouselSamplingSettings.mode)
+                if sampled.count >= 2 { res.append(sampled) }
                 current = []
             }
             lastDayStart = dayStart
             current.append(a)
         }
-        if !current.isEmpty { res.append(current) }
+        if !current.isEmpty {
+            let sampled = CarouselSampling.sample(current, mode: CarouselSamplingSettings.mode)
+            if sampled.count >= 2 { res.append(sampled) }
+        }
         return res
     }
     
@@ -985,26 +1054,28 @@ final class TikTokFeedViewModel: ObservableObject {
         let tol: TimeInterval = Double(toleranceDays) * 24 * 60 * 60
         let lower = minDate.addingTimeInterval(-tol)
         let upper = maxDate.addingTimeInterval(tol)
-        
+
         let opts = PHFetchOptions()
-        let screenshotMask = PHAssetMediaSubtype.photoScreenshot.rawValue
         opts.predicate = NSPredicate(
-            format: "mediaType == %d AND creationDate >= %@ AND creationDate <= %@ AND ((mediaSubtypes & %d) == 0)",
-            PHAssetMediaType.image.rawValue, lower as NSDate, upper as NSDate, screenshotMask
+            format: "mediaType == %d AND creationDate >= %@ AND creationDate <= %@",
+            PHAssetMediaType.image.rawValue, lower as NSDate, upper as NSDate
         )
         opts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        let fetchLimit = limit * 3
         let result = PHAsset.fetchAssets(with: opts)
-        let count = Swift.min(limit, result.count)
+        let count = Swift.min(fetchLimit, result.count)
         guard count > 0 else {
             Diagnostics.log("PhotosBetween: 0 results tolDays=\(toleranceDays) range=[\(lower) .. \(upper)]")
             return []
         }
         let slice = result.objects(at: IndexSet(integersIn: 0..<count))
         let filtered = slice.filter {
-            !usedPhotoIDs.contains($0.localIdentifier) && !$0.mediaSubtypes.contains(.photoScreenshot)
+            !usedPhotoIDs.contains($0.localIdentifier) &&
+            !ExcludeScreenshotsPreference.shouldExcludeAsScreenshot($0)
         }
+        let resultSlice = Array(filtered.prefix(limit))
         Diagnostics.log("PhotosBetween: fetched=\(slice.count) filteredUnique=\(filtered.count) tolDays=\(toleranceDays)")
-        return filtered
+        return resultSlice
     }
     
     private func markPhotosUsed(from feedItems: [FeedItem]) {

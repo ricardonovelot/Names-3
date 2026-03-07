@@ -326,7 +326,7 @@ final class PhotosGridViewController: UIViewController {
             print("⚡️ Phase 1: Loading \(initialLimit) most recent photos")
             NSLog("⚡️ Phase 1: %d photos", initialLimit)
             
-            let initialAssets = self.fetchAssets(excludingScreenshots: true, fetchLimit: initialLimit)
+            let initialAssets = self.fetchAssets(excludingScreenshots: ExcludeScreenshotsPreference.excludeScreenshots, fetchLimit: initialLimit)
             let initialFetchDuration = CFAbsoluteTimeGetCurrent() - initialStart
             print("📥 Phase 1 fetch: \(initialAssets.count) assets in \(String(format: "%.3f", initialFetchDuration))s")
             NSLog("📥 Phase 1: %d assets in %.3fs", initialAssets.count, initialFetchDuration)
@@ -385,7 +385,7 @@ final class PhotosGridViewController: UIViewController {
             if Task.isCancelled { return }
             
             let phase2Start = CFAbsoluteTimeGetCurrent()
-            let allAssets = self.fetchAssets(excludingScreenshots: true, fetchLimit: maxTotal)
+            let allAssets = self.fetchAssets(excludingScreenshots: ExcludeScreenshotsPreference.excludeScreenshots, fetchLimit: maxTotal)
             let newAssetCount = allAssets.count - alreadyLoaded
             
             guard newAssetCount > 0 else {
@@ -421,29 +421,21 @@ final class PhotosGridViewController: UIViewController {
     private func fetchAssets(excludingScreenshots: Bool, fetchLimit: Int) -> [PHAsset] {
         let options = PHFetchOptions()
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-        if fetchLimit > 0 {
-            options.fetchLimit = fetchLimit
+        let effectiveLimit = excludingScreenshots ? min(fetchLimit * 3, 15000) : fetchLimit
+        if effectiveLimit > 0 {
+            options.fetchLimit = effectiveLimit
         }
-        
-        if excludingScreenshots {
-            let screenshotBit = PHAssetMediaSubtype.photoScreenshot.rawValue
-            options.predicate = NSPredicate(
-                format: "mediaType == %d AND (NOT ((mediaSubtypes & %d) != 0))",
-                PHAssetMediaType.image.rawValue,
-                screenshotBit
-            )
-        } else {
-            options.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
-        }
-        
+        options.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+
         let fetchResult = PHAsset.fetchAssets(with: options)
         var assets: [PHAsset] = []
         assets.reserveCapacity(fetchResult.count)
         fetchResult.enumerateObjects { asset, _, _ in
-            assets.append(asset)
+            if !excludingScreenshots || !ExcludeScreenshotsPreference.shouldExcludeAsScreenshot(asset) {
+                assets.append(asset)
+            }
         }
-        
-        return assets
+        return Array(assets.prefix(fetchLimit))
     }
     
     private func applySnapshot(groups: [PhotoGroup], isInitial: Bool) {

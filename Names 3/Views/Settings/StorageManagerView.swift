@@ -164,6 +164,14 @@ struct StorageManagerView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                if b.tmp > 0 {
+                    HStack {
+                        Label(String(localized: "storage.app.tmp"), systemImage: "tray.full")
+                        Spacer()
+                        Text(formatBytes(b.tmp))
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         } header: {
             Text(LocalizedStringKey("storage.app.header"))

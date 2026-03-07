@@ -4,6 +4,9 @@
 //
 //  Created by Ricardo on 14/10/24.
 //
+//  ContentView owns: @Query, @Environment reads, and all view-building.
+//  ContentViewModel owns: mutable @State, business logic, and operations.
+//
 
 import SwiftUI
 import SwiftData
@@ -16,18 +19,21 @@ import Photos
 import TipKit
 import os
 
+// MARK: - Note Navigation Target
+
+/// Typed navigation destination that carries both the contact and a specific note to scroll to.
+struct ContactNoteNavigationTarget: Hashable {
+    let contactUUID: UUID
+    let noteUUID: UUID
+}
+
 // MARK: - Drag & Drop Support
 
 struct ContactDragRecord: Codable, Transferable, Hashable {
     let uuid: UUID
 
-    init(uuid: UUID) {
-        self.uuid = uuid
-    }
-
-    init(contact: Contact) {
-        self.uuid = contact.uuid
-    }
+    init(uuid: UUID) { self.uuid = uuid }
+    init(contact: Contact) { self.uuid = contact.uuid }
 
     static var transferRepresentation: some TransferRepresentation {
         CodableRepresentation(contentType: .contactDragRecord)
@@ -38,6 +44,8 @@ extension UTType {
     static let contactDragRecord = UTType(exportedAs: "com.ricardo.names3.contactdrag")
 }
 
+// MARK: - ContentView
+
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.colorScheme) private var colorScheme
@@ -45,14 +53,24 @@ struct ContentView: View {
     @Environment(\.cloudKitMirroringResetCoordinator) private var cloudKitResetCoordinator
     @Environment(\.storageMonitor) private var storageMonitor
 
-    /// When set, loads contacts on background thread to avoid blocking main during CloudKit sync.
+    /// When set, contacts are loaded off the main thread to avoid blocking during CloudKit sync.
     private let containerForAsyncLoad: ModelContainer?
+
+    /// Live @Query for when no async-load container is provided (non-CloudKit path).
     @Query private var queryContacts: [Contact]
-    @State private var asyncLoadedContacts: [Contact] = []
-    @State private var asyncLoadComplete = false
+
+    /// Notes for the unified People-tab feed.
+    @Query(
+        filter: #Predicate<Note> { !$0.isArchived },
+        sort: \Note.creationDate,
+        order: .reverse
+    ) private var notes: [Note]
+
+    /// Single source of truth for all mutable UI state and operations.
+    @State private var vm = ContentViewModel()
 
     private var contacts: [Contact] {
-        containerForAsyncLoad != nil ? asyncLoadedContacts : queryContacts
+        containerForAsyncLoad != nil ? vm.asyncLoadedContacts : queryContacts
     }
 
     init(containerForAsyncLoad: ModelContainer? = nil) {
@@ -64,147 +82,27 @@ struct ContentView: View {
         descriptor.fetchLimit = 500
         _queryContacts = Query(descriptor)
     }
-    @State private var parsedContacts: [Contact] = []
-    @State private var selectedContact: Contact?
-    /// Path-based navigation for contact detail (avoids duplicate toolbars from NavigationLink).
-    @State private var contactPathIds: [UUID] = []
-    
-    @State private var selectedItem: PhotosPickerItem?
-    
-    @State private var isAtBottom = true
-    private let dragThreshold: CGFloat = 100
-    
-    @State private var date = Date()
-
-    @State private var showPhotosPicker = false
-    @State private var showQuizView = false
-    @State private var selectedQuizType: QuizType?
-    @State private var selectedTab: MainTab = .people
-    @State private var isQuickInputExpanded = true  // expanded by default on People tab
-    @State private var showBulkAddFaces = false
-
-    @State private var name = ""
-    @State private var hashtag = ""
-    
-    @State private var groupForDateEdit: ContactsGroup?
-    @State private var isLoading = false
-    @State private var showGroupTagPicker = false
-    @State private var groupForTagEdit: ContactsGroup?
-    @State private var showManageTags = false
-    @State private var selectedTag: Tag?
-    @State private var newTagName: String = ""
-    @State private var showDeletedView = false
-    @State private var showInlineQuickNotes = false
-    @State private var showInlinePhotoPicker = false
-    @State private var hasPendingQuickNoteInput = false
-    @State private var quickInputResetID = 0
-    @State private var showAllGroupTagDates = false
-    @State private var contactForDateEdit: Contact?
-    @State private var bottomInputHeight: CGFloat = 0
-    @State private var tabBarHeight: CGFloat = 0
-    @State private var fullPhotoGridFaceViewModel: FaceDetectionViewModel? = nil
-    @State private var showSettings = false
-    @State private var showQuickNotesFeed = false
-    @State private var showExitQuizConfirmation = false
-    @State private var quizResetTrigger = UUID()
-    /// When set, Name Faces tab scrolls to this date (e.g. from group header tap); nil when opened from camera button.
-    @State private var faceNamingInitialDate: Date?
-    /// Show "Syncing…" empty state for a short window after launch when feed is empty (likely initial CloudKit sync).
-    @State private var showInitialSyncState = true
-    @State private var offlineBannerDismissed = false
-    @State private var showOfflineActionAlert = false
-    /// When Name Faces tab is in feed mode (vs carousel), collapse quick input.
-    @State private var nameFacesIsFeedMode = true
-    /// Undo stack for contact moves (drag-to-group and date picker). Each entry is one user action and can affect multiple contacts.
-    @State private var movementUndoStack: [[ContactMovementSnapshot]] = []
-    private let maxMovementUndoStackSize = 50
-    
-    private struct PhotosSheetPayload: Identifiable, Hashable {
-        let id = UUID()
-        let scope: PhotosPickerScope
-        let initialScrollDate: Date?
-        
-        init(scope: PhotosPickerScope, initialScrollDate: Date? = nil) {
-            self.scope = scope
-            self.initialScrollDate = initialScrollDate
-        }
-    }
-    @State private var pickedImageForBatch: UIImage?
-    
-    @State private var showFullPhotoGrid = false
-    @State private var fullPhotoGridPayload: PhotosSheetPayload?
-    /// Deferred so first frame shows contacts list only; photo views (ImageCacheService, etc.) load after.
-    @State private var allowPhotoDependentViews = false
 
     private var groups: [ContactsGroup] {
-        ContactsFeedView.computeGroups(contacts: contacts, parsedContacts: parsedContacts)
+        ContactsFeedView.computeGroups(contacts: contacts, parsedContacts: vm.parsedContacts)
     }
 
-    @ViewBuilder
-    private var contactsFeedView: some View {
-        ContactsFeedView(
-            contacts: contacts,
-            parsedContacts: parsedContacts,
-            useSafeTitle: cloudKitResetCoordinator?.isSyncResetInProgress ?? false,
-            showInitialSyncState: showInitialSyncState,
-            isLowOnDeviceStorage: storageMonitor?.isLowOnDeviceStorage ?? false,
-            isOffline: isOffline,
-            onContactSelected: { uuid in
-                contactPathIds.append(uuid)
-            },
-            onImport: { group in
-                guard !group.isLongAgo else { return }
-                if isOffline {
-                    showOfflineActionAlert = true
-                    return
-                }
-                openFullPhotoGrid(scope: .all, initialScrollDate: group.date)
-            },
-            onEditDate: { group in
-                guard !group.isLongAgo else { return }
-                groupForDateEdit = group
-            },
-            onEditTag: { group in
-                guard !group.isLongAgo else { return }
-                groupForTagEdit = group
-                Task {
-                    try? await Task.sleep(for: .milliseconds(150))
-                    showGroupTagPicker = true
-                }
-            },
-            onRenameTag: { _ in
-                Task {
-                    try? await Task.sleep(for: .milliseconds(150))
-                    showManageTags = true
-                }
-            },
-            onDeleteAll: { group in
-                guard !group.isLongAgo else { return }
-                deleteAllEntries(in: group)
-            },
-            onChangeDateForContact: { contact in
-                contactForDateEdit = contact
-            },
-            onTapHeader: { group in
-                guard !group.isLongAgo else { return }
-                faceNamingInitialDate = group.date
-                nameFacesIsFeedMode = false  // open carousel for face naming
-                selectedTab = .nameFaces
-            },
-            onDropRecords: { records, group in
-                handleDrop(records, to: group)
-            }
-        )
-    }
-    
-    // MARK: - Main Body
-    
-    private var isOffline: Bool {
-        connectivityMonitor?.isOffline ?? false
-    }
+    // MARK: - Derived State from Environment
 
-    private static let launchLogger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Names3", category: "Launch")
+    private var isOffline: Bool { connectivityMonitor?.isOffline ?? false }
+    private var usesCellular: Bool { connectivityMonitor?.usesCellular ?? false }
+    private var isLowOnDeviceStorage: Bool { storageMonitor?.isLowOnDeviceStorage ?? false }
+    private var isSyncResetInProgress: Bool { cloudKitResetCoordinator?.isSyncResetInProgress ?? false }
+
+    // MARK: - Loggers
+
+    private static let launchLogger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "Names3",
+        category: "Launch"
+    )
     private static var hasLoggedBodyOnce = false
+
+    // MARK: - Body
 
     var body: some View {
         let _ = {
@@ -213,58 +111,94 @@ struct ContentView: View {
                 LaunchProfiler.logCheckpoint("ContentView.body evaluated (first time)")
             }
         }()
-        return NavigationStack(path: $contactPathIds) {
+        return NavigationStack(path: $vm.contactPath) {
             mainContentWithSheets
         }
+        .safeAreaInset(edge: .bottom) { quickInputSection }
     }
+
+    // MARK: - Content Layers
 
     @ViewBuilder
     private var mainContentWithLifecycle: some View {
         mainContent
             .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
-            .task { await loadContactsIfNeeded() }
-            .onAppear { onMainContentAppear() }
+            .task { await vm.loadContactsIfNeeded(container: containerForAsyncLoad, mainContext: modelContext) }
+            .onAppear { vm.onMainContentAppear(groups: groups, storageMonitor: storageMonitor) }
             .onChange(of: contacts.count) { _, newCount in
-                if newCount > 0 { showInitialSyncState = false }
+                if newCount > 0 { vm.showInitialSyncState = false }
             }
             .onChange(of: groups.isEmpty) { _, isEmpty in
                 if isEmpty { storageMonitor?.refreshIfNeeded() }
             }
-            .task { await hideSyncStateAfterDelay() }
-            .onShake { performMovementUndo() }
-            .onChange(of: pickedImageForBatch) { _, newValue in handlePickedImageChange(newValue) }
-            .onChange(of: isOffline) { _, newValue in
-                if newValue == false { offlineBannerDismissed = false }
-            }
-            .onPreferenceChange(TotalQuickInputHeightKey.self) { handleQuickInputHeightChange($0) }
-            .onPreferenceChange(TabBarHeightPreferenceKey.self) { tabBarHeight = $0 }
-            .onReceive(NotificationCenter.default.publisher(for: NSCloudKitMirroringDelegateWillResetSyncNotificationName).receive(on: DispatchQueue.main)) { _ in handleCloudKitMirroringWillResetSync() }
-            .onReceive(NotificationCenter.default.publisher(for: .contactsDidChange)) { _ in refreshContactsIfNeeded() }
-            .onReceive(NotificationCenter.default.publisher(for: .quickInputRequestFocus)) { _ in
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.82)) { isQuickInputExpanded = true }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .quizReminderTapped)) { _ in
-                QuizReminderService.hasPendingQuizReminderTap = false
-                navigateToChoosePracticeMode()
-            }
-            .task { await handlePendingQuizReminderTap() }
-            .onChange(of: selectedTab) { _, newTab in
-                if newTab == .nameFaces || newTab == .people {
-                    withAnimation(.spring(response: 0.4, dampingFraction: 0.82)) {
-                        isQuickInputExpanded = !(newTab == .nameFaces && nameFacesIsFeedMode)
+            .task { await vm.hideSyncStateAfterDelay() }
+            .onShake { vm.performMovementUndo(contacts: contacts, context: modelContext, isSyncResetInProgress: isSyncResetInProgress) }
+            .onChange(of: vm.pickedImageForBatch) { _, newValue in
+                if let image = newValue {
+                    showBulkAddFacesWithSeed(image: image, date: Date()) {
+                        vm.pickedImageForBatch = nil
                     }
                 }
             }
-            .onChange(of: nameFacesIsFeedMode) { _, inFeedMode in
-                guard selectedTab == .nameFaces else { return }
+            .onChange(of: isOffline) { _, newValue in vm.handleConnectivityChange(isOffline: newValue) }
+            .onChange(of: usesCellular) { _, newValue in vm.handleCellularChange(usesCellular: newValue) }
+            .onChange(of: isLowOnDeviceStorage) { _, newValue in vm.handleStorageChange(isLow: newValue) }
+            .onPreferenceChange(TotalQuickInputHeightKey.self) { vm.handleQuickInputHeightChange($0) }
+            .onPreferenceChange(TabBarHeightPreferenceKey.self) { vm.tabBarHeight = $0 }
+            .onReceive(
+                NotificationCenter.default.publisher(for: NSCloudKitMirroringDelegateWillResetSyncNotificationName)
+                    .receive(on: DispatchQueue.main)
+            ) { _ in vm.handleCloudKitMirroringWillResetSync() }
+            .onReceive(NotificationCenter.default.publisher(for: .contactsDidChange)) { _ in
+                guard let container = containerForAsyncLoad else { return }
+                vm.refreshContacts(container: container, mainContext: modelContext)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .quickInputRequestFocus)) { _ in
                 withAnimation(.spring(response: 0.4, dampingFraction: 0.82)) {
-                    isQuickInputExpanded = !inFeedMode
+                    vm.isQuickInputExpanded = true
                 }
             }
-            .safeAreaInset(edge: .top) {
-                OfflineBannerView(isOffline: isOffline, isDismissed: offlineBannerDismissed, onDismiss: { offlineBannerDismissed = true })
+            .onReceive(NotificationCenter.default.publisher(for: .quizReminderTapped)) { _ in
+                QuizReminderService.hasPendingQuizReminderTap = false
+                vm.navigateToChoosePracticeMode()
             }
-            .safeAreaInset(edge: .bottom) { quickInputSection }
+            .task { vm.handlePendingQuizReminderTap() }
+            .onChange(of: vm.contactPath.isEmpty) { _, isEmpty in
+                if isEmpty { vm.selectedContact = nil }
+            }
+            .onChange(of: vm.selectedTab) { oldTab, newTab in
+                if oldTab == .people && newTab != .people, !vm.contactPath.isEmpty {
+                    vm.savedPeopleContactPath = vm.contactPath
+                    vm.contactPath = NavigationPath()
+                    vm.selectedContact = nil
+                } else if oldTab != .people && newTab == .people, !vm.savedPeopleContactPath.isEmpty {
+                    vm.contactPath = vm.savedPeopleContactPath
+                    vm.savedPeopleContactPath = NavigationPath()
+                }
+                switch newTab {
+                case .photos:
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.82)) {
+                        vm.isQuickInputExpanded = !vm.photosIsFeedMode
+                    }
+                case .people:
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.82)) {
+                        vm.isQuickInputExpanded = false
+                    }
+                case .journal:
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.82)) {
+                        vm.isQuickInputExpanded = false
+                    }
+                case .practice:
+                    break
+                }
+            }
+            .onChange(of: vm.photosIsFeedMode) { _, inFeedMode in
+                guard vm.selectedTab == .photos else { return }
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.82)) {
+                    vm.isQuickInputExpanded = !inFeedMode
+                }
+            }
+            .safeAreaInset(edge: .top) { topBannersView }
     }
 
     @ViewBuilder
@@ -272,679 +206,323 @@ struct ContentView: View {
         mainContentWithLifecycle
             .background(Color(uiColor: .systemGroupedBackground))
             .overlay { loadingOverlay }
-            .toolbar { toolbarContent }
             .toolbarBackground(.hidden)
-            .offlineActionAlert(showOfflineAlert: $showOfflineActionAlert)
-            .photosPicker(isPresented: $showPhotosPicker, selection: $selectedItem, matching: .images)
-            .sheet(isPresented: $showDeletedView) { DeletedView() }
-            .sheet(isPresented: $showBulkAddFaces) {
-                BulkAddFacesView(contactsContext: modelContext)
-                    .modelContainer(BatchModelContainer.shared)
-            }
-            .sheet(item: $contactForDateEdit) { contact in
-                CustomDatePicker(contact: contact, onRecordUndo: pushMovementUndoEntry)
-            }
-            .sheet(item: $groupForDateEdit, onDismiss: { groupForDateEdit = nil }) { group in
-                groupDateEditSheetContent(group)
-            }
-            .sheet(isPresented: $showGroupTagPicker) {
-                TagPickerView(mode: .groupApply { applyGroupTagChange($0) })
-            }
-            .sheet(isPresented: $showManageTags) { TagPickerView(mode: .manage) }
-            .sheet(isPresented: $showSettings) { SettingsView() }
-            .sheet(isPresented: $showQuickNotesFeed) { QuickNotesFeedView() }
-            .alert("Exit Quiz?", isPresented: $showExitQuizConfirmation) {
-                Button("Cancel", role: .cancel) { }
-                Button("Exit", role: .destructive) {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) { showQuizView = false }
-                }
-            } message: {
-                Text("You can resume this quiz later from where you left off.")
-            }
-            .navigationDestination(for: UUID.self) { uuid in
-                if let contact = contacts.first(where: { $0.uuid == uuid }) {
-                    ContactDetailsView(contact: contact, onBack: {
-                        if !contactPathIds.isEmpty { contactPathIds.removeLast() }
-                    })
-                }
-            }
+            .navigationTitle(tabToolbarTitle)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { tabToolbarContent }
+            .modifier(MainContentSheetsModifier(
+                vm: vm,
+                modelContext: modelContext,
+                contacts: contacts,
+                groupDateEditSheetContent: { AnyView(groupDateEditSheetContent($0)) }
+            ))
     }
-    
-    // MARK: - Content Sections
+
+    // MARK: - Tab Container
 
     @ViewBuilder
     private var mainContent: some View {
         ZStack {
-            // People tab – kept mounted when not visible to preserve navigation state
-            Group {
-                if let contact = selectedContact {
-                    contactDetailContent(contact: contact)
-                } else {
-                    listAndPhotosContent
+            NavigationStack {
+                Group {
+                    unifiedPeopleContent
                 }
+                .ignoresSafeArea(.container, edges: .top)
             }
-            .opacity(selectedTab == .people ? 1 : 0)
-            .allowsHitTesting(selectedTab == .people)
+            .ignoresSafeArea(.container, edges: .bottom)
+            .opacity(vm.selectedTab == .people ? 1 : 0)
+            .allowsHitTesting(vm.selectedTab == .people)
 
-            // Practice tab – kept mounted to preserve quiz-in-progress, menu state
-            PracticeTabView(
-                contacts: contacts,
-                showQuizView: showQuizView,
-                selectedQuizType: selectedQuizType,
-                quizResetTrigger: quizResetTrigger,
-                onSelectQuiz: {
-                    selectedQuizType = $0
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-                        showQuizView = true
-                    }
-                },
-                onQuizComplete: {
-                    QuizReminderService.shared.maybeRequestPermissionOnQuizExit()
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-                        showQuizView = false
-                    }
-                    quizResetTrigger = UUID()
-                    selectedQuizType = nil
-                },
-                onClose: {
-                    selectedTab = .people
-                }
-            )
-            .opacity(selectedTab == .practice ? 1 : 0)
-            .allowsHitTesting(selectedTab == .practice)
-
-            // Name Faces tab – kept mounted to preserve feed/carousel scroll, mode, video state
             NameFacesFeedCombinedView(
-                isInFeedMode: $nameFacesIsFeedMode,
+                isInFeedMode: $vm.photosIsFeedMode,
                 onDismiss: {
-                    faceNamingInitialDate = nil
-                    selectedTab = .people
+                    vm.faceNamingInitialDate = nil
+                    vm.selectedTab = .people
                 },
-                initialScrollDate: faceNamingInitialDate,
-                bottomBarHeight: tabBarHeight,
-                isTabActive: selectedTab == .nameFaces
+                initialScrollDate: vm.faceNamingInitialDate,
+                bottomBarHeight: vm.tabBarHeight,
+                isTabActive: vm.selectedTab == .photos
             )
-            .opacity(selectedTab == .nameFaces ? 1 : 0)
-            .allowsHitTesting(selectedTab == .nameFaces)
-        }
-        .animation(.spring(response: 0.35, dampingFraction: 0.9), value: selectedTab)
-        .animation(.spring(response: 0.35, dampingFraction: 0.9), value: selectedContact != nil)
-        .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showQuizView)
-    }
-    
-    @ViewBuilder
-    private func contactDetailContent(contact: Contact) -> some View {
-        ContactDetailsView(contact: contact, onBack: {
-            withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-                selectedContact = nil
-            }
-        })
-        .transition(.move(edge: .trailing))
-        .zIndex(3)
-    }
-    
-    @ViewBuilder
-    private var listAndPhotosContent: some View {
-        contactsFeedView
-            .opacity(showInlinePhotoPicker || showFullPhotoGrid ? 0 : 1)
-            .offset(y: showInlinePhotoPicker || showFullPhotoGrid ? -16 : 0)
-            .allowsHitTesting(!showInlinePhotoPicker && !showFullPhotoGrid)
-            .zIndex(0)
-            .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showInlinePhotoPicker)
-            .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showFullPhotoGrid)
+            .opacity(vm.selectedTab == .photos ? 1 : 0)
+            .allowsHitTesting(vm.selectedTab == .photos)
 
-        if allowPhotoDependentViews {
+            JournalTabView(bottomBarHeight: vm.tabBarHeight)
+                .opacity(vm.selectedTab == .journal ? 1 : 0)
+                .allowsHitTesting(vm.selectedTab == .journal)
+        }
+        .animation(.spring(response: 0.35, dampingFraction: 0.9), value: vm.selectedTab)
+    }
+
+    // MARK: - Unified People Content
+
+    @ViewBuilder
+    private var unifiedPeopleContent: some View {
+        unifiedFeedView
+            .opacity(vm.showInlinePhotoPicker || vm.showFullPhotoGrid ? 0 : 1)
+            .offset(y: vm.showInlinePhotoPicker || vm.showFullPhotoGrid ? -16 : 0)
+            .allowsHitTesting(!vm.showInlinePhotoPicker && !vm.showFullPhotoGrid)
+            .zIndex(0)
+            .animation(.spring(response: 0.35, dampingFraction: 0.9), value: vm.showInlinePhotoPicker)
+            .animation(.spring(response: 0.35, dampingFraction: 0.9), value: vm.showFullPhotoGrid)
+
+        if vm.allowPhotoDependentViews {
             inlinePhotoPickerContent
-            if let payload = fullPhotoGridPayload {
+            if let payload = vm.fullPhotoGridPayload {
                 fullPhotoGridInlineView(payload: payload)
             }
         }
     }
-    
+
     @ViewBuilder
     private var inlinePhotoPickerContent: some View {
-        // Important for memory: don't mount the photo grid until the user actually opens it.
-        // Keeping a hidden UICollectionView alive will still prefetch/decode/cache images in the background.
-        if showInlinePhotoPicker {
-            PhotosInlineView(contactsContext: modelContext, isVisible: true) { image, date in
-                print("✅ [ContentView] Photo picked from inline view")
-                pickedImageForBatch = image
+        if vm.showInlinePhotoPicker {
+            PhotosInlineView(contactsContext: modelContext, isVisible: true) { image, _ in
+                vm.pickedImageForBatch = image
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-                    showInlinePhotoPicker = false
+                    vm.showInlinePhotoPicker = false
                 }
             }
             .transition(.move(edge: .bottom).combined(with: .opacity))
-            .zIndex(showFullPhotoGrid ? 0 : 1)
+            .zIndex(vm.showFullPhotoGrid ? 0 : 1)
         }
     }
-    
+
+    @ViewBuilder
+    private var unifiedFeedView: some View {
+        UnifiedPeopleFeedView(
+            contacts: contacts,
+            parsedContacts: vm.parsedContacts,
+            notes: notes,
+            filter: vm.peopleFeedFilter,
+            feedRefreshTrigger: vm.feedRefreshTrigger,
+            useSafeTitle: isSyncResetInProgress,
+            showInitialSyncState: vm.showInitialSyncState,
+            isLowOnDeviceStorage: isLowOnDeviceStorage,
+            isOffline: isOffline,
+            onContactSelected: { uuid in
+                vm.contactNavigatedFromQuickInput = false
+                vm.contactPath.append(uuid)
+            },
+            onNoteSelected: { contactUUID, noteUUID in
+                vm.contactPath.append(
+                    ContactNoteNavigationTarget(contactUUID: contactUUID, noteUUID: noteUUID)
+                )
+            },
+            onImport: { group in
+                guard !group.isLongAgo else { return }
+                if isOffline {
+                    vm.showOfflineActionAlert = true
+                    return
+                }
+                vm.openFullPhotoGrid(scope: .all, initialScrollDate: group.date)
+            },
+            onEditDate: { group in
+                guard !group.isLongAgo else { return }
+                vm.groupForDateEdit = group.asContactsGroup
+            },
+            onEditTag: { group in
+                guard !group.isLongAgo else { return }
+                vm.groupForTagEdit = group.asContactsGroup
+            },
+            onRenameTag: { _ in
+                Task {
+                    try? await Task.sleep(for: .milliseconds(150))
+                    vm.showManageTags = true
+                }
+            },
+            onDeleteAll: { group in
+                guard !group.isLongAgo else { return }
+                vm.deleteAllEntries(in: group.asContactsGroup, context: modelContext)
+            },
+            onChangeDateForContact: { contact in vm.contactForDateEdit = contact },
+            onTapHeader: { group in
+                guard !group.isLongAgo else { return }
+                vm.faceNamingInitialDate = group.date
+                vm.photosIsFeedMode = false
+                vm.selectedTab = .photos
+            },
+            onDropRecords: { records, group in
+                vm.handleDrop(
+                    records,
+                    to: group.asContactsGroup,
+                    contacts: contacts,
+                    context: modelContext,
+                    isSyncResetInProgress: isSyncResetInProgress
+                )
+            }
+        )
+    }
+
+    // MARK: - Banners
+
+    @ViewBuilder
+    private var topBannersView: some View {
+        VStack(spacing: 8) {
+            OfflineBannerView(
+                isOffline: isOffline,
+                isDismissed: vm.offlineBannerDismissed,
+                onDismiss: { vm.offlineBannerDismissed = true }
+            )
+            CellularDataBannerView(
+                usesCellular: usesCellular,
+                isViewingFeed: vm.selectedTab == .photos && vm.photosIsFeedMode,
+                isDismissed: vm.cellularBannerDismissed,
+                onDismiss: { vm.cellularBannerDismissed = true },
+                onTapToSettings: { vm.showSettings = true }
+            )
+            LowStorageBannerView(
+                isLowStorage: isLowOnDeviceStorage,
+                isDismissed: vm.storageBannerDismissed,
+                onDismiss: { vm.storageBannerDismissed = true }
+            )
+        }
+    }
+
+    // MARK: - Quick Input
+
     @ViewBuilder
     private var quickInputSection: some View {
+        let isJournalTab = vm.selectedTab == .journal
         QuickInputBottomBar(
-            selectedTab: $selectedTab,
-            isQuickInputExpanded: $isQuickInputExpanded,
-            canShowQuickInput: !showQuizView && !(selectedTab == .nameFaces && nameFacesIsFeedMode),
-            showNameFacesButton: selectedTab != .nameFaces,
-            onNameFacesTap: {
-                faceNamingInitialDate = nil
-                selectedTab = .nameFaces
+            selectedTab: $vm.selectedTab,
+            isQuickInputExpanded: $vm.isQuickInputExpanded,
+            canShowQuickInput: !vm.showQuizView && !(vm.selectedTab == .photos && vm.photosIsFeedMode),
+            onSameTabTapped: { tab in
+                switch tab {
+                case .people:
+                    if !vm.contactPath.isEmpty {
+                        vm.contactPath = NavigationPath()
+                        vm.selectedContact = nil
+                    } else {
+                        NotificationCenter.default.post(name: .peopleFeedScrollToTop, object: nil)
+                    }
+                case .journal: NotificationCenter.default.post(name: .journalFeedScrollToTop, object: nil)
+                case .practice: break
+                case .photos: NotificationCenter.default.post(name: .photosFeedScrollToTop, object: nil)
+                }
             }
         ) {
-            QuickInputView(
-                parsedContacts: $parsedContacts,
-                selectedContact: $selectedContact,
-                onQuizTap: { selectedTab = .practice },
-                onNameFacesTap: {
-                    faceNamingInitialDate = nil
-                    selectedTab = .nameFaces
-                },
-                showQuizButton: selectedTab != .practice,
-                showNameFacesButton: selectedTab != .nameFaces,
-                faceDetectionViewModel: fullPhotoGridFaceViewModel, onFaceSelected: { handleFaceSelectedFromCarousel(index: $0) }, onPhotoPicked: { image, date in
-                    print("📸 [ContentView] Photo fallback - opening bulk face view")
-                    pickedImageForBatch = image
-                }, inlineInBar: true, cameraInSeparateBubble: true, faceNamingMode: selectedTab == .nameFaces
-            )
-            .id(quickInputResetID)
-        }
-    }
-    
-    @ViewBuilder
-    private var loadingOverlay: some View {
-        if isLoading {
-            LoadingOverlay(message: "Loading…")
-        }
-    }
-    
-    @ToolbarContentBuilder
-    private var toolbarContent: some ToolbarContent {
-        if !showQuizView, selectedContact == nil, contactPathIds.isEmpty {
-            ToolbarItemGroup(placement: .navigationBarTrailing) {
-                menuButton
+            if isJournalTab {
+                JournalQuickInputView(inlineInBar: true)
+                    .id("journal-quick-input")
+            } else {
+                QuickInputView(
+                    parsedContacts: $vm.parsedContacts,
+                    selectedContact: $vm.selectedContact,
+                    onQuizTap: { vm.showPracticeSheet = true }, onPhotosTap: {
+                        vm.faceNamingInitialDate = nil
+                        vm.selectedTab = .photos
+                    }, showQuizButton: true, showPhotosButton: vm.selectedTab != .photos, onContactSelectedForNavigation: { contact in
+                        vm.contactNavigatedFromQuickInput = true
+                        vm.contactPath.append(contact.uuid)
+                    },
+                    onBackspaceWhenEmptyToGoBack: {
+                        NotificationCenter.default.post(name: .quickInputLockFocus, object: nil)
+                        if !vm.contactPath.isEmpty { vm.contactPath.removeLast() }
+                        vm.selectedContact = nil
+                    },
+                    onContactCreatedForNavigation: { contact in
+                        vm.contactNavigatedFromQuickInput = true
+                        vm.contactPath.append(contact.uuid)
+                    },
+                    faceDetectionViewModel: vm.fullPhotoGridFaceViewModel,
+                    onFaceSelected: { vm.handleFaceSelectedFromCarousel(index: $0) },
+                    onPhotoPicked: { image, _ in vm.pickedImageForBatch = image },
+                    inlineInBar: true,
+                    cameraInSeparateBubble: true,
+                    faceNamingMode: vm.selectedTab == .photos
+                )
+                .id(vm.quickInputResetID)
             }
         }
     }
-    
-    @ViewBuilder
-    private var menuButton: some View {
-        Menu {
-            if !movementUndoStack.isEmpty {
-                Button {
-                    performMovementUndo()
-                } label: {
-                    Label(String(localized: "contacts.undo.move"), systemImage: "arrow.uturn.backward")
-                }
-                Divider()
-            }
-            
-            quickNotesButton
-            
-            Divider()
-            
-            deletedButton
 
-            Divider()
+    // MARK: - Photos Grid (Full Inline)
 
-            settingsButton
-
-            if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited {
-                limitedLibraryButton
-            }
-        } label: {
-            Image(systemName: "ellipsis")
-        }
-    }
-    
-    // MARK: - Menu Buttons
-    
     @ViewBuilder
-    private var quickNotesButton: some View {
-        Button {
-            showQuickNotesFeed = true
-        } label: {
-            Label("Quick Notes", systemImage: "note.text")
-        }
-    }
-    
-    @ViewBuilder
-    private var deletedButton: some View {
-        Button {
-            showDeletedView = true
-        } label: {
-            Label("Deleted", systemImage: "trash")
-        }
-    }
-    
-    @ViewBuilder
-    private var settingsButton: some View {
-        Button {
-            showSettings = true
-        } label: {
-            Label("Settings", systemImage: "gearshape")
-        }
-    }
-    
-    @ViewBuilder
-    private var limitedLibraryButton: some View {
-        Button {
-            presentLimitedLibraryPicker()
-        } label: {
-            Label("Manage Photos Selection", systemImage: "plus.circle")
-        }
-    }
-    
-    // MARK: - Full Photo Grid View Builder
-    
-    @ViewBuilder
-    private func fullPhotoGridInlineView(payload: PhotosSheetPayload) -> some View {
+    private func fullPhotoGridInlineView(payload: ContentViewModel.PhotosSheetPayload) -> some View {
         PhotosFullGridInlineView(
             scope: payload.scope,
             contactsContext: modelContext,
             initialScrollDate: payload.initialScrollDate,
-            faceDetectionViewModel: $fullPhotoGridFaceViewModel,
-            onPhotoPicked: { image, date in
-                print("✅ [ContentView] Photo picked from full grid inline view")
-                pickedImageForBatch = image
-                closeFullPhotoGrid()
+            faceDetectionViewModel: $vm.fullPhotoGridFaceViewModel,
+            onPhotoPicked: { image, _ in
+                vm.pickedImageForBatch = image
+                vm.closeFullPhotoGrid()
             },
-            onDismiss: {
-                closeFullPhotoGrid()
-            },
-            attemptQuickAssign: attemptQuickAssignClosure()
+            onDismiss: { vm.closeFullPhotoGrid() },
+            attemptQuickAssign: { [modelContext] image, _ in
+                await vm.attemptQuickAssign(image: image, context: modelContext)
+            }
         )
-        .opacity(showFullPhotoGrid ? 1 : 0)
-        .offset(y: showFullPhotoGrid ? 0 : 32)
-        .allowsHitTesting(showFullPhotoGrid)
+        .opacity(vm.showFullPhotoGrid ? 1 : 0)
+        .offset(y: vm.showFullPhotoGrid ? 0 : 32)
+        .allowsHitTesting(vm.showFullPhotoGrid)
         .zIndex(2)
-        .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showFullPhotoGrid)
+        .animation(.spring(response: 0.35, dampingFraction: 0.9), value: vm.showFullPhotoGrid)
     }
-    
-    // MARK: - Event Handlers
 
-    private func loadContactsIfNeeded() async {
-        if let container = containerForAsyncLoad {
-            asyncLoadedContacts = await FeedContactsLoader.loadContacts(
-                container: container,
-                mainContext: modelContext,
-                fetchLimit: 500
-            )
-            asyncLoadComplete = true
-        } else {
-            asyncLoadComplete = true
+    // MARK: - Loading Overlay
+
+    @ViewBuilder
+    private var loadingOverlay: some View {
+        if vm.isLoading {
+            LoadingOverlay(message: "Loading…")
         }
     }
 
-    private func onMainContentAppear() {
-        LaunchProfiler.logCheckpoint("ContentView mainContent appeared")
-        Self.launchLogger.info("🚀 [Launch] Feed state: contacts=\(self.contacts.count) parsed=\(self.parsedContacts.count) groups=\(self.groups.count)")
-        if groups.isEmpty { storageMonitor?.refreshIfNeeded() }
-        DispatchQueue.main.async { allowPhotoDependentViews = true }
+    // MARK: - Tab Toolbar (single root toolbar, tab-specific content)
+
+    private var tabToolbarTitle: String {
+        switch vm.selectedTab {
+        case .people, .photos: return ""
+        case .journal: return "Recalled Gratitude"
+        case .practice: return ""
+        }
     }
 
-    private func hideSyncStateAfterDelay() async {
-        try? await Task.sleep(for: .seconds(120))
-        showInitialSyncState = false
-    }
-
-    private func refreshContactsIfNeeded() {
-        guard let container = containerForAsyncLoad else { return }
-        Task {
-            asyncLoadedContacts = await FeedContactsLoader.loadContacts(
-                container: container,
-                mainContext: modelContext,
-                fetchLimit: 500
+    @ToolbarContentBuilder
+    private var tabToolbarContent: some ToolbarContent {
+        if vm.selectedTab == .people, !vm.showQuizView, vm.selectedContact == nil, vm.contactPath.isEmpty {
+            PeopleTabToolbar(
+                vm: vm,
+                contacts: contacts,
+                modelContext: modelContext,
+                isSyncResetInProgress: isSyncResetInProgress,
+                onPresentLimitedLibraryPicker: presentLimitedLibraryPicker,
+                onOpenPractice: { vm.showPracticeSheet = true }
             )
         }
-    }
-
-    @MainActor
-    private func handlePendingQuizReminderTap() async {
-        if QuizReminderService.hasPendingQuizReminderTap {
-            QuizReminderService.hasPendingQuizReminderTap = false
-            navigateToChoosePracticeMode()
+        if vm.selectedTab == .journal {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    vm.showJournalNewEntrySheet = true
+                } label: {
+                    Image(systemName: "square.and.pencil")
+                        .fontWeight(.semibold)
+                }
+                .accessibilityLabel("Write new gratitude entry")
+            }
         }
     }
+
+    // MARK: - Group Date Edit Sheet
 
     @ViewBuilder
     private func groupDateEditSheetContent(_ group: ContactsGroup) -> some View {
         let primary = group.contacts.first ?? group.parsedContacts.first
         let others = (group.contacts + group.parsedContacts).filter { primary != nil && $0.id != primary!.id }
-        if let primary = primary {
+        if let primary {
             CustomDatePicker(
                 contact: primary,
                 additionalContactsToApply: others.isEmpty ? nil : others,
-                onRecordUndo: pushMovementUndoEntry
+                onRecordUndo: vm.pushMovementUndoEntry
             )
         }
     }
-    
-    private func handlePickedImageChange(_ newImage: UIImage?) {
-        if let image = newImage {
-            showBulkAddFacesWithSeed(image: image, date: Date()) {
-                pickedImageForBatch = nil
-            }
-        }
-    }
-    
-    private func handleQuickInputHeightChange(_ height: CGFloat) {
-        withAnimation(.spring(response: 0.25, dampingFraction: 1.0)) {
-            bottomInputHeight = height
-        }
-    }
-    
-    private func attemptQuickAssignClosure() -> ((UIImage, Date?) async -> Bool) {
-        return { [modelContext, selectedContact] image, date in
-            guard let contact = selectedContact else {
-                return false
-            }
-            guard let cgImage = image.cgImage else {
-                return false
-            }
-
-            let observations: [VNFaceObservation]
-            do {
-                let request = VNDetectFaceRectanglesRequest()
-                let handler = VNImageRequestHandler(cgImage: cgImage)
-                try handler.perform([request])
-                observations = (request.results as? [VNFaceObservation]) ?? []
-            } catch {
-                print("❌ [ContentView] Face detection failed: \(error)")
-                return false
-            }
-
-            guard observations.count == 1, let face = observations.first else {
-                print("📸 [ContentView] Auto-assign not applicable. Faces: \(observations.count)")
-                return false
-            }
-
-            let imageSize = CGSize(width: CGFloat(cgImage.width), height: CGFloat(cgImage.height))
-            let fullRect = CGRect(origin: .zero, size: imageSize)
-            let scaleFactor: CGFloat = 1.8
-            let bb = face.boundingBox
-            let scaledBox = CGRect(
-                x: bb.origin.x * imageSize.width - (bb.width * imageSize.width * (scaleFactor - 1)) / 2,
-                y: (1 - bb.origin.y - bb.height) * imageSize.height - (bb.height * imageSize.height * (scaleFactor - 1)) / 2,
-                width: bb.width * imageSize.width * scaleFactor,
-                height: bb.height * imageSize.height * scaleFactor
-            ).integral
-            let clipped = scaledBox.intersection(fullRect)
-            guard !clipped.isNull && !clipped.isEmpty, let cropped = cgImage.cropping(to: clipped) else {
-                print("📸 [ContentView] Crop failed")
-                return false
-            }
-            let faceImage = UIImage(cgImage: cropped)
-
-            await MainActor.run {
-                contact.photo = jpegDataForStoredContactPhoto(faceImage)
-                ImageAccessibleBackground.updateContactPhotoGradient(contact, image: faceImage)
-                do {
-                    try modelContext.save()
-                    print("✅ [ContentView] Auto-assigned single face to \(contact.name ?? "contact")")
-                } catch {
-                    StorageMonitor.reportIfENOSPC(error)
-                    print("❌ [ContentView] Save failed: \(error)")
-                }
-            }
-
-            return true
-        }
-    }
-    
-    // MARK: - Helper Methods
-    
-    private func handleFaceSelectedFromCarousel(index: Int) {
-        guard let viewModel = fullPhotoGridFaceViewModel,
-              index >= 0,
-              index < viewModel.faces.count else { return }
-        
-        let faceImage = viewModel.faces[index].image
-        pickedImageForBatch = faceImage
-    }
-    
-    private func openFullPhotoGrid(scope: PhotosPickerScope, initialScrollDate: Date?) {
-        let payload = PhotosSheetPayload(scope: scope, initialScrollDate: initialScrollDate)
-        fullPhotoGridPayload = payload
-        
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-            showFullPhotoGrid = true
-        }
-        
-        print("🔵 [ContentView] Opening full photo grid with scope: \(scope)")
-        if let date = initialScrollDate {
-            print("🔵 [ContentView] Initial scroll date: \(date)")
-        }
-    }
-    
-    private func closeFullPhotoGrid() {
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-            showFullPhotoGrid = false
-        }
-        
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(400))
-            fullPhotoGridPayload = nil
-            fullPhotoGridFaceViewModel = nil
-        }
-    }
-
-    private func combine(date: Date, withTimeFrom timeSource: Date) -> Date {
-        let cal = Calendar.current
-        let dateComps = cal.dateComponents([.year, .month, .day], from: date)
-        let timeComps = cal.dateComponents([.hour, .minute, .second, .nanosecond], from: timeSource)
-        var merged = DateComponents()
-        merged.year = dateComps.year
-        merged.month = dateComps.month
-        merged.day = dateComps.day
-        merged.hour = timeComps.hour
-        merged.minute = timeComps.minute
-        merged.second = timeComps.second
-        merged.nanosecond = timeComps.nanosecond
-        return cal.date(from: merged) ?? date
-    }
-
-    /// Call on main queue when CoreData+CloudKit posts WillResetSync. Clears model-backed state so no view holds invalidated Tag/Contact references. Use with .receive(on: DispatchQueue.main).
-    private func handleCloudKitMirroringWillResetSync() {
-        selectedTag = nil
-        groupForTagEdit = nil
-        groupForDateEdit = nil
-        selectedContact = nil
-        contactForDateEdit = nil
-        showGroupTagPicker = false
-        showManageTags = false
-        faceNamingInitialDate = nil
-        showDeletedView = false
-        showBulkAddFaces = false
-    }
-
-    /// Switches to the practice tab and shows the choose-practice-mode view (QuizMenuView). Called when the user taps the quiz reminder notification.
-    private func navigateToChoosePracticeMode() {
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-            selectedTab = .practice
-            showQuizView = false
-            selectedQuizType = nil
-        }
-    }
-
-    private func tagDateOptions() -> [(date: Date, tags: String)] {
-        if cloudKitResetCoordinator?.isSyncResetInProgress == true { return [] }
-        return groups
-            .filter { !$0.isLongAgo }
-            .compactMap { group in
-                let names = group.contacts.flatMap(\.tagNames)
-                let unique = Array(Set(names)).sorted {
-                    $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
-                }
-                guard !unique.isEmpty else { return nil }
-                return (date: group.date, tags: unique.joined(separator: ", "))
-            }
-            .sorted { $0.date > $1.date }
-    }
-    
-    private func applyGroupTagChange(_ tag: Tag) {
-        guard let group = groupForTagEdit else {
-            showGroupTagPicker = false
-            return
-        }
-        for c in group.contacts {
-            c.tags = [tag]
-        }
-        for c in group.parsedContacts {
-            c.tags = [tag]
-        }
-        do {
-            try modelContext.save()
-        } catch {
-            StorageMonitor.reportIfENOSPC(error)
-            print("Save failed: \(error)")
-        }
-        showGroupTagPicker = false
-        groupForTagEdit = nil
-    }
-
-    private func deleteAllEntries(in group: ContactsGroup) {
-        let idsToRemove = Set(group.parsedContacts.map { ObjectIdentifier($0) })
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
-            parsedContacts.removeAll { idsToRemove.contains(ObjectIdentifier($0)) }
-        }
-
-        for c in group.contacts {
-            c.isArchived = true
-            c.archivedDate = Date()
-        }
-        do {
-            try modelContext.save()
-        } catch {
-            StorageMonitor.reportIfENOSPC(error)
-            print("Save failed: \(error)")
-        }
-    }
-    
-    // MARK: - Movement undo
-    
-    private func snapshot(for contact: Contact) -> ContactMovementSnapshot {
-        let tagNames: [String] = (cloudKitResetCoordinator?.isSyncResetInProgress == true)
-            ? []
-            : contact.tagNames
-        return ContactMovementSnapshot(
-            uuid: contact.uuid,
-            isMetLongAgo: contact.isMetLongAgo,
-            timestamp: contact.timestamp,
-            tagNames: tagNames
-        )
-    }
-    
-    private func pushMovementUndoEntry(_ snapshots: [ContactMovementSnapshot]) {
-        guard !snapshots.isEmpty else { return }
-        movementUndoStack.append(snapshots)
-        if movementUndoStack.count > maxMovementUndoStackSize {
-            movementUndoStack.removeFirst()
-        }
-    }
-    
-    private func performMovementUndo() {
-        guard !movementUndoStack.isEmpty else { return }
-        let entry = movementUndoStack.removeLast()
-        var didChangePersisted = false
-        var didChangeParsed = false
-        for s in entry {
-            if let c = contacts.first(where: { $0.uuid == s.uuid }) {
-                c.isMetLongAgo = s.isMetLongAgo
-                c.timestamp = s.timestamp
-                if s.tagNames.isEmpty {
-                    c.tags = nil
-                } else {
-                    c.tags = s.tagNames.compactMap { Tag.fetchOrCreate(named: $0, in: modelContext) }
-                }
-                didChangePersisted = true
-                continue
-            }
-            if let p = parsedContacts.first(where: { $0.uuid == s.uuid }) {
-                p.isMetLongAgo = s.isMetLongAgo
-                p.timestamp = s.timestamp
-                if s.tagNames.isEmpty {
-                    p.tags = nil
-                } else {
-                    p.tags = s.tagNames.compactMap { Tag.fetchOrCreate(named: $0, in: modelContext) }
-                }
-                didChangeParsed = true
-            }
-        }
-        if didChangePersisted {
-            do {
-                try modelContext.save()
-            } catch {
-                StorageMonitor.reportIfENOSPC(error)
-                print("Undo save failed: \(error)")
-            }
-        }
-        if didChangeParsed {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
-                parsedContacts = parsedContacts
-            }
-        }
-    }
-
-    private func handleDrop(_ records: [ContactDragRecord], to group: ContactsGroup) {
-        var didChangePersisted = false
-        var parsedContactsChanged = false
-        var undoSnapshots: [ContactMovementSnapshot] = []
-
-        let destTagNames: [String] = (cloudKitResetCoordinator?.isSyncResetInProgress == true)
-            ? []
-            : (group.contacts + group.parsedContacts).flatMap(\.tagNames)
-        let uniqueDestTags = Array(Set(destTagNames)).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-        let chosenTagName = uniqueDestTags.count == 1 ? uniqueDestTags.first : nil
-        let chosenTag = chosenTagName.flatMap { Tag.fetchOrCreate(named: $0, in: modelContext) }
-
-        for record in records {
-            if let persisted = contacts.first(where: { $0.uuid == record.uuid }) {
-                undoSnapshots.append(snapshot(for: persisted))
-                if group.isLongAgo {
-                    persisted.isMetLongAgo = true
-                } else {
-                    persisted.isMetLongAgo = false
-                    persisted.timestamp = combine(date: group.date, withTimeFrom: persisted.timestamp)
-                }
-                if let tag = chosenTag {
-                    persisted.tags = [tag]
-                }
-                didChangePersisted = true
-                continue
-            }
-
-            if let parsed = parsedContacts.first(where: { $0.uuid == record.uuid }) {
-                undoSnapshots.append(snapshot(for: parsed))
-                if group.isLongAgo {
-                    parsed.isMetLongAgo = true
-                } else {
-                    parsed.isMetLongAgo = false
-                    parsed.timestamp = combine(date: group.date, withTimeFrom: parsed.timestamp)
-                }
-                if let tag = chosenTag {
-                    parsed.tags = [tag]
-                }
-                parsedContactsChanged = true
-                continue
-            }
-        }
-
-        pushMovementUndoEntry(undoSnapshots)
-
-        if didChangePersisted {
-            do {
-                try modelContext.save()
-            } catch {
-                StorageMonitor.reportIfENOSPC(error)
-            }
-        }
-        
-        if parsedContactsChanged {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
-                parsedContacts = parsedContacts
-            }
-        }
-    }
 }
+
+// MARK: - UIKit Interop
 
 private extension ContentView {
     func showBulkAddFacesWithSeed(image: UIImage, date: Date, completion: (() -> Void)? = nil) {
@@ -952,32 +530,151 @@ private extension ContentView {
             rootView: BulkAddFacesView(contactsContext: modelContext, initialImage: image, initialDate: date)
                 .modelContainer(BatchModelContainer.shared)
         )
-        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-           let window = scene.windows.first,
-           let rootVC = window.rootViewController {
-            root.modalPresentationStyle = .formSheet
-            rootVC.present(root, animated: true) {
-                completion?()
-            }
-        } else {
+        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+              let window = scene.windows.first,
+              let rootVC = window.rootViewController else {
             completion?()
+            return
         }
-    }
-
-    func openSettings() {
-        if let url = URL(string: UIApplication.openSettingsURLString) {
-            UIApplication.shared.open(url)
-        }
+        root.modalPresentationStyle = .formSheet
+        rootVC.present(root, animated: true) { completion?() }
     }
 
     func presentLimitedLibraryPicker() {
-        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-           let window = scene.windows.first,
-           let rootViewController = window.rootViewController {
-            PHPhotoLibrary.shared().presentLimitedLibraryPicker(from: rootViewController)
-        }
+        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+              let window = scene.windows.first,
+              let rootVC = window.rootViewController else { return }
+        PHPhotoLibrary.shared().presentLimitedLibraryPicker(from: rootVC)
     }
 }
+
+// MARK: - Main Content Sheets Modifier
+
+/// Extracted to avoid "unable to type-check this expression in reasonable time".
+private struct MainContentSheetsModifier: ViewModifier {
+    @Bindable var vm: ContentViewModel
+    let modelContext: ModelContext
+    let contacts: [Contact]
+    let groupDateEditSheetContent: (ContactsGroup) -> AnyView
+
+    func body(content: Content) -> some View {
+        content
+            .offlineActionAlert(showOfflineAlert: $vm.showOfflineActionAlert)
+            .photosPicker(isPresented: $vm.showPhotosPicker, selection: $vm.selectedItem, matching: .images)
+            .sheet(isPresented: $vm.showDeletedView) { DeletedView() }
+            .sheet(isPresented: $vm.showBulkAddFaces) {
+                BulkAddFacesView(contactsContext: modelContext)
+                    .modelContainer(BatchModelContainer.shared)
+            }
+            .sheet(item: $vm.contactForDateEdit) { contact in
+                CustomDatePicker(contact: contact, onRecordUndo: vm.pushMovementUndoEntry)
+            }
+            .sheet(item: $vm.groupForDateEdit, onDismiss: { vm.groupForDateEdit = nil }) { group in
+                groupDateEditSheetContent(group)
+            }
+            .sheet(item: $vm.groupForTagEdit, onDismiss: { vm.groupForTagEdit = nil }) { group in
+                let initialTag = (group.contacts + group.parsedContacts).compactMap { ($0.tags ?? []).first }.first
+                TagPickerView(mode: .groupApply(initialTag: initialTag) { vm.applyGroupTagChange($0, context: modelContext) })
+            }
+            .sheet(isPresented: $vm.showManageTags) { TagPickerView(mode: .manage) }
+            .sheet(isPresented: $vm.showSettings) { SettingsView() }
+            .sheet(isPresented: $vm.showQuickNotesFeed) { QuickNotesFeedView() }
+            .sheet(isPresented: $vm.showJournalNewEntrySheet) { JournalEntryFormView() }
+            .sheet(isPresented: $vm.showPracticeSheet, onDismiss: {
+                vm.showQuizView = false
+                vm.selectedQuizType = nil
+            }) {
+                PracticeTabView(
+                    contacts: contacts,
+                    showQuizView: vm.showQuizView,
+                    selectedQuizType: vm.selectedQuizType,
+                    quizResetTrigger: vm.quizResetTrigger,
+                    onSelectQuiz: {
+                        vm.selectedQuizType = $0
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                            vm.showQuizView = true
+                        }
+                    },
+                    onQuizComplete: {
+                        QuizReminderService.shared.maybeRequestPermissionOnQuizExit()
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                            vm.showQuizView = false
+                        }
+                        vm.quizResetTrigger = UUID()
+                        vm.selectedQuizType = nil
+                        vm.showPracticeSheet = false
+                    }
+                )
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Done") { vm.showPracticeSheet = false }
+                    }
+                }
+            }
+            .alert("Exit Quiz?", isPresented: $vm.showExitQuizConfirmation) {
+                Button("Cancel", role: .cancel) { }
+                Button("Exit", role: .destructive) {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                        vm.showQuizView = false
+                    }
+                }
+            } message: {
+                Text("You can resume this quiz later from where you left off.")
+            }
+            .navigationDestination(for: UUID.self) { uuid in
+                if let contact = contacts.first(where: { $0.uuid == uuid }) {
+                    ContactDetailsView(
+                        contact: contact,
+                        onBack: {
+                            NotificationCenter.default.post(name: .quickInputLockFocus, object: nil)
+                            if !vm.contactPath.isEmpty { vm.contactPath.removeLast() }
+                            vm.selectedContact = nil
+                        },
+                        onAppearSyncQuickInput: {
+                            vm.selectedContact = contact
+                            withAnimation(.spring(response: 0.4, dampingFraction: 0.82)) {
+                                vm.isQuickInputExpanded = true
+                            }
+                            if vm.contactNavigatedFromQuickInput {
+                                Task { @MainActor in
+                                    try? await Task.sleep(for: .milliseconds(200))
+                                    NotificationCenter.default.post(name: .quickInputRequestFocus, object: nil)
+                                }
+                            }
+                        }
+                    )
+                }
+            }
+            .navigationDestination(for: ContactNoteNavigationTarget.self) { target in
+                if let contact = contacts.first(where: { $0.uuid == target.contactUUID }) {
+                    ContactDetailsView(
+                        contact: contact,
+                        onBack: {
+                            NotificationCenter.default.post(name: .quickInputLockFocus, object: nil)
+                            if !vm.contactPath.isEmpty { vm.contactPath.removeLast() }
+                            vm.selectedContact = nil
+                        },
+                        onAppearSyncQuickInput: {
+                            vm.selectedContact = contact
+                            withAnimation(.spring(response: 0.4, dampingFraction: 0.82)) {
+                                vm.isQuickInputExpanded = true
+                            }
+                            if vm.contactNavigatedFromQuickInput {
+                                Task { @MainActor in
+                                    try? await Task.sleep(for: .milliseconds(200))
+                                    NotificationCenter.default.post(name: .quickInputRequestFocus, object: nil)
+                                }
+                            }
+                        }, highlightedNoteUUID: target.noteUUID
+                    )
+                }
+            }
+    }
+}
+
+// MARK: - Preference Keys
 
 private struct BottomInsetHeightPreferenceKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
@@ -986,14 +683,16 @@ private struct BottomInsetHeightPreferenceKey: PreferenceKey {
     }
 }
 
+// MARK: - Previews
+
 #Preview("List") {
-        ContentView().modelContainer(for: [Contact.self, Note.self, Tag.self], inMemory: true)
+    ContentView().modelContainer(for: [Contact.self, Note.self, Tag.self], inMemory: true)
 }
 
 #Preview("Contact Detail") {
     ModelContainerPreview(ModelContainer.sample) {
-        NavigationStack{
-            ContactDetailsView(contact:.ross)
+        NavigationStack {
+            ContactDetailsView(contact: .ross)
         }
     }
 }

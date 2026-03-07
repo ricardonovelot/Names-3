@@ -29,8 +29,10 @@ final class StrictUnbindCoordinator {
         layer.player = sharedPlayer.player
     }
 
+    /// Release layer. Only pauses shared player when releasing the active layer.
     func releaseLayer(_ layer: AVPlayerLayer) {
         if activeLayer === layer {
+            sharedPlayer.setActive(false)
             activeLayer?.player = nil
             activeLayer = nil
         }
@@ -144,15 +146,15 @@ final class FeedImpl5CellView: UIView, FeedCellContentUpdatable, FeedCellTeardow
         guard isActive != active else { return }
         isActive = active
         guard let coord = coordinator else { return }
+        let layer = playerLayerView.playerLayer
         if active {
             coord.sharedPlayer.setAsset(asset)
             coord.sharedPlayer.setActive(true)
-            coord.assignPlayer(to: playerLayerView.playerLayer)
+            coord.assignPlayer(to: layer)
             observeLayerReady()
         } else {
-            coord.sharedPlayer.setActive(false)
-            coord.releaseLayer(playerLayerView.playerLayer)
-            playerLayerView.playerLayer.player = nil
+            coord.releaseLayer(layer)
+            layer.player = nil
         }
     }
 
@@ -163,11 +165,11 @@ final class FeedImpl5CellView: UIView, FeedCellContentUpdatable, FeedCellTeardow
         firstFrameLoadTask = nil
         layerReadyObserver?.invalidate()
         layerReadyObserver = nil
+        let layer = playerLayerView.playerLayer
         if isActive {
-            coordinator?.sharedPlayer.setActive(false)
-            coordinator?.releaseLayer(playerLayerView.playerLayer)
+            coordinator?.releaseLayer(layer)
         }
-        playerLayerView.playerLayer.player = nil
+        layer.player = nil
         firstFrameOverlay.removeFromSuperview()
     }
 }

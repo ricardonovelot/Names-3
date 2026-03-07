@@ -13,6 +13,8 @@ struct ContactDetailsView: View {
     var onSave: (() -> Void)? = nil
     var onCancel: (() -> Void)? = nil
     var onBack: (() -> Void)? = nil
+    /// Called when the view appears. Use to sync quick input (set selectedContact, expand, focus) when entering via feed or quick input.
+    var onAppearSyncQuickInput: (() -> Void)? = nil
 
     @State var viewState = CGSize.zero
 
@@ -32,6 +34,12 @@ struct ContactDetailsView: View {
     
     @State private var noteBeingEdited: Note?
     @State private var showNoteDatePicker = false
+
+    /// UUID of the note to scroll to and briefly highlight on appear.
+    /// Set by the notes-feed tap → ContactNoteNavigationTarget navigation.
+    var highlightedNoteUUID: UUID? = nil
+    /// Currently highlighted note (for the ring animation). Set internally after scroll.
+    @State private var activeHighlightNoteUUID: UUID? = nil
 
     @StateObject private var faceRecognitionCoordinator = FaceRecognitionCoordinator()
     @State private var showPhotoFacesSheet = false
@@ -79,21 +87,79 @@ struct ContactDetailsView: View {
             fixedBackgroundView(screenHeight: screenHeight)
                 .ignoresSafeArea(edges: .all)
 
-            ScrollView {
-                VStack(spacing: 0) {
-                    headerSection
-                    notesSection
-                        .padding(.top, 8)
+            ScrollViewReader { proxy in
+                List {
+                    Section {
+                        headerSection
+                    }
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+
+                    Section {
+                        ForEach(activeNotesForList, id: \.uuid) { note in
+                            noteCard(note)
+                                .id(note.uuid)
+                                .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 6, trailing: 16))
+                                .listRowSeparator(.hidden)
+                                .listRowBackground(Color.clear)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                        .stroke(
+                                            Color.accentColor.opacity(activeHighlightNoteUUID == note.uuid ? 0.75 : 0),
+                                            lineWidth: 2
+                                        )
+                                )
+                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                    Button(role: .destructive) {
+                                        note.isArchived = true
+                                        note.archivedDate = Date()
+                                        do { try modelContext.save() } catch { }
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                    Button {
+                                        DispatchQueue.main.async {
+                                            showNoteDatePickerFor(note: note)
+                                        }
+                                    } label: {
+                                        Label("Edit Date", systemImage: "calendar")
+                                    }
+                                }
+                        }
+                    }
+                    .listRowSeparator(.hidden)
+                }
+                .listStyle(.plain)
+                .padding(.bottom, 40)
+                .scrollDismissesKeyboard(.interactively)
+                .scrollContentBackground(.hidden)
+                .scrollIndicators(.hidden)
+                .background(Color.clear)
+                .padding(.top, image != UIImage() ? 0 : 8)
+                .ignoresSafeArea(image != UIImage() ? .all : [])
+                // Scroll to the target note after layout settles, then flash the highlight ring.
+                .task(id: highlightedNoteUUID) {
+                    guard let targetUUID = highlightedNoteUUID else { return }
+                    try? await Task.sleep(for: .milliseconds(350))
+                    withAnimation(.easeInOut(duration: 0.4)) {
+                        proxy.scrollTo(targetUUID, anchor: .center)
+                    }
+                    try? await Task.sleep(for: .milliseconds(450))
+                    withAnimation(.easeIn(duration: 0.15)) {
+                        activeHighlightNoteUUID = targetUUID
+                    }
+                    try? await Task.sleep(for: .seconds(2))
+                    withAnimation(.easeOut(duration: 0.5)) {
+                        activeHighlightNoteUUID = nil
+                    }
                 }
             }
-            .scrollIndicators(.hidden)
-            .background(Color.clear)
-            .padding(.top, image != UIImage() ? 0 : 8)
-            .ignoresSafeArea(image != UIImage() ? .all : [])
 
         }
         .onAppear {
             TipManager.shared.donateContactViewed()
+            onAppearSyncQuickInput?()
         }
         .onDisappear {
             // Refresh feed when leaving detail (e.g. after photo update) so contacts list shows latest
@@ -291,39 +357,15 @@ struct ContactDetailsView: View {
         ZStack(alignment: .bottom) {
             if image != UIImage() {
                 photoHeader
-            } else {
-                addPhotoPlaceholder
             }
             
             VStack(spacing: 0) {
                 headerControls
                 summaryField
             }
-        }
-    }
-
-    /// Placeholder when contact has no photo. Large tappable area to add a photo.
-    @ViewBuilder
-    private var addPhotoPlaceholder: some View {
-        Button {
-            photoSelectorCoordinator.startSelection()
-        } label: {
-            VStack(spacing: 12) {
-                Image(systemName: "person.crop.rectangle.badge.plus")
-                    .font(.system(size: 44))
-                    .foregroundStyle(.secondary.opacity(0.8))
-                Text("Add Photo")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
-            }
             .frame(maxWidth: .infinity)
-            .frame(height: 200)
-            .background(Color(UIColor.tertiarySystemFill).opacity(0.5))
-            .contentShape(.rect)
+            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Add photo for \(contact.displayName)")
-        .accessibilityHint("Opens options to choose from photo library or take a new photo")
     }
     
     /// Photo-derived color used for the gradient that starts over the bottom of the photo (Apple Maps style). Nil when no gradient.
@@ -343,21 +385,21 @@ struct ContactDetailsView: View {
                     if let startColor = photoGradientStartColor {
                         LinearGradient(
                             gradient: Gradient(stops: [
-                                .init(color: startColor.opacity(0.0), location: 0.4),
-                                .init(color: startColor.opacity(0.5), location: 0.7),
-                                .init(color: startColor, location: 0.85)
+                                .init(color: startColor.opacity(0.0), location: 0.5),
+                                .init(color: startColor.opacity(0.5), location: 0.75),
+                                .init(color: startColor, location: 0.9)
                             ]),
                             startPoint: .top,
                             endPoint: .bottom
                         )
                     } else {
                         LinearGradient(
-                            gradient: Gradient(colors: [
-                                .black.opacity(0.0),
-                                .black.opacity(0.2),
-                                .black.opacity(0.8)
+                            gradient: Gradient(stops: [
+                                .init(color: .black.opacity(0.0), location: 0.5),
+                                .init(color: .black.opacity(0.2), location: 0.7),
+                                .init(color: .black.opacity(0.8), location: 0.95)
                             ]),
-                            startPoint: .init(x: 0.5, y: 0.05),
+                            startPoint: .top,
                             endPoint: .bottom
                         )
                     }
@@ -375,57 +417,59 @@ struct ContactDetailsView: View {
     
     @ViewBuilder
     private var headerControls: some View {
-        HStack(alignment: .top, spacing: 12) {
-            TextField(
-                "Name",
-                text: $contact.name ?? "",
-                prompt: Text("Name")
-                    .foregroundColor(image != UIImage() ? Color(.white.opacity(0.7)) : Color(uiColor: .placeholderText)),
-                axis: .vertical
-            )
-            .font(.system(size: 36, weight: .bold))
-            .lineLimit(4)
-            .foregroundColor(image != UIImage() ? .white : .primary)
-            
-            if image == UIImage() {
-                Button {
-                    photoSelectorCoordinator.startSelection()
-                } label: {
-                    Image(systemName: "camera")
-                        .font(.system(size: 18))
-                        .frame(width: 44, height: 44)
-                        .foregroundColor(.blue)
-                        .liquidGlass(in: Circle(), stroke: true, style: .clear)
-                }
-                .accessibilityLabel("Add photo for \(contact.displayName)")
-                .accessibilityHint("Opens photo library and camera to choose a photo")
-            }
-            
-            VStack(alignment: .trailing, spacing: 4){
-                Button {
-                    showTagPicker = true
-                } label: {
-                    if !(contact.tags?.isEmpty ?? true) {
-                        Text((contact.tags ?? []).compactMap { $0.name }.sorted().joined(separator: ", "))
-                            .foregroundColor(image != UIImage() ? .white : Color(.secondaryLabel))
-                            .font(.system(size: 15, weight: .medium))
-                            .lineLimit(2)
-                            .multilineTextAlignment(.center)
-                            .padding(.vertical, 8)
-                            .padding(.horizontal, 12)
-                            .frame(minWidth: 44)
-                            .liquidGlass(in: RoundedRectangle(cornerRadius: 10, style: .continuous), stroke: true, style: .clear)
-                    } else {
-                        Image(systemName: "person.2")
-                            .font(.system(size: 18))
-                            .frame(width: 44, height: 44)
-                            .foregroundColor(image != UIImage() ? .purple.mix(with: .white, by: 0.3) : .purple)
-                            .liquidGlass(in: Circle(), stroke: true, style: .clear)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .bottom, spacing: 12) {
+                TextField(
+                    "Name",
+                    text: $contact.name ?? "",
+                    prompt: Text("Name")
+                        .foregroundColor(image != UIImage() ? Color(.white.opacity(0.7)) : Color(uiColor: .placeholderText)),
+                    axis: .vertical
+                )
+                .font(.system(size: 36, weight: .bold))
+                .lineLimit(4)
+                .foregroundColor(image != UIImage() ? .white : .primary)
+                HStack(spacing: 8) {
+                    if image == UIImage() {
+                        Button {
+                            photoSelectorCoordinator.startSelection()
+                        } label: {
+                            Image(systemName: "camera")
+                                .font(.system(size: 18))
+                                .frame(width: 44, height: 44)
+                                .foregroundColor(.blue)
+                                .liquidGlass(in: Circle(), stroke: true, style: .regular)
+                        }
+                        .accessibilityLabel("Add photo for \(contact.displayName)")
+                        .accessibilityHint("Opens photo library and camera to choose a photo")
                     }
+                    Button {
+                        showTagPicker = true
+                    } label: {
+                        if !(contact.tags?.isEmpty ?? true) {
+                            Text((contact.tags ?? []).compactMap { $0.name }.sorted().joined(separator: ", "))
+                                .foregroundColor(image != UIImage() ? .white : Color(.secondaryLabel))
+                                .font(.system(size: 15, weight: .medium))
+                                .lineLimit(2)
+                                .multilineTextAlignment(.center)
+                                .padding(.vertical, 8)
+                                .padding(.horizontal, 12)
+                                .frame(minWidth: 44)
+                                .contentShape(Rectangle())
+                                .liquidGlass(in: RoundedRectangle(cornerRadius: 10, style: .continuous), stroke: true, style: .regular)
+                        } else {
+                            Image(systemName: "person.2")
+                                .font(.system(size: 18))
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
+                                .foregroundColor(image != UIImage() ? .purple.mix(with: .white, by: 0.3) : .purple)
+                                .liquidGlass(in: Circle(), stroke: true, style: .regular)
+                        }
+                    }
+                    .buttonStyle(.plain)
                 }
-                
-                dateDisplay
             }
+            dateDisplay
         }
         .padding(.horizontal)
     }
@@ -462,63 +506,22 @@ struct ContactDetailsView: View {
                         .font(.system(size: 15, weight: .medium))
                 }
                 .foregroundColor(image != UIImage() ? .white.opacity(0.9) : Color(UIColor.secondaryLabel))
-                .padding(.horizontal, 14)
+                .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                .liquidGlass(in: Capsule(), stroke: true, style: .clear)
+                .contentShape(Rectangle())
+                .liquidGlass(in: RoundedRectangle(cornerRadius: 10, style: .continuous), stroke: true, style: .regular)
             }
+            .buttonStyle(.plain)
         }
-        .padding(.horizontal)
-        .padding(.top, 12)
-        .padding(.bottom, 20)
+        .padding(.top, 4)
+        .padding(.bottom, 8)
     }
 
     // MARK: - Notes Section
 
-    private var usesDerivedBackground: Bool { contact.photoGradientColors != nil || derivedBackgroundColors != nil }
-
-    @ViewBuilder
-    private var notesSection: some View {
-        let activeNotes = (contact.notes ?? []).filter { $0.isArchived == false }
+    private var activeNotesForList: [Note] {
+        (contact.notes ?? []).filter { $0.isArchived == false }
             .sorted { ($0.creationDate ?? .distantPast) > ($1.creationDate ?? .distantPast) }
-        VStack(alignment: .leading, spacing: 12) {
-            addNoteButton
-            
-            ForEach(activeNotes, id: \.uuid) { note in
-                noteCard(note)
-            }
-        }
-        .padding(.bottom, 40)
-        .animation(.default, value: activeNotes.map(\.uuid))
-    }
-    
-    @ViewBuilder
-    private var addNoteButton: some View {
-        Button {
-            let newNote = Note(content: "", creationDate: Date())
-            if contact.notes == nil { contact.notes = [] }
-            contact.notes?.append(newNote)
-            withAnimation {
-                do {
-                    try modelContext.save()
-                } catch {
-                    print("Save failed: \(error)")
-                }
-            }
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: "plus.circle.fill")
-                    .font(.system(size: 22))
-                Text("Add Note")
-                    .font(.body.weight(.medium))
-                Spacer()
-            }
-            .foregroundStyle(usesDerivedBackground ? Color.white.opacity(0.95) : .blue)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 16)
-            .liquidGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous), stroke: true, style: .clear)
-        }
-        .buttonStyle(.plain)
-        .padding(.horizontal)
     }
     
     @ViewBuilder
@@ -555,41 +558,11 @@ struct ContactDetailsView: View {
                     .foregroundColor(.secondary)
                 }
                 .buttonStyle(.plain)
-                
                 Spacer()
-                
-                Menu {
-                    Button {
-                        showNoteDatePickerFor(note: note)
-                    } label: {
-                        Label("Edit Date", systemImage: "calendar")
-                    }
-                    
-                    Button(role: .destructive) {
-                        withAnimation {
-                            note.isArchived = true
-                            note.archivedDate = Date()
-                            do {
-                                try modelContext.save()
-                            } catch {
-                                print("Save failed: \(error)")
-                            }
-                        }
-                    } label: {
-                        Label("Delete", systemImage: "trash")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.system(size: 16))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
             }
         }
         .padding(16)
         .liquidGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous), stroke: true, style: .clear)
-        .padding(.horizontal)
-        .transition(.opacity.combined(with: .scale(scale: 0.95)))
     }
 
     // MARK: - Helper Methods

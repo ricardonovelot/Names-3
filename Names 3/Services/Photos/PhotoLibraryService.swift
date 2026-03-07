@@ -149,20 +149,18 @@ final class PhotoLibraryService: PhotoLibraryServiceProtocol {
         return assets
     }
 
-    /// Fetches image assets in date range, excluding screenshots (for calendar thumbnails).
+    /// Fetches image assets in date range, optionally excluding real device screenshots (dimension heuristic).
     func fetchAssetsExcludingScreenshots(from startDate: Date, to endDate: Date) -> [PHAsset] {
         let options = PHFetchOptions()
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
-        let screenshotRaw = PHAssetMediaSubtype.photoScreenshot.rawValue
-        options.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
-            NSPredicate(format: "creationDate >= %@ AND creationDate < %@", startDate as NSDate, endDate as NSDate),
-            NSPredicate(format: "(mediaSubtype & %d) == 0", screenshotRaw)
-        ])
+        options.predicate = NSPredicate(format: "creationDate >= %@ AND creationDate < %@", startDate as NSDate, endDate as NSDate)
         let fetchResult = PHAsset.fetchAssets(with: .image, options: options)
         var assets: [PHAsset] = []
         assets.reserveCapacity(fetchResult.count)
         fetchResult.enumerateObjects { asset, _, _ in
-            assets.append(asset)
+            if !ExcludeScreenshotsPreference.shouldExcludeAsScreenshot(asset) {
+                assets.append(asset)
+            }
         }
         logger.debug("Fetched \(assets.count) assets (excluding screenshots) in date range")
         return assets
@@ -184,11 +182,9 @@ final class PhotoLibraryService: PhotoLibraryServiceProtocol {
         let (start, end) = DateUtility.monthBounds(containing: monthStart)
         let assets = fetchAssetsExcludingScreenshots(from: start, to: end)
         guard !assets.isEmpty else { return CalendarMonthResult(thumbnails: [:], photoCountByDay: [:]) }
-        let screenshotRaw = PHAssetMediaSubtype.photoScreenshot.rawValue
         var assetsByDay: [Date: [PHAsset]] = [:]
         for asset in assets {
             guard let creationDate = asset.creationDate else { continue }
-            if (asset.mediaSubtypes.rawValue & screenshotRaw) != 0 { continue }
             let dayStart = calendar.startOfDay(for: creationDate)
             assetsByDay[dayStart, default: []].append(asset)
         }
@@ -231,11 +227,11 @@ final class PhotoLibraryService: PhotoLibraryServiceProtocol {
         return CalendarMonthResult(thumbnails: thumbnails, photoCountByDay: photoCountByDay)
     }
 
-    /// Picks the most relevant asset for a calendar day: prefer favorites, skip screenshots, skip extreme aspect ratios, skip small images.
+    /// Picks the most relevant asset for a calendar day: prefer favorites, skip screenshots (when preference), skip extreme aspect ratios, skip small images.
     private func bestCalendarAsset(from assets: [PHAsset]) -> PHAsset? {
-        let screenshotRaw = PHAssetMediaSubtype.photoScreenshot.rawValue
-        let nonScreenshots = assets.filter { (($0.mediaSubtypes.rawValue & screenshotRaw) == 0) }
-        let candidates = nonScreenshots.isEmpty ? assets : nonScreenshots
+        let excludeScreenshots = ExcludeScreenshotsPreference.excludeScreenshots
+        let nonScreenshots = excludeScreenshots ? assets.filter { !ExcludeScreenshotsPreference.isLikelyRealScreenshot($0) } : []
+        let candidates = (excludeScreenshots && !nonScreenshots.isEmpty) ? nonScreenshots : assets
         let minShortSide: Int = 500
         let minAspectRatio: CGFloat = 0.58
         let maxAspectRatio: CGFloat = 1.85
@@ -269,6 +265,7 @@ final class PhotoLibraryService: PhotoLibraryServiceProtocol {
                 contentMode: contentMode,
                 options: options
             ) { [weak self] image, info in
+                StorageMonitor.reportIfCloudPhotoLowStorage(info: info)
                 if info?[PHImageErrorKey] != nil {
                     self?.setLibraryUnavailable()
                 }
@@ -339,6 +336,7 @@ final class PhotoLibraryService: PhotoLibraryServiceProtocol {
                     contentMode: contentMode,
                     options: options
                 ) { image, info in
+                    StorageMonitor.reportIfCloudPhotoLowStorage(info: info)
                     let isCancelled = (info?[PHImageCancelledKey] as? NSNumber)?.boolValue == true
                     let isDegraded = (info?[PHImageResultIsDegradedKey] as? NSNumber)?.boolValue == true
                     let error = info?[PHImageErrorKey] as? Error

@@ -41,7 +41,27 @@ private struct PhotoSlideView: View {
     let asset: PHAsset
     @State private var image: UIImage?
     @State private var task: Task<Void, Never>?
-    
+
+    private var dimensionOverlay: some View {
+        Group {
+            if ExcludeScreenshotsPreference.showDimensionOverlay {
+                let dims = "\(asset.pixelWidth)×\(asset.pixelHeight)"
+                let device = ExcludeScreenshotsPreference.deviceName(forWidth: asset.pixelWidth, height: asset.pixelHeight)
+                let text = device.map { "\(dims) · \($0)" } ?? dims
+                Text(text)
+                    .font(.system(size: 13, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(.black.opacity(0.8))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .shadow(color: .black.opacity(0.4), radius: 4, x: 0, y: 2)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .padding(.bottom, 40)
+            }
+        }
+    }
+
     var body: some View {
         GeometryReader { geo in
             let horizontalPadding: CGFloat = 16
@@ -55,10 +75,12 @@ private struct PhotoSlideView: View {
                     VStack {
                         Image(uiImage: image)
                             .resizable()
-                            .scaledToFit()
-                            .frame(maxWidth: maxW, maxHeight: maxH)
+                            .scaledToFill()
+                            .frame(width: maxW, height: maxH)
+                            .clipped()
                             .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
                             .shadow(color: .black.opacity(0.4), radius: 10, x: 0, y: 6)
+                            .overlay(dimensionOverlay)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                     .padding(.horizontal, horizontalPadding)

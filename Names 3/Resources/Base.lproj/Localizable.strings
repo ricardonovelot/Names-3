@@ -31,9 +31,11 @@
 "settings.button.done" = "Done";
 
 /* Tab bar */
+"tab.photos" = "Memories";
 "tab.people" = "People";
+"tab.journal" = "Gratitude";
 "tab.practice" = "Practice";
-"tab.nameFaces" = "Name Faces";
+"tab.recall" = "Recall";
 "tab.feed" = "Feed";
 
 /* Name Faces + Feed combined view – mode toggle */
@@ -44,6 +46,10 @@
 
 /* Contacts feed – movement undo */
 "contacts.undo.move" = "Undo Move";
+
+/* People feed filter */
+"filter.people" = "People";
+"filter.peopleWithNotes" = "People with notes";
 
 /* Feed empty state */
 "feed.empty.title" = "No people yet";
@@ -65,6 +71,13 @@
 "settings.connectivity.status" = "Status";
 "settings.connectivity.online" = "Online";
 "settings.connectivity.offline" = "Offline";
+"settings.cellular.useForFeed" = "Use cellular data for feed media";
+"settings.cellular.useForFeedFooter" = "When off, videos and photos in the feed load only on Wi‑Fi.";
+"cellular.banner.title" = "Using cellular data";
+"cellular.banner.message" = "Tap to manage in Settings.";
+"cellular.banner.hint" = "Opens Settings to toggle cellular data for feed media.";
+"storage.banner.title" = "Low storage";
+"storage.banner.message" = "Some items may not load. Free up space in iPhone Settings → General → iPhone Storage.";
 
 /* Quiz daily reminder (one notification per day) */
 "quiz_reminder_title" = "Time to practice";
@@ -131,6 +144,7 @@
 "storage.other.clearCarouselCache.message" = "This clears the cached photo order for Name Faces. The next time you open Name Faces, photos will load fresh from your library. No saved data is affected.";
 "storage.app.batchData" = "Batch Data";
 "storage.app.caches" = "Caches";
+"storage.app.tmp" = "Temporary (feed, exports)";
 "storage.app.documents" = "Documents";
 "storage.app.footer" = "People = contact photos. Faces = previews and recognition vectors. Other = notes, tags, and metadata.";
 "storage.actions.header" = "Actions";
@@ -182,3 +196,16 @@
 "storage.other.deleteQuickNote.message" = "This quick note will be permanently deleted.";
 "storage.other.deleteTag.title" = "Delete tag?";
 "storage.other.deleteTag.message" = "This tag will be removed from all contacts.";
+
+// Feed Architecture A/B Testing
+"settings.architecture.header" = "Feed Architecture";
+"settings.architecture.picker" = "Architecture";
+"settings.architecture.footer" = "Switch between feed implementations to compare performance. Requires re-opening the Name Faces tab.";
+
+/* Quick input – backspace to go back */
+"quickInput.backspaceAgainToGoBack" = "← again to go back";
+
+// Photo Architecture A/B Testing
+"settings.photo_architecture.header" = "Photo Loading Architecture";
+"settings.photo_architecture.picker" = "Photo Driver";
+"settings.photo_architecture.footer" = "Switch between photo loading strategies to compare quality and speed. Takes effect on new carousel cells.";

@@ -120,7 +120,7 @@ enum NameFacesCarouselAssetFetcher {
             let imageResult = PHAsset.fetchAssets(with: .image, options: opts)
             imageResult.enumerateObjects { asset, _, stop in
                 if archivedIDs.contains(asset.localIdentifier) { return }
-                if asset.mediaSubtypes.contains(.photoScreenshot) { return }
+                if ExcludeScreenshotsPreference.shouldExcludeAsScreenshot(asset) { return }
                 assets.append(asset)
                 if assets.count >= limit { stop.pointee = true }
             }

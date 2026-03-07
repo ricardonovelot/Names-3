@@ -110,11 +110,7 @@ final class PostOnboardingFacePromptCoordinator {
     private func fetchSmartPhotoSelection() -> [PHAsset] {
         let options = PHFetchOptions()
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-        
-        options.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
-            NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue),
-            NSPredicate(format: "(mediaSubtype & %d) == 0", PHAssetMediaSubtype.photoScreenshot.rawValue)
-        ])
+        options.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
         
         let fetchResult = PHAsset.fetchAssets(with: options)
         
@@ -127,7 +123,8 @@ final class PostOnboardingFacePromptCoordinator {
         
         fetchResult.enumerateObjects { asset, _, _ in
             guard let creationDate = asset.creationDate else { return }
-            
+            if ExcludeScreenshotsPreference.shouldExcludeAsScreenshot(asset) { return }
+
             // Check if this photo is far enough in time from the last selected photo
             if let lastDate = lastSelectedDate {
                 let timeDifference = abs(lastDate.timeIntervalSince(creationDate))

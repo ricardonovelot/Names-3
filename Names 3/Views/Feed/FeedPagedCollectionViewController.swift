@@ -74,7 +74,7 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
         }
     }
 
-    private static let maxContentCacheSize = 7
+    private var maxContentCacheSize: Int { FeedScrollSmoothnessSettings.maxContentCacheSize }
 
     private func getOrCreateContent(for item: FeedItem, index: Int, isActive: Bool) -> UIView {
         let id = idProvider(item)
@@ -91,12 +91,12 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
     }
 
     private func evictDistantContentIfNeeded(keeping currentIndex: Int) {
-        guard contentCache.count >= Self.maxContentCacheSize else { return }
+        guard contentCache.count >= maxContentCacheSize else { return }
         let indices = items.enumerated().compactMap { idx, it -> (Int, String)? in
             let id = idProvider(it)
             return contentCache[id] != nil ? (idx, id) : nil
         }
-        guard indices.count >= Self.maxContentCacheSize else { return }
+        guard indices.count >= maxContentCacheSize else { return }
         let furthest = indices.max(by: { abs($0.0 - currentIndex) < abs($1.0 - currentIndex) })
         guard let (_, id) = furthest else { return }
         (contentCache[id] as? FeedCellTeardownable)?.tearDown()
@@ -200,14 +200,25 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
     override func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard collectionView.bounds.height > 0 else { return }
         let target = computedPage()
-        if target != currentIndex {
-            let offsetRatio = scrollView.contentOffset.y / collectionView.bounds.height
-            print("[PhotoGroupingScroll] FeedPaged: page \(currentIndex)→\(target) offsetRatio=\(String(format: "%.2f", offsetRatio))")
-            currentIndex = target
-            onIndexChange(target)
-            evictDistantContentIfNeeded(keeping: target)
-            refreshVisibleCells()
-            updatePrefetchWindow(for: target)
+        guard target != currentIndex else { return }
+
+        let offsetRatio = scrollView.contentOffset.y / collectionView.bounds.height
+        print("[PhotoGroupingScroll] FeedPaged: page \(currentIndex)→\(target) offsetRatio=\(String(format: "%.2f", offsetRatio))")
+
+        currentIndex = target
+        activeIndexUpdate?(target)
+        // Defer layer binding: never update isActive during scroll; only on settle
+        // Heavy work deferred to applyScrollSettledState
+    }
+
+    /// Lightweight: update isActive on visible cached content so audio stops immediately when scrolled past.
+    private func updateActiveStateOnly() {
+        for indexPath in collectionView.indexPathsForVisibleItems {
+            guard items.indices.contains(indexPath.item) else { continue }
+            let item = items[indexPath.item]
+            let id = idProvider(item)
+            guard let cached = contentCache[id], let updatable = cached as? FeedCellContentUpdatable else { continue }
+            updatable.updateIsActive(isActiveForIndex(indexPath.item))
         }
     }
 
@@ -215,6 +226,17 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
         let contentH = scrollView.contentSize.height
         let boundsH = collectionView.bounds.height
         print("[PhotoGroupingScroll] FeedPaged: willBeginDragging items=\(items.count) contentH=\(Int(contentH)) boundsH=\(Int(boundsH))")
+
+        prewarmAdjacentCells()
+    }
+
+    private func prewarmAdjacentCells() {
+        let idx = currentIndex
+        for i in [idx - 1, idx, idx + 1] where items.indices.contains(i) {
+            let item = items[i]
+            let isActive = isActiveForIndex(i)
+            _ = getOrCreateContent(for: item, index: i, isActive: isActive)
+        }
     }
 
     override func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
@@ -248,6 +270,9 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
             onIndexChange(target)
             evictDistantContentIfNeeded(keeping: target)
         }
+        // Heavy work was deferred during scroll; run it now
+        onIndexChange(currentIndex)
+        evictDistantContentIfNeeded(keeping: currentIndex)
         print("[FeedPlayback] applyScrollSettledState: currentIndex=\(currentIndex)")
         if items.indices.contains(currentIndex), case .video(let asset) = items[currentIndex].kind {
             VideoStateLog.log(id: asset.localIdentifier, state: "S14_fully_visible")
@@ -265,8 +290,7 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
     }
 
     private func updatePrefetchWindow(for page: Int) {
-        // Base window: 4 behind, 8 ahead (expanded for more buffer)
-        var desired = Set((page - 4)...(page + 8)).filter { $0 >= 0 && $0 < items.count }
+        var desired = Set((page - 4)...(page + 12)).filter { $0 >= 0 && $0 < items.count }
         // Long videos (>30s): add from extended range so they have more time to load
         for i in (page - 6)...(page + 10) where i >= 0 && i < items.count {
             if case .video(let asset) = items[i].kind, asset.duration > 30 {

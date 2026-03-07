@@ -101,6 +101,7 @@ private final class MediaContentContentView: UIView {
     private var pageControl: UIPageControl?
     private var layout: UICollectionViewFlowLayout?
     private var loadTaskCancellables: [IndexPath: Task<Void, Never>] = [:]
+    private var hasTriggeredCarouselPreheat = false
 
     init(content: MediaFeedCellView.Content) {
         switch content {
@@ -296,7 +297,7 @@ private final class MediaContentContentView: UIView {
 
     private func setupPhotoCarousel() {
         guard let assets = photoAssets else { return }
-        carouselDriver = PhotoCarouselImageService.shared
+        carouselDriver = PhotoArchitectureMode.current.makeDriver()
 
         let layout = UICollectionViewFlowLayout()
         self.layout = layout
@@ -336,25 +337,29 @@ private final class MediaContentContentView: UIView {
             pc.centerXAnchor.constraint(equalTo: centerXAnchor),
             pc.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -28)
         ])
-
-        let scale = UIScreen.main.scale
-        let viewportPx = CGSize(width: bounds.width * scale, height: bounds.height * scale)
-        carouselDriver?.onCarouselAppeared(assets: assets, viewportSize: viewportPx)
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         guard bounds.width > 0, bounds.height > 0, let layout = layout else { return }
         layout.itemSize = bounds.size
+
+        if !hasTriggeredCarouselPreheat, let assets = photoAssets, let driver = carouselDriver {
+            hasTriggeredCarouselPreheat = true
+            let scale = UIScreen.main.scale
+            let viewportPx = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+            driver.onCarouselAppeared(assets: assets, viewportSize: viewportPx)
+        }
     }
 
     private func loadImage(for cell: PhotoCarouselPageCell, at indexPath: IndexPath) {
-        guard let assets = photoAssets, assets.indices.contains(indexPath.item), let driver = carouselDriver else { return }
+        guard let assets = photoAssets, assets.indices.contains(indexPath.item) else { return }
         let asset = assets[indexPath.item]
         let assetID = asset.localIdentifier
         loadTaskCancellables[indexPath]?.cancel()
         cell.cancelPendingLoad()
         cell.setExpectedAssetID(assetID)
+        cell.setDimensionsOverlay(w: asset.pixelWidth, h: asset.pixelHeight)
         cell.setLoadingPlaceholderVisible(true)
         let scale = UIScreen.main.scale
         let w = bounds.width > 0 ? bounds.width : UIScreen.main.bounds.width
@@ -369,9 +374,21 @@ private final class MediaContentContentView: UIView {
         guard targetSize.width > 0, targetSize.height > 0 else { return }
 
         let task = Task { @MainActor in
-            let image = await driver.loadImage(for: asset, targetSize: targetSize)
-            guard !Task.isCancelled else { return }
-            cell.applyImageIfMatching(image, assetID: assetID)
+            let cacheKey = CacheKeyGenerator.key(for: asset, size: targetSize)
+            if let cached = ImageCacheService.shared.image(for: cacheKey) {
+                cell.applyImageIfMatching(cached, assetID: assetID)
+                return
+            }
+            for await (image, isDegraded) in ImagePrefetcher.shared.progressiveImage(for: asset, targetSize: targetSize) {
+                guard !Task.isCancelled else { return }
+                let decoded = await ImageDecodingService.decodeForDisplay(image)
+                guard !Task.isCancelled else { return }
+                cell.applyImageIfMatching(decoded, assetID: assetID)
+                if !isDegraded {
+                    if let decoded { ImageCacheService.shared.setImage(decoded, for: cacheKey) }
+                    break
+                }
+            }
         }
         loadTaskCancellables[indexPath] = task
         cell.setLoadTask(task)
@@ -416,7 +433,7 @@ extension MediaContentContentView: UICollectionViewDataSourcePrefetching {
     }
 
     private func preloadImage(at index: Int) {
-        guard let assets = photoAssets, assets.indices.contains(index), let driver = carouselDriver else { return }
+        guard let assets = photoAssets, assets.indices.contains(index) else { return }
         let asset = assets[index]
         let scale = UIScreen.main.scale
         let w = bounds.width > 0 ? bounds.width : UIScreen.main.bounds.width
@@ -429,8 +446,17 @@ extension MediaContentContentView: UICollectionViewDataSourcePrefetching {
             targetSize = CGSize(width: targetSize.width * 0.6, height: targetSize.height * 0.6)
         }
         guard targetSize.width > 0, targetSize.height > 0 else { return }
+        ImagePrefetcher.shared.preheat([asset], targetSize: targetSize)
         Task { @MainActor in
-            _ = await driver.loadImage(for: asset, targetSize: targetSize)
+            let cacheKey = CacheKeyGenerator.key(for: asset, size: targetSize)
+            guard ImageCacheService.shared.image(for: cacheKey) == nil else { return }
+            let image = await ImagePrefetcher.shared.requestImage(for: asset, targetSize: targetSize)
+            if let image {
+                let decoded = await ImageDecodingService.decodeForDisplay(image)
+                if let decoded {
+                    ImageCacheService.shared.setImage(decoded, for: cacheKey)
+                }
+            }
         }
     }
 }
@@ -460,7 +486,8 @@ private final class PhotoCarouselPageCell: UICollectionViewCell {
 
     private let imageView: UIImageView = {
         let v = UIImageView()
-        v.contentMode = .scaleAspectFit
+        v.contentMode = .scaleAspectFill
+        v.clipsToBounds = true
         v.translatesAutoresizingMaskIntoConstraints = false
         return v
     }()
@@ -482,6 +509,19 @@ private final class PhotoCarouselPageCell: UICollectionViewCell {
         return v
     }()
 
+    private let dimensionLabel: UILabel = {
+        let l = UILabel()
+        l.font = .monospacedSystemFont(ofSize: 13, weight: .medium)
+        l.textColor = .white
+        l.backgroundColor = UIColor.black.withAlphaComponent(0.8)
+        l.layer.cornerRadius = 8
+        l.layer.masksToBounds = true
+        l.textAlignment = .center
+        l.translatesAutoresizingMaskIntoConstraints = false
+        l.isHidden = true
+        return l
+    }()
+
     private var expectedAssetID: String?
     private var loadTask: Task<Void, Never>?
     private var showLoadingPlaceholder = false
@@ -491,22 +531,35 @@ private final class PhotoCarouselPageCell: UICollectionViewCell {
         contentView.backgroundColor = .black
         contentView.addSubview(imageView)
         contentView.addSubview(loadingOverlay)
+        contentView.addSubview(dimensionLabel)
         loadingOverlay.addSubview(activityIndicator)
         NSLayoutConstraint.activate([
             imageView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: MediaFeedConstants.horizontalPadding),
             imageView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -MediaFeedConstants.horizontalPadding),
             imageView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
-            imageView.heightAnchor.constraint(lessThanOrEqualTo: contentView.heightAnchor, multiplier: MediaFeedConstants.maxHeightFraction),
+            imageView.heightAnchor.constraint(equalTo: contentView.heightAnchor, multiplier: MediaFeedConstants.maxHeightFraction),
             loadingOverlay.leadingAnchor.constraint(equalTo: imageView.leadingAnchor),
             loadingOverlay.trailingAnchor.constraint(equalTo: imageView.trailingAnchor),
             loadingOverlay.topAnchor.constraint(equalTo: imageView.topAnchor),
             loadingOverlay.bottomAnchor.constraint(equalTo: imageView.bottomAnchor),
             activityIndicator.centerXAnchor.constraint(equalTo: loadingOverlay.centerXAnchor),
-            activityIndicator.centerYAnchor.constraint(equalTo: loadingOverlay.centerYAnchor)
+            activityIndicator.centerYAnchor.constraint(equalTo: loadingOverlay.centerYAnchor),
+            dimensionLabel.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+            dimensionLabel.bottomAnchor.constraint(equalTo: contentView.safeAreaLayoutGuide.bottomAnchor, constant: -40)
         ])
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func setDimensionsOverlay(w: Int, h: Int) {
+        let show = ExcludeScreenshotsPreference.showDimensionOverlay
+        dimensionLabel.isHidden = !show
+        if show {
+            let dims = "\(w)×\(h)"
+            let device = ExcludeScreenshotsPreference.deviceName(forWidth: w, height: h)
+            dimensionLabel.text = device.map { "\(dims) · \($0)" } ?? dims
+        }
+    }
 
     func setExpectedAssetID(_ assetID: String) {
         expectedAssetID = assetID

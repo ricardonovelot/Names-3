@@ -33,8 +33,10 @@
 /* Tab bar */
 "tab.people" = "Personas";
 "tab.practice" = "Práctica";
-"tab.nameFaces" = "Nombrar Caras";
+"tab.recall" = "Recordar";
+"tab.photos" = "Memorias";
 "tab.feed" = "Feed";
+"tab.journal" = "Gratitud";
 
 /* Name Faces + Feed combined view – mode toggle */
 "combined.toggle.nameFaces" = "Nombrar Caras";
@@ -44,6 +46,10 @@
 
 /* Contacts feed – movement undo */
 "contacts.undo.move" = "Deshacer movimiento";
+
+/* People feed filter */
+"filter.people" = "Personas";
+"filter.peopleWithNotes" = "Personas con notas";
 
 /* Feed empty state */
 "feed.empty.title" = "Aún no hay personas";
@@ -65,6 +71,13 @@
 "settings.connectivity.status" = "Estado";
 "settings.connectivity.online" = "En línea";
 "settings.connectivity.offline" = "Sin conexión";
+"settings.cellular.useForFeed" = "Usar datos celulares para el feed";
+"settings.cellular.useForFeedFooter" = "Si está desactivado, los videos y fotos del feed solo se cargan con Wi‑Fi.";
+"cellular.banner.title" = "Usando datos celulares";
+"cellular.banner.message" = "Toca para administrar en Ajustes.";
+"cellular.banner.hint" = "Abre Ajustes para activar o desactivar datos celulares en el feed.";
+"storage.banner.title" = "Poco espacio";
+"storage.banner.message" = "Algunos elementos pueden no cargarse. Libera espacio en Ajustes del iPhone → General → Almacenamiento del iPhone.";
 
 /* Quiz daily reminder (one notification per day) */
 "quiz_reminder_title" = "Hora de practicar";
@@ -131,6 +144,7 @@
 "storage.other.clearCarouselCache.message" = "Esto borra el orden de fotos en caché para Nombrar Caras. La próxima vez que abras Nombrar Caras, las fotos se cargarán de nuevo desde tu biblioteca. No se afectan los datos guardados.";
 "storage.app.batchData" = "Datos por Lotes";
 "storage.app.caches" = "Cachés";
+"storage.app.tmp" = "Temporal (feed, exportaciones)";
 "storage.app.documents" = "Documentos";
 "storage.app.footer" = "Personas = fotos de contactos. Caras = vistas previas y vectores de reconocimiento. Otros = notas, etiquetas y metadatos.";
 "storage.actions.header" = "Acciones";
@@ -182,3 +196,16 @@
 "storage.other.deleteQuickNote.message" = "Esta nota rápida se eliminará permanentemente.";
 "storage.other.deleteTag.title" = "¿Eliminar etiqueta?";
 "storage.other.deleteTag.message" = "Esta etiqueta se quitará de todos los contactos.";
+
+// Feed Architecture A/B Testing
+"settings.architecture.header" = "Arquitectura del Feed";
+"settings.architecture.picker" = "Arquitectura";
+"settings.architecture.footer" = "Cambia entre implementaciones del feed para comparar rendimiento. Requiere re-abrir la pestaña Name Faces.";
+
+/* Quick input – backspace to go back */
+"quickInput.backspaceAgainToGoBack" = "← otra vez para volver";
+
+// Photo Architecture A/B Testing
+"settings.photo_architecture.header" = "Arquitectura de Carga de Fotos";
+"settings.photo_architecture.picker" = "Driver de Fotos";
+"settings.photo_architecture.footer" = "Cambia entre estrategias de carga de fotos para comparar calidad y velocidad. Toma efecto en nuevas celdas de carrusel.";

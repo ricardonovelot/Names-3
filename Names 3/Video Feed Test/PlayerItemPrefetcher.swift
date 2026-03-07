@@ -38,8 +38,9 @@ actor PlayerItemPrefetchStore {
             if inFlight[id] != nil { continue }
             
             let options = PHVideoRequestOptions()
-            options.deliveryMode = .mediumQualityFormat
-            options.isNetworkAccessAllowed = true
+            // .automatic enables streaming without full download (like Apple Photos); .mediumQualityFormat triggers FIGSANDBOX -17507
+            options.deliveryMode = .automatic
+            options.isNetworkAccessAllowed = DataUsageGuardrails.shouldAllowNetworkForFeedMedia()
             options.progressHandler = { progress, _, _, _ in
                 Task { @MainActor in
                     DownloadTracker.shared.updateProgress(for: id, phase: .playerItem, progress: progress)
@@ -139,6 +140,7 @@ actor PlayerItemPrefetchStore {
     }
     
     private func handleResult(id: String, item: AVPlayerItem?, info: [AnyHashable: Any]?) async {
+        StorageMonitor.reportIfCloudPhotoLowStorage(info: info)
         inFlight.removeValue(forKey: id)
         
         if let sid = spRequestToFinish.removeValue(forKey: id) {

@@ -14,11 +14,6 @@ enum QuizType {
 struct QuizMenuView: View {
     let contacts: [Contact]
     let onSelectQuiz: (QuizType) -> Void
-    let onDismiss: () -> Void
-    /// When true, used inline (e.g. in tab); close button only calls onDismiss, no sheet dismiss.
-    var isInline: Bool = false
-
-    @Environment(\.dismiss) private var dismiss
     @State private var streakCelebrationItem: IdentifiableQuizKind?
     
     var body: some View {
@@ -27,32 +22,27 @@ struct QuizMenuView: View {
                 Color(UIColor.systemGroupedBackground)
                     .ignoresSafeArea()
                 
-                ScrollView {
-                    VStack(spacing: 24) {
-                        headerSection
-                        
-                        quizOptionsSection
-                        
-                        Spacer(minLength: 40)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(spacing: 24) {
+                            headerSection
+                                .id("practice-top")
+                            
+                            quizOptionsSection
+                            
+                            Spacer(minLength: 40)
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.top, 40)
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.top, 40)
+                    .onReceive(NotificationCenter.default.publisher(for: .practiceFeedScrollToTop)) { _ in
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            proxy.scrollTo("practice-top", anchor: .top)
+                        }
+                    }
                 }
             }
-            .navigationTitle("Practice")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        if !isInline { dismiss() }
-                        onDismiss()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
             .sheet(item: $streakCelebrationItem) { item in
                 StreakCelebrationView(
                     kind: item.kind,

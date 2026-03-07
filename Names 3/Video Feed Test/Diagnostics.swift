@@ -310,6 +310,9 @@ struct PhotoKitDiagnostics {
 }
 
 extension Notification.Name {
+    /// Posted when feed-related settings change (Carousel Sampling). Feed should reload.
+    static let feedSettingsDidChange = Notification.Name("Names3.FeedSettingsDidChange")
+
     static let videoPrefetcherDidCacheAsset = Notification.Name("VideoPrefetcherDidCacheAsset")
     static let videoPlaybackItemReady = Notification.Name("VideoPlaybackItemReady")
     static let playerFirstFrameDisplayed = Notification.Name("PlayerFirstFrameDisplayed")

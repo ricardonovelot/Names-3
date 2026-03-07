@@ -38,6 +38,7 @@ final class ContactsFeedGroupHeaderView: UICollectionReusableView, UIContextMenu
         subtitleLabel.text = subtitle
         subtitleLabel.isHidden = subtitle.isEmpty
         menuButton.isHidden = isLongAgo
+        menuButton.isUserInteractionEnabled = !isLongAgo
     }
 
     /// Call after setting all callbacks (e.g. from supplementaryViewProvider) to wire the menu button.
@@ -62,33 +63,29 @@ final class ContactsFeedGroupHeaderView: UICollectionReusableView, UIContextMenu
         stackView.spacing = 2
         stackView.alignment = .leading
         stackView.translatesAutoresizingMaskIntoConstraints = false
+        stackView.isUserInteractionEnabled = false
         stackView.addArrangedSubview(titleLabel)
         stackView.addArrangedSubview(subtitleLabel)
 
-        addSubview(stackView)
-
-        // Menu button: ellipsis, aligned right, shows menu on tap
+        // Full-width button behind title: tap shows menu. Title on top so it's visible.
         menuButton.translatesAutoresizingMaskIntoConstraints = false
-        menuButton.setImage(UIImage(systemName: "ellipsis"), for: .normal)
-        menuButton.tintColor = .secondaryLabel
+        menuButton.backgroundColor = .clear
         addSubview(menuButton)
+        addSubview(stackView)
 
         addInteraction(UIContextMenuInteraction(delegate: self))
         isUserInteractionEnabled = true
 
-        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap))
-        addGestureRecognizer(tap)
-
         NSLayoutConstraint.activate([
-            stackView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
-            stackView.trailingAnchor.constraint(lessThanOrEqualTo: menuButton.leadingAnchor, constant: -8),
-            stackView.topAnchor.constraint(equalTo: topAnchor, constant: 0),
-            stackView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
+            menuButton.leadingAnchor.constraint(equalTo: leadingAnchor),
+            menuButton.trailingAnchor.constraint(equalTo: trailingAnchor),
+            menuButton.topAnchor.constraint(equalTo: topAnchor),
+            menuButton.bottomAnchor.constraint(equalTo: bottomAnchor),
 
-            menuButton.centerYAnchor.constraint(equalTo: stackView.centerYAnchor),
-            menuButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
-            menuButton.widthAnchor.constraint(equalToConstant: 44),
-            menuButton.heightAnchor.constraint(equalToConstant: 44)
+            stackView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 0),
+            stackView.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: 0),
+            stackView.topAnchor.constraint(equalTo: topAnchor, constant: 0),
+            stackView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12)
         ])
     }
 
@@ -107,7 +104,7 @@ final class ContactsFeedGroupHeaderView: UICollectionReusableView, UIContextMenu
             UIAction(title: "Change Date", image: UIImage(systemName: "calendar")) { [weak self] _ in
                 self?.onEditDate?()
             },
-            UIAction(title: "Tag All in Group...", image: UIImage(systemName: "tag")) { [weak self] _ in
+            UIAction(title: "Change Place", image: UIImage(systemName: "tag")) { [weak self] _ in
                 self?.onEditTag?()
             },
             UIAction(title: "Delete All", image: UIImage(systemName: "trash"), attributes: .destructive) { [weak self] _ in
@@ -115,10 +112,6 @@ final class ContactsFeedGroupHeaderView: UICollectionReusableView, UIContextMenu
             }
         ])
         menuButton.showsMenuAsPrimaryAction = true
-    }
-
-    @objc private func handleTap() {
-        onTap?()
     }
 
     func contextMenuInteraction(
@@ -137,7 +130,7 @@ final class ContactsFeedGroupHeaderView: UICollectionReusableView, UIContextMenu
                 UIAction(title: "Change Date", image: UIImage(systemName: "calendar")) { _ in
                     self?.onEditDate?()
                 },
-                UIAction(title: "Tag All in Group...", image: UIImage(systemName: "tag")) { _ in
+                UIAction(title: "Change Place", image: UIImage(systemName: "tag")) { _ in
                     self?.onEditTag?()
                 },
                 UIAction(title: "Delete All", image: UIImage(systemName: "trash"), attributes: .destructive) { _ in

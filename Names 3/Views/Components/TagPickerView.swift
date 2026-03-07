@@ -8,7 +8,7 @@ struct TagPickerView: View {
 
     enum Mode {
         case contactToggle(contact: Contact)
-        case groupApply(onApply: (Tag) -> Void)
+        case groupApply(initialTag: Tag?, onApply: (Tag) -> Void)
         case manage
     }
 
@@ -31,8 +31,9 @@ struct TagPickerView: View {
                                 switch mode {
                                 case .contactToggle(let contact):
                                     toggle(tag: created, for: contact)
-                                case .groupApply:
-                                    selectedForGroup = created
+                                case .groupApply(_, let onApply):
+                                    onApply(created)
+                                    dismiss()
                                 case .manage:
                                     break
                                 }
@@ -65,8 +66,9 @@ struct TagPickerView: View {
                                 switch mode {
                                 case .contactToggle(let contact):
                                     toggle(tag: tag, for: contact)
-                                case .groupApply:
-                                    selectedForGroup = tag
+                                case .groupApply(_, let onApply):
+                                    onApply(tag)
+                                    dismiss()
                                 case .manage:
                                     break
                                 }
@@ -94,13 +96,18 @@ struct TagPickerView: View {
             .navigationTitle("Groups & Places")
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always))
+            .onAppear {
+                if case .groupApply(let initialTag, _) = mode, let tag = initialTag {
+                    selectedForGroup = tag
+                }
+            }
             .toolbar {
                 switch mode {
                 case .contactToggle:
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("Done") { dismiss() }
                     }
-                case .groupApply(let onApply):
+                case .groupApply(_, let onApply):
                     ToolbarItem(placement: .topBarLeading) {
                         Button("Cancel") { dismiss() }
                     }
@@ -161,9 +168,14 @@ struct TagPickerView: View {
 
     private func uniqueSortedTags() -> [Tag] {
         var map: [String: Tag] = [:]
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         for t in tags {
             let key = t.normalizedKey
-            if map[key] == nil { map[key] = t }
+            if map[key] == nil {
+                if trimmed.isEmpty || t.name.localizedCaseInsensitiveContains(searchText.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                    map[key] = t
+                }
+            }
         }
         return map.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }

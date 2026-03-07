@@ -122,8 +122,8 @@ actor PhotoGroupingService {
         
         for asset in assets {
             var score: Double = 0
-            
-            if asset.mediaSubtypes.contains(.photoScreenshot) { score -= 1000 }
+
+            if ExcludeScreenshotsPreference.shouldExcludeAsScreenshot(asset) { score -= 1000 }
             if asset.isFavorite { score += 10 }
             
             let mediaSubtypes = asset.mediaSubtypes

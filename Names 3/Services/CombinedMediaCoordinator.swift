@@ -78,22 +78,46 @@ final class CombinedMediaCoordinator: ObservableObject {
     /// Single place for Feed prefetch. Call when visible indices change.
     func prefetchForFeed(indices: IndexSet, items: [FeedItem], viewportPx: CGSize) {
         var videoAssets: [PHAsset] = []
-        var photoAssets: [PHAsset] = []
+        var carouselGroups: [[PHAsset]] = []
         for i in indices {
             guard items.indices.contains(i) else { continue }
             switch items[i].kind {
             case .video(let a): videoAssets.append(a)
             case .photoCarousel(let list):
-                if FeatureFlags.enablePhotoPosts { photoAssets.append(contentsOf: list) }
+                if FeatureFlags.enablePhotoPosts { carouselGroups.append(list) }
             }
         }
         if !videoAssets.isEmpty {
             VideoPrefetcher.shared.prefetch(videoAssets)
             PlayerItemPrefetcher.shared.prefetch(videoAssets)
         }
-        if FeatureFlags.enablePhotoPosts, !photoAssets.isEmpty {
+        if FeatureFlags.enablePhotoPosts, !carouselGroups.isEmpty {
             let photoPx = photoTargetSizePx(for: viewportPx)
-            ImagePrefetcher.shared.preheat(photoAssets, targetSize: photoPx)
+            let thumbnailSize = CGSize(width: 400, height: 400)
+            var allPhotos: [PHAsset] = []
+            for group in carouselGroups { allPhotos.append(contentsOf: group) }
+            ImagePrefetcher.shared.preheat(allPhotos, targetSize: photoPx)
+            ImagePrefetcher.shared.preheat(allPhotos, targetSize: thumbnailSize)
+            warmCarouselPhotos(groups: carouselGroups, targetSize: photoPx)
+        }
+    }
+
+    private func warmCarouselPhotos(groups: [[PHAsset]], targetSize: CGSize) {
+        let maxGroupsToWarm = 3
+        let maxPhotosPerGroup = 4
+        for group in groups.prefix(maxGroupsToWarm) {
+            for asset in group.prefix(maxPhotosPerGroup) {
+                let cacheKey = CacheKeyGenerator.key(for: asset, size: targetSize)
+                if ImageCacheService.shared.image(for: cacheKey) != nil { continue }
+                Task { @MainActor in
+                    let image = await ImagePrefetcher.shared.requestImage(for: asset, targetSize: targetSize)
+                    guard let image else { return }
+                    let decoded = await ImageDecodingService.decodeForDisplay(image)
+                    if let decoded {
+                        ImageCacheService.shared.setImage(decoded, for: cacheKey)
+                    }
+                }
+            }
         }
     }
 

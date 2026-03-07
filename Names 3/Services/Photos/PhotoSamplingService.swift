@@ -142,11 +142,10 @@ final class PhotoSamplingService {
             return keyPhoto
         }
         
-        // Priority 3: Non-screenshots
-        let nonScreenshots = assets.filter { asset in
-            !asset.mediaSubtypes.contains(.photoScreenshot)
-        }
-        
+        // Priority 3: Non-screenshots (when preference excludes them)
+        let excludeScreenshots = ExcludeScreenshotsPreference.excludeScreenshots
+        let nonScreenshots = excludeScreenshots ? assets.filter { !ExcludeScreenshotsPreference.isLikelyRealScreenshot($0) } : assets
+
         if !nonScreenshots.isEmpty {
             // Priority 4: Panoramas, Live Photos (more interesting)
             if let panorama = nonScreenshots.first(where: { $0.mediaSubtypes.contains(.photoPanorama) }) {

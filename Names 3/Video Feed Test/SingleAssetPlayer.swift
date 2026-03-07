@@ -168,7 +168,7 @@ final class SingleAssetPlayer: ObservableObject {
                 Diagnostics.videoPerf("[VideoSummary] id=\(id) noVideoTrack")
                 return
             }
-            _ = await track.asyncLoadValues(forKeys: ["formatDescriptions", "naturalSize", "nominalFrameRate", "estimatedDataRate", "preferredTransform"])
+            _ = await track.asyncLoadValues(forKeys: ["formatDescriptions", "isEnabled", "naturalSize", "nominalFrameRate", "estimatedDataRate", "preferredTransform"])
             Diagnostics.videoPerf("[VideoSummary] id=\(id) \(await self.videoSummary(for: asset))")
         }
     }
@@ -491,6 +491,9 @@ final class SingleAssetPlayer: ObservableObject {
             guard let self else { return }
             Diagnostics.log("[TikTokCell] item.status=\(item.status.rawValue) error=\(String(describing: item.error)) dur=\(CMTimeGetSeconds(item.asset.duration))s tag=\(Diagnostics.shortTag(for: self.currentAssetID ?? ""))")
             if item.status == .failed {
+                if let err = item.error {
+                    StorageMonitor.reportIfENOSPC(err)
+                }
                 VideoStateLog.log(id: self.currentAssetID ?? "nil", state: "S06_status_failed", extra: "code=\(String(describing: item.error))")
                 let err = item.error as NSError?
                 let url = (item.asset as? AVURLAsset)?.url.absoluteString ?? "non-URL"
@@ -622,8 +625,17 @@ final class SingleAssetPlayer: ObservableObject {
         }
     }
 
-    private func applyItem(_ item: AVPlayerItem) {
+    private func applyItem(_ item: AVPlayerItem) async {
         Diagnostics.log("[TikTokCell] applyItem: Applying AVPlayerItem to player. Asset ID: \(currentAssetID ?? "nil")")
+        
+        // Load asset and track properties asynchronously before accessing them (AVAsynchronousKeyValueLoading).
+        // Synchronous access to formatDescriptions, isEnabled, etc. blocks all other asset track loads.
+        let asset = item.asset
+        _ = await asset.asyncLoadValues(forKeys: ["tracks", "duration", "playable"])
+        if let track = asset.tracks(withMediaType: .video).first {
+            _ = await track.asyncLoadValues(forKeys: ["formatDescriptions", "isEnabled", "naturalSize", "nominalFrameRate", "estimatedDataRate", "preferredTransform"])
+        }
+        
         attachObservers(to: item)
         Diagnostics.signpostBegin("ApplyItemToReady", id: &spApplyToReady)
         Diagnostics.signpostBegin("ApplyItemToFirstFrame", id: &spApplyToFirstFrame)
@@ -633,8 +645,8 @@ final class SingleAssetPlayer: ObservableObject {
             Task { await NextVideoTraceCenter.shared.markPath(.unknown) }
         }
 
-        // HDR diagnostics + policy
-        let hdr = extractHDRInfo(from: item.asset)
+        // HDR diagnostics + policy (safe: keys loaded above)
+        let hdr = extractHDRInfo(from: asset)
         Diagnostics.log(String(format: "[TikTokCell] HDR diag on applyItem: prim=%@ xfer=%@ ycbcr=%@ hasMD=%@ hasCLL=%@ isHLG=%@ isPQ=%@ isHDR=%@",
                                hdr.colorPrimaries ?? "nil",
                                hdr.transferFunction ?? "nil",
@@ -656,7 +668,7 @@ final class SingleAssetPlayer: ObservableObject {
 
         if sdrConversionEnabled, hdr.isHDR {
             Diagnostics.log("[TikTokCell] SDR conversion enabled and asset is HDR. Attempting to create and apply Rec.709 videoComposition for asset ID: \(currentAssetID ?? "nil").")
-            if let vc = makeRec709VideoComposition(for: item.asset) {
+            if let vc = makeRec709VideoComposition(for: asset) {
                 Diagnostics.log("[TikTokCell] Successfully created Rec.709 videoComposition. Applying to AVPlayerItem for asset ID: \(currentAssetID ?? "nil").")
                 item.videoComposition = vc
             } else {
@@ -800,13 +812,13 @@ final class SingleAssetPlayer: ObservableObject {
 
     private func loadAsset(_ asset: PHAsset) async {
         // try prefetched AVPlayerItem first for fastest ready path
-        if let item = await PlayerItemPrefetcher.shared.item(for: asset.localIdentifier, timeout: .milliseconds(800)) {
+        if let item = await PlayerItemPrefetcher.shared.item(for: asset.localIdentifier, timeout: .milliseconds(1800)) {
             VideoStateLog.log(id: asset.localIdentifier, state: "S02_prefetch_item_hit")
             loadProbe?.markPath(.prefetchedItem)
             Task { await NextVideoTraceCenter.shared.markPath(.prefetchedItem) }
             diagProbe?.startPhase("TikTok_UsePrefetchedItem")
             diagProbe?.attach(item: item)
-            applyItem(item)
+            await applyItem(item)
             diagProbe?.endPhase("TikTok_UsePrefetchedItem")
             return
         }
@@ -818,7 +830,7 @@ final class SingleAssetPlayer: ObservableObject {
             diagProbe?.startPhase("TikTok_UsePrefetchedAsset")
             let item = AVPlayerItem(asset: warm)
             diagProbe?.attach(item: item)
-            applyItem(item)
+            await applyItem(item)
             diagProbe?.endPhase("TikTok_UsePrefetchedAsset")
             FirstLaunchProbe.shared.playerUsedPrefetch(id: asset.localIdentifier)
             return
@@ -860,7 +872,7 @@ final class SingleAssetPlayer: ObservableObject {
         if let item {
             VideoStateLog.log(id: asset.localIdentifier, state: "S03_item_received")
             diagProbe?.attach(item: item)
-            applyItem(item)
+            await applyItem(item)
         } else {
             Diagnostics.log("[TikTokCell] requestPlayerItem returned nil item")
             loadProbe?.finish(failed: true)

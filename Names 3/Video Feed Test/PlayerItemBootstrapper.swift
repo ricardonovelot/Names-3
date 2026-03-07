@@ -21,8 +21,9 @@ actor PlayerItemBootstrapper {
             if Task.isCancelled { return (nil, nil) }
 
             let options = PHVideoRequestOptions()
-            options.deliveryMode = .mediumQualityFormat
-            options.isNetworkAccessAllowed = true
+            // .automatic lets the system optimize for streaming (like Apple Photos); .mediumQualityFormat triggers FIGSANDBOX -17507 with iCloud videos
+            options.deliveryMode = .automatic
+            options.isNetworkAccessAllowed = DataUsageGuardrails.shouldAllowNetworkForFeedMedia()
             options.progressHandler = { progress, _, _, _ in
                 Task { @MainActor in
                     DownloadTracker.shared.updateProgress(for: id, phase: .playerItem, progress: progress)

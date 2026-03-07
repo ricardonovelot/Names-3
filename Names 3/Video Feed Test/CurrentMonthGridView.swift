@@ -282,10 +282,9 @@ final class CurrentMonthGridViewModel: NSObject, ObservableObject, PHPhotoLibrar
 
         let typeImage = PHAssetMediaType.image.rawValue
         let typeVideo = PHAssetMediaType.video.rawValue
-        let screenshotMask = PHAssetMediaSubtype.photoScreenshot.rawValue
 
         let datePredicate = NSPredicate(format: "creationDate >= %@ AND creationDate < %@", bounds.start as NSDate, bounds.end as NSDate)
-        let imagesPredicate = NSPredicate(format: "mediaType == %d AND ((mediaSubtypes & %d) == 0)", typeImage, Int(screenshotMask))
+        let imagesPredicate = NSPredicate(format: "mediaType == %d", typeImage)
         let videosPredicate = NSPredicate(format: "mediaType == %d", typeVideo)
         options.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
             NSCompoundPredicate(orPredicateWithSubpredicates: [imagesPredicate, videosPredicate]),
@@ -320,6 +319,7 @@ final class CurrentMonthGridViewModel: NSObject, ObservableObject, PHPhotoLibrar
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             let filterStart = CACurrentMediaTime()
+            let filteredImages = images.filter { !ExcludeScreenshotsPreference.shouldExcludeAsScreenshot($0) }
             // Filename-based heuristic: keep only camera-likely videos
             let filteredVideos: [PHAsset] = videos.filter { asset in
                 let resources = PHAssetResource.assetResources(for: asset)
@@ -329,7 +329,7 @@ final class CurrentMonthGridViewModel: NSObject, ObservableObject, PHPhotoLibrar
                     self.cameraFilenamePrefixes.contains(where: { prefix in name.hasPrefix(prefix) })
                 })
             }
-            let combined = images + filteredVideos
+            let combined = filteredImages + filteredVideos
             let filterElapsed = CACurrentMediaTime() - filterStart
             let totalElapsed = CACurrentMediaTime() - startTime
 
@@ -343,7 +343,7 @@ final class CurrentMonthGridViewModel: NSObject, ObservableObject, PHPhotoLibrar
                 })
                 self.assets = combined
                 self.isLoading = false
-                Diagnostics.log("MonthFetch result=\(combined.count) images=\(images.count) videos=\(videos.count) videosKept=\(filteredVideos.count) fetch=\(String(format: "%.3f", fetchElapsed))s filter=\(String(format: "%.3f", filterElapsed))s total=\(String(format: "%.3f", totalElapsed))s")
+                Diagnostics.log("MonthFetch result=\(combined.count) images=\(filteredImages.count) videos=\(videos.count) videosKept=\(filteredVideos.count) fetch=\(String(format: "%.3f", fetchElapsed))s filter=\(String(format: "%.3f", filterElapsed))s total=\(String(format: "%.3f", totalElapsed))s")
             }
         }
     }
@@ -1021,6 +1021,7 @@ private struct AssetGridCell: View {
                                                      targetSize: targetPixelSize,
                                                      contentMode: .aspectFill,
                                                      options: options) { image, info in
+            StorageMonitor.reportIfCloudPhotoLowStorage(info: info)
             let latency = CACurrentMediaTime() - requestStartTime
             PhotoKitDiagnostics.logResultInfo(prefix: "Thumb info id=\(self.asset.localIdentifier)", info: info)
             if let image {

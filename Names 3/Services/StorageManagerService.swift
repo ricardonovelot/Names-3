@@ -43,6 +43,8 @@ struct StorageBreakdown: Sendable {
     var batchStore: Int64 = 0
     var caches: Int64 = 0
     var documents: Int64 = 0
+    /// Temporary files (video export, feed buffers, etc.). Counted in appTotal.
+    var tmp: Int64 = 0
     var deviceFree: Int64 = 0
     var deviceTotal: Int64 = 0
     var isLowOnDevice: Bool = false
@@ -118,6 +120,7 @@ final class StorageManagerService {
     private init() {}
     
     /// Compute storage breakdown. Runs on background; call from Task.
+    /// appTotal uses the full app container (Documents + Library + tmp) to match iOS Settings.
     func computeBreakdown(modelContext: ModelContext? = nil) async -> StorageBreakdown {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
         let cachesURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
@@ -126,7 +129,6 @@ final class StorageManagerService {
         var breakdown = await Task.detached(priority: .userInitiated) {
             var b = StorageBreakdown()
             if let url = appSupport {
-                b.appTotal += StorageSizeCalculator.directorySize(at: url)
                 b.databaseStore += StorageSizeCalculator.fileSize(at: url.appendingPathComponent("default.store"))
                 b.databaseWAL += StorageSizeCalculator.fileSize(at: url.appendingPathComponent("default.store-wal"))
                 b.databaseSHM += StorageSizeCalculator.fileSize(at: url.appendingPathComponent("default.store-shm"))
@@ -138,14 +140,16 @@ final class StorageManagerService {
                 b.batchStore += StorageSizeCalculator.fileSize(at: url.appendingPathComponent("batches-local.store-shm"))
             }
             if let url = cachesURL {
-                let size = StorageSizeCalculator.directorySize(at: url)
-                b.caches += size
-                b.appTotal += size
+                b.caches = StorageSizeCalculator.directorySize(at: url)
             }
             if let url = documentsURL {
-                let size = StorageSizeCalculator.directorySize(at: url)
-                b.documents += size
-                b.appTotal += size
+                b.documents = StorageSizeCalculator.directorySize(at: url)
+                let tmpURL = FileManager.default.temporaryDirectory
+                b.tmp = StorageSizeCalculator.directorySize(at: tmpURL)
+                // Use full app container root to match iOS Settings (includes tmp, Preferences, and
+                // any Photos/AVFoundation caches attributed to the app for the feed).
+                let containerRoot = url.deletingLastPathComponent()
+                b.appTotal = StorageSizeCalculator.directorySize(at: containerRoot)
             }
             return b
         }.value

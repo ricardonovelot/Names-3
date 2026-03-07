@@ -87,7 +87,7 @@ struct PhotoCalendarView: View {
                 moveMonth(by: -1)
             } label: {
                 Image(systemName: "chevron.left")
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(Color.accentColor)
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
@@ -95,14 +95,14 @@ struct PhotoCalendarView: View {
             .buttonStyle(.plain)
             Spacer(minLength: 8)
             Text(monthYearString(from: displayedMonth))
-                .font(.headline)
+                .font(.title3.weight(.semibold))
                 .foregroundStyle(.primary)
             Spacer(minLength: 8)
             Button {
                 moveMonth(by: 1)
             } label: {
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(Color.accentColor)
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
@@ -111,7 +111,6 @@ struct PhotoCalendarView: View {
         }
         .frame(height: monthNavHeight)
         .frame(maxWidth: .infinity)
-        .background(Color(uiColor: .secondarySystemGroupedBackground))
     }
 
     private func weekdayHeaders(cellSize: CGFloat) -> some View {
@@ -158,21 +157,27 @@ struct PhotoCalendarView: View {
                         selection = dayStart
                     }
                 } label: {
-                    ZStack(alignment: .bottomLeading) {
+                    ZStack {
                         thumbnailBackground(data: thumbnailData)
                         Text("\(calendar.component(.day, from: date))")
-                            .font(.system(size: min(cellSize * 0.4, 16), weight: isSelected ? .semibold : .regular, design: .rounded))
-                            .foregroundStyle(isSelectable ? .primary : .secondary)
-                            .shadow(color: .black.opacity(0.3), radius: 1, x: 0, y: 0)
-                            .padding(6)
+                            .font(.system(size: min(cellSize * 0.4, 16), weight: isSelected ? .bold : .regular, design: .rounded))
+                            .foregroundStyle(isSelected ? .white : (isSelectable ? .primary : .secondary))
+                            .shadow(color: .black.opacity(isSelected ? 0 : 0.3), radius: 1, x: 0, y: 0)
+                            .padding(8)
+                            .background {
+                                if isSelected {
+                                    Circle()
+                                        .fill(Color.accentColor)
+                                }
+                            }
                     }
                     .frame(width: cellSize, height: cellSize)
                     .clipped()
                     .overlay {
                         if isSelected {
                             Circle()
-                                .strokeBorder(Color.accentColor, lineWidth: 2.5)
-                                .padding(2)
+                                .strokeBorder(Color.white.opacity(0.9), lineWidth: 1.5)
+                                .padding(8)
                         }
                     }
                 }

@@ -15,14 +15,18 @@ import TipKit
 struct ContactsFeedView: View {
     let contacts: [Contact]
     let parsedContacts: [Contact]
+    let feedRefreshTrigger: Int
     let configuration: ContactsFeedConfiguration
     let callbacks: ContactsFeedCallbacks
+    var bottomBarHeight: CGFloat = 0
 
     @Environment(\.modelContext) private var modelContext
 
     init(
         contacts: [Contact],
         parsedContacts: [Contact],
+        feedRefreshTrigger: Int = 0,
+        bottomBarHeight: CGFloat = 0,
         useSafeTitle: Bool,
         showInitialSyncState: Bool,
         isLowOnDeviceStorage: Bool,
@@ -39,6 +43,8 @@ struct ContactsFeedView: View {
     ) {
         self.contacts = contacts
         self.parsedContacts = parsedContacts
+        self.feedRefreshTrigger = feedRefreshTrigger
+        self.bottomBarHeight = bottomBarHeight
         self.configuration = ContactsFeedConfiguration(
             useSafeTitle: useSafeTitle,
             showInitialSyncState: showInitialSyncState,
@@ -62,8 +68,10 @@ struct ContactsFeedView: View {
         ContactsFeedViewControllerRepresentable(
             contacts: contacts,
             parsedContacts: parsedContacts,
+            feedRefreshTrigger: feedRefreshTrigger,
             configuration: configuration,
             callbacks: callbacks,
+            bottomBarHeight: max(bottomBarHeight, tabBarMinimumHeight),
             modelContext: modelContext
         )
     }
@@ -143,8 +151,10 @@ struct ContactsFeedView: View {
 private struct ContactsFeedViewControllerRepresentable: UIViewControllerRepresentable {
     let contacts: [Contact]
     let parsedContacts: [Contact]
+    let feedRefreshTrigger: Int
     let configuration: ContactsFeedView.ContactsFeedConfiguration
     let callbacks: ContactsFeedView.ContactsFeedCallbacks
+    let bottomBarHeight: CGFloat
     let modelContext: ModelContext
 
     func makeUIViewController(context: Context) -> ContactsFeedViewController {
@@ -164,6 +174,7 @@ private struct ContactsFeedViewControllerRepresentable: UIViewControllerRepresen
         vc.onChangeDateForContact = callbacks.onChangeDateForContact
         vc.onTapHeader = callbacks.onTapHeader
         vc.onDropRecords = callbacks.onDropRecords
+        vc.setBottomBarHeight(bottomBarHeight)
         // Ensure view hierarchy is ready before applying snapshot (standard UIViewControllerRepresentable pattern)
         vc.loadViewIfNeeded()
         vc.update(
@@ -178,6 +189,7 @@ private struct ContactsFeedViewControllerRepresentable: UIViewControllerRepresen
     }
 
     func updateUIViewController(_ vc: ContactsFeedViewController, context: Context) {
+        vc.setBottomBarHeight(bottomBarHeight)
         vc.onContactSelected = callbacks.onContactSelected
         vc.onImport = callbacks.onImport
         vc.onEditDate = callbacks.onEditDate

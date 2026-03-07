@@ -113,6 +113,11 @@ final class ContactsFeedViewController: UIViewController {
 
     // MARK: - Public API
 
+    func setBottomBarHeight(_ height: CGFloat) {
+        let inset = max(height, tabBarMinimumHeight) + Layout.sectionInset.bottom
+        additionalSafeAreaInsets = UIEdgeInsets(top: 0, left: 0, bottom: inset, right: 0)
+    }
+
     func update(
         contacts: [Contact],
         parsedContacts: [Contact],
@@ -150,11 +155,24 @@ final class ContactsFeedViewController: UIViewController {
         collectionView.dragInteractionEnabled = true
         collectionView.showsVerticalScrollIndicator = false
         collectionView.contentInsetAdjustmentBehavior = .always
+        collectionView.alwaysBounceVertical = true
+        collectionView.keyboardDismissMode = .interactive
+
+        // Tap on content to dismiss keyboard (does not block cell selection)
+        let tap = UITapGestureRecognizer(target: self, action: #selector(dismissKeyboardFromTap))
+        tap.cancelsTouchesInView = false
+        tap.delaysTouchesBegan = false
+        tap.delaysTouchesEnded = false
+        collectionView.addGestureRecognizer(tap)
 
         // Use backgroundView for empty state (Apple pattern: no overlapping views or isHidden toggling)
         collectionView.backgroundView = emptyStateView
 
         view.addSubview(collectionView)
+    }
+
+    @objc private func dismissKeyboardFromTap() {
+        NotificationCenter.default.post(name: .quickInputResignFocus, object: nil)
     }
 
     private func createCompositionalLayout() -> UICollectionViewLayout {

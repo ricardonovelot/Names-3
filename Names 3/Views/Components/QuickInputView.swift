@@ -4,21 +4,29 @@ import SmoothGradient
 import Vision
 import UIKit
 import TipKit
+import os
 
 struct QuickInputView: View {
     @Environment(\.modelContext) private var modelContext
+    @AppStorage(QuickInputExpandIconPreference.userDefaultsKey) private var quickInputExpandIconRaw: String = QuickInputExpandIconPreference.magnifyingglass.rawValue
 
     // Bindings and hooks
     @Binding var parsedContacts: [Contact]
     @Binding var selectedContact: Contact?
     var onQuizTap: (() -> Void)? = nil
-    var onNameFacesTap: (() -> Void)? = nil
+    var onPhotosTap: (() -> Void)? = nil
     /// Hide Quiz button when already on Practice tab.
     var showQuizButton: Bool = true
-    /// Hide Name Faces button when already on Name Faces tab.
-    var showNameFacesButton: Bool = true
+    /// Hide Photos button when already on Photos tab.
+    var showPhotosButton: Bool = true
     var onQuickNoteAdded: (() -> Void)? = nil
     var onReturnOverride: (() -> Void)? = nil
+    /// When provided, called when user selects a contact from autocomplete. Use to navigate (e.g. append to path) so contact details are shown via push for consistent toolbar/gradient.
+    var onContactSelectedForNavigation: ((Contact) -> Void)? = nil
+    /// When provided, called when user presses backspace when empty on contact details. Pops the contact details view (go back to feed).
+    var onBackspaceWhenEmptyToGoBack: (() -> Void)? = nil
+    /// When provided, called when user creates a new contact via Enter. Use to navigate to the contact details view.
+    var onContactCreatedForNavigation: ((Contact) -> Void)? = nil
     
     // Face carousel integration
     var faceDetectionViewModel: FaceDetectionViewModel? = nil
@@ -33,7 +41,7 @@ struct QuickInputView: View {
 
     // Unified input state
     @State private var text: String = ""
-    @FocusState private var fieldIsFocused: Bool
+    @State private var fieldIsFocused: Bool = false
     @State private var bottomInputHeight: CGFloat = 0
     @State private var suggestionsHeight: CGFloat = 0
     @State private var faceCarouselHeight: CGFloat = 0
@@ -61,6 +69,10 @@ struct QuickInputView: View {
     /// Face naming mode: QuickInput replaces the VC's name field; listen for quickInputSetFaceName.
     var faceNamingMode: Bool = false
 
+    private var quickInputExpandIcon: QuickInputExpandIconPreference {
+        QuickInputExpandIconPreference(rawValue: quickInputExpandIconRaw) ?? .magnifyingglass
+    }
+
     private func isQuickNoteCommand(_ input: String) -> Bool {
         let s = input.trimmingCharacters(in: .whitespacesAndNewlines)
         let prefixPattern = #"^(quick\s*note|quick)\b[\s:]*"#
@@ -72,6 +84,22 @@ struct QuickInputView: View {
     }
 
     private let inputRowHeight: CGFloat = 56
+
+    private static let quickInputLogger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Names3", category: "QuickInput")
+
+    /// Handles backspace when text is empty and we have selectedContact. If onBackspaceWhenEmptyToGoBack is set (contact details view), backspace pops. Otherwise clears selectedContact.
+    private func handleBackspaceWhenEmpty() {
+        guard text.isEmpty, selectedContact != nil else { return }
+        if let pop = onBackspaceWhenEmptyToGoBack {
+            pop()
+        } else {
+            selectedContact = nil
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(30))
+                fieldIsFocused = true
+            }
+        }
+    }
 
     var body: some View {
         Group {
@@ -118,16 +146,19 @@ struct QuickInputView: View {
                 tipsLoaded = true
             }
         }
+        .onChange(of: fieldIsFocused) { oldValue, newValue in
+            Self.quickInputLogger.debug("fieldIsFocused changed \(oldValue) → \(newValue) ⚠️ (text='\(text)')")
+        }
         .onReceive(NotificationCenter.default.publisher(for: .quickInputRequestFocus)) { _ in
-            print("🎯 [QuickInput] Received focus request notification")
+            Self.quickInputLogger.debug("Received focus request")
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(50))
-                print("🎯 [QuickInput] Setting fieldIsFocused = true")
+                Self.quickInputLogger.debug("Setting fieldIsFocused = true")
                 fieldIsFocused = true
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .quickInputResignFocus)) { _ in
-            print("🎯 [QuickInput] Received resign focus notification")
+            Self.quickInputLogger.debug("Received resign focus")
             fieldIsFocused = false
         }
         .onReceive(NotificationCenter.default.publisher(for: .quickInputShowExample)) { notification in
@@ -181,12 +212,12 @@ struct QuickInputView: View {
         .padding(.horizontal)
     }
     
-    /// Apple Music–style: pill with leading icon, text field, trailing icon. Single row.
+    /// Apple Music–style: pill with leading icon, text field. Single row.
     @ViewBuilder
     private var appleMusicStyleInputRow: some View {
         HStack(spacing: 8) {
-            Image(systemName: "square.and.pencil")
-                .font(.system(size: 16, weight: .medium))
+            Image(systemName: quickInputExpandIcon.systemImage)
+                .font(.system(size: 18, weight: .medium))
                 .foregroundStyle(.secondary)
             ZStack(alignment: .leading) {
                 if text.isEmpty {
@@ -200,30 +231,21 @@ struct QuickInputView: View {
                     isFirstResponder: Binding(get: { fieldIsFocused }, set: { fieldIsFocused = $0 }),
                     minHeight: 20,
                     maxHeight: 80,
-                    onDeleteWhenEmpty: {
-                        if text.isEmpty, selectedContact != nil {
-                            selectedContact = nil
-                            Task { @MainActor in
-                                try? await Task.sleep(for: .milliseconds(30))
-                                fieldIsFocused = true
-                            }
-                        }
-                    },
+                    onDeleteWhenEmpty: { handleBackspaceWhenEmpty() },
                     onReturn: { handleReturn() }
                 )
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
                 .onChange(of: text) { _, newValue in handleTextChange(newValue) }
             }
-            if showNameFacesButton, onNameFacesTap != nil, !cameraInSeparateBubble {
-                Button {
-                    onNameFacesTap?()
-                } label: {
-                    Image(systemName: "camera.fill")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+            .contentShape(Rectangle())
+            .overlay {
+                if !fieldIsFocused {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { fieldIsFocused = true }
                 }
-                .buttonStyle(.plain)
             }
         }
         .padding(.horizontal, 12)
@@ -288,18 +310,8 @@ struct QuickInputView: View {
                     ),
                     minHeight: 22,
                     maxHeight: 140,
-                    onDeleteWhenEmpty: {
-                        if text.isEmpty, selectedContact != nil {
-                            selectedContact = nil
-                            Task { @MainActor in
-                                try? await Task.sleep(for: .milliseconds(30))
-                                fieldIsFocused = true
-                            }
-                        }
-                    },
-                    onReturn: {
-                        handleReturn()
-                    }
+                    onDeleteWhenEmpty: { handleBackspaceWhenEmpty() },
+                    onReturn: { handleReturn() }
                 )
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
@@ -308,17 +320,26 @@ struct QuickInputView: View {
                 }
 
                 if text.isEmpty {
-                    Text(selectedContact != nil ? "Add a note…" : "")
+                    Text(selectedContact != nil ? "Note for \(selectedContact?.name ?? "")…" : "")
                         .foregroundStyle(.secondary)
                         .padding(.leading, 3)
                         .padding(.top, 1)
                         .allowsHitTesting(false)
                 }
             }
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
+            .overlay {
+                if !fieldIsFocused {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { fieldIsFocused = true }
+                }
+            }
 
-            if showNameFacesButton, onNameFacesTap != nil {
+            if showPhotosButton, onPhotosTap != nil {
                 Button {
-                    onNameFacesTap?()
+                    onPhotosTap?()
                 } label: {
                     Image(systemName: "camera.fill")
                         .font(.system(size: 19, weight: .medium))
@@ -378,21 +399,9 @@ struct QuickInputView: View {
                         .frame(width: 24, height: 24)
                         .clipShape(Circle())
                 } else {
-                    ZStack {
-                        RadialGradient(
-                            colors: [
-                                Color(uiColor: .secondarySystemBackground),
-                                Color(uiColor: .tertiarySystemBackground)
-                            ],
-                            center: .center,
-                            startRadius: 2,
-                            endRadius: 17
-                        )
-                        
-                        Color.clear
-                            .frame(width: 24, height: 24)
-                            .liquidGlass(in: Circle(), stroke: true)
-                    }
+                    Image(systemName: "person.circle.fill")
+                        .font(.system(size: 24))
+                        .foregroundStyle(.secondary.opacity(0.6))
                 }
                 
                 Text(contact.name ?? "Unnamed")
@@ -465,6 +474,7 @@ struct QuickInputView: View {
     }
     
     private func handleTextChange(_ newValue: String) {
+        Self.quickInputLogger.debug("handleTextChange — text='\(newValue)' fieldIsFocused=\(fieldIsFocused)")
         NotificationCenter.default.post(name: .quickInputTextDidChange, object: nil, userInfo: ["text": newValue])
 
         if faceNamingMode {
@@ -482,6 +492,7 @@ struct QuickInputView: View {
         } else {
             parseDebounceWork?.cancel()
             let work = DispatchWorkItem {
+                Self.quickInputLogger.debug("parsePeopleInput debounce firing — fieldIsFocused=\(fieldIsFocused) text='\(text)'")
                 parsePeopleInput()
             }
             parseDebounceWork = work
@@ -513,15 +524,17 @@ struct QuickInputView: View {
             return
         }
 
+        let parsed = parseInputToContactsAndMetadata(text)
+        let contactsToSave = parsed.contacts
+
         var globalTags: [Tag] = []
-        
-        for tagName in parsedTagNames {
+        for tagName in parsed.tagNames {
             if let tag = Tag.fetchOrCreate(named: tagName, in: modelContext, seedDate: Date()) {
                 globalTags.append(tag)
             }
         }
         
-        for contact in parsedContacts {
+        for contact in contactsToSave {
             contact.tags = globalTags
             modelContext.insert(contact)
         }
@@ -529,7 +542,7 @@ struct QuickInputView: View {
         if let qn = linkedQuickNote {
             if qn.linkedContacts == nil { qn.linkedContacts = [] }
             if qn.linkedNotes == nil { qn.linkedNotes = [] }
-            for contact in parsedContacts {
+            for contact in contactsToSave {
                 qn.linkedContacts?.append(contact)
                 for n in contact.notes ?? [] {
                     n.quickNote = qn
@@ -539,9 +552,10 @@ struct QuickInputView: View {
         }
         do { try modelContext.save() } catch { print("Save failed: \(error)") }
         
-        if parsedContacts.count > 0 {
+        if contactsToSave.count > 0 {
             TipManager.shared.donateContactCreated()
             NotificationCenter.default.post(name: .contactsDidChange, object: nil)
+            onContactCreatedForNavigation?(contactsToSave[0])
         }
         
         resetTextAndPreview()
@@ -559,18 +573,26 @@ struct QuickInputView: View {
     }
 
     private func parsePeopleInput() {
-        var workingInput = text
-        var trimmed = workingInput.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if trimmed.isEmpty {
+        let result = parseInputToContactsAndMetadata(text)
+        parsedTagNames = result.tagNames
+        filterString = result.filterString
+        filterContacts()
+        // No longer show parsed contacts in the feed while typing — autocomplete is enough.
+        if result.contacts.isEmpty {
             withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
                 parsedContacts = []
             }
-            filterString = ""
-            suggestedContacts = []
-            shouldShowCreateButton = false
-            parsedTagNames = []
-            return
+        }
+    }
+
+    /// Parses input text into contacts, tag names, and filter string. Used for autocomplete metadata
+    /// (filterString, parsedTagNames) and for save() when creating contacts.
+    private func parseInputToContactsAndMetadata(_ input: String) -> (contacts: [Contact], tagNames: [String], filterString: String) {
+        var workingInput = input
+        var trimmed = workingInput.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if trimmed.isEmpty {
+            return ([], [], "")
         }
 
         let dateDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.date.rawValue)
@@ -605,11 +627,12 @@ struct QuickInputView: View {
         }
         cleanedInput = cleanedInput.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        parsedTagNames = extractValidTagNames(from: cleanedInput)
+        let tagNames = extractValidTagNames(from: cleanedInput)
         cleanedInput = removeTagTokens(from: cleanedInput)
 
         let nameEntries = cleanedInput.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-        var previews: [Contact] = []
+        var contacts: [Contact] = []
+        var lastFilterString = ""
 
         for entry in nameEntries {
             if entry.starts(with: "#") { continue }
@@ -633,8 +656,7 @@ struct QuickInputView: View {
             var name = nameComponents.joined(separator: " ")
 
             if !name.isEmpty {
-                filterString = name
-                filterContacts()
+                lastFilterString = name
 
                 if let notePart = nameComponents.last, notePart.contains(":") {
                     let nameAndNote = notePart.split(separator: ":", maxSplits: 1)
@@ -658,13 +680,11 @@ struct QuickInputView: View {
                 contact.summary = summary
                 contact.isMetLongAgo = longAgoDetected
                 contact.uuid = UUID()
-                previews.append(contact)
+                contacts.append(contact)
             }
         }
 
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
-            parsedContacts = previews
-        }
+        return (contacts, tagNames, lastFilterString)
     }
 
     private func removeTagTokens(from text: String) -> String {
@@ -708,6 +728,7 @@ struct QuickInputView: View {
     }
 
     private func filterContacts() {
+        Self.quickInputLogger.debug("filterContacts — filterString='\(filterString)' fieldIsFocused=\(fieldIsFocused)")
         if filterString.isEmpty {
             withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                 suggestedContacts = []
@@ -722,6 +743,7 @@ struct QuickInputView: View {
             }
             
             let isValidName = !q.isEmpty && q.count >= 2 && !isQuickNoteCommand(q)
+            Self.quickInputLogger.debug("filterContacts — results: \(filtered.count) matches, showCreate=\(isValidName), fieldIsFocused=\(fieldIsFocused)")
             
             withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                 suggestedContacts = filtered
@@ -731,13 +753,8 @@ struct QuickInputView: View {
     }
 
     private func createNewContactFromFilterString() {
-        let cleanedName: String
-        
-        if let firstParsed = parsedContacts.first {
-            cleanedName = firstParsed.name ?? filterString.trimmingCharacters(in: .whitespacesAndNewlines)
-        } else {
-            cleanedName = filterString.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
+        let parsed = parseInputToContactsAndMetadata(text)
+        let cleanedName = parsed.contacts.last?.name ?? filterString.trimmingCharacters(in: .whitespacesAndNewlines)
         
         guard !cleanedName.isEmpty else { return }
         
@@ -773,6 +790,7 @@ struct QuickInputView: View {
         do {
             try modelContext.save()
             NotificationCenter.default.post(name: .contactsDidChange, object: nil)
+            onContactCreatedForNavigation?(newContact)
         } catch {
             print("❌ [QuickInput] Failed to save new contact: \(error)")
         }
@@ -792,6 +810,7 @@ struct QuickInputView: View {
         withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
             parsedContacts = []
         }
+        onContactSelectedForNavigation?(contact)
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(50))
             fieldIsFocused = true
@@ -904,6 +923,8 @@ extension Notification.Name {
     static let quickInputTextDidChange = Notification.Name("QuickInputTextDidChange")
     static let quickInputRequestFocus = Notification.Name("QuickInputRequestFocus")
     static let quickInputResignFocus = Notification.Name("QuickInputResignFocus")
+    /// Posted immediately before a navigation pop so the text view refuses the imminent resign.
+    static let quickInputLockFocus = Notification.Name("QuickInputLockFocus")
     static let quickInputShowExample = Notification.Name("QuickInputShowExample")
     static let quickInputCameraDidDismiss = Notification.Name("QuickInputCameraDidDismiss")
     /// Face naming mode: VC sets QuickInput text when face selection changes. userInfo["text": String]
@@ -912,6 +933,11 @@ extension Notification.Name {
     static let quickInputFaceNameSubmit = Notification.Name("QuickInputFaceNameSubmit")
     /// Posted when contacts are added; contacts feed should refresh.
     static let contactsDidChange = Notification.Name("Names3.ContactsDidChange")
+    /// Posted when user taps the already-selected tab; feed should scroll to top (most recent).
+    static let peopleFeedScrollToTop = Notification.Name("Names3.PeopleFeedScrollToTop")
+    static let journalFeedScrollToTop = Notification.Name("Names3.JournalFeedScrollToTop")
+    static let practiceFeedScrollToTop = Notification.Name("Names3.PracticeFeedScrollToTop")
+    static let photosFeedScrollToTop = Notification.Name("Names3.PhotosFeedScrollToTop")
 }
 
 private extension View {
@@ -925,7 +951,7 @@ private extension View {
     }
 } 
 
-private struct InputBubble<Content: View>: View {
+struct InputBubble<Content: View>: View {
     var height: CGFloat = 56
     @ViewBuilder var content: () -> Content
     var body: some View {

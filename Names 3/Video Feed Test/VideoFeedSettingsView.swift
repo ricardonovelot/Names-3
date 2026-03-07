@@ -9,6 +9,17 @@ struct VideoFeedSettingsView: View {
             Form {
                 Section("Overlay") {
                     Toggle("Show download overlay", isOn: $settings.showDownloadOverlay)
+                    Toggle("Show dimensions on photos", isOn: Binding(
+                        get: { ExcludeScreenshotsPreference.showDimensionOverlay },
+                        set: { ExcludeScreenshotsPreference.showDimensionOverlay = $0 }
+                    ))
+                    Toggle("Exclude device screenshots", isOn: Binding(
+                        get: { ExcludeScreenshotsPreference.excludeScreenshots },
+                        set: {
+                            ExcludeScreenshotsPreference.excludeScreenshots = $0
+                            NotificationCenter.default.post(name: .feedSettingsDidChange, object: nil)
+                        }
+                    ))
                 }
 
                 Section("Photo Grouping") {
@@ -19,21 +30,6 @@ struct VideoFeedSettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                     Text(FeedPhotoGroupingMode.betweenVideo.description)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("Explore Algorithm") {
-                    Picker("Next day", selection: Binding(
-                        get: { FeedNextDayAlgorithm.current },
-                        set: { FeedNextDayAlgorithm.current = $0 }
-                    )) {
-                        ForEach(FeedNextDayAlgorithm.allCases) { algo in
-                            Text(algo.rawValue).tag(algo)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    Text(FeedNextDayAlgorithm.current.description)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

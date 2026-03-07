@@ -623,6 +623,7 @@ final class PhotosCarouselController: NSObject {
                 contentMode: .aspectFill,
                 options: options
             ) { image, info in
+                StorageMonitor.reportIfCloudPhotoLowStorage(info: info)
                 lock.lock()
                 defer { lock.unlock() }
                 guard !didResume else { return }
@@ -674,7 +675,7 @@ final class PhotosCarouselController: NSObject {
         let options = PHImageRequestOptions()
         options.deliveryMode = .fastFormat
         options.resizeMode = .fast
-        options.isNetworkAccessAllowed = true
+        options.isNetworkAccessAllowed = DataUsageGuardrails.shouldAllowNetworkForFeedMedia()
         options.isSynchronous = false
         return options
     }
@@ -685,7 +686,7 @@ final class PhotosCarouselController: NSObject {
         let options = PHImageRequestOptions()
         options.deliveryMode = .opportunistic
         options.resizeMode = .fast
-        options.isNetworkAccessAllowed = true
+        options.isNetworkAccessAllowed = DataUsageGuardrails.shouldAllowNetworkForFeedMedia()
         options.isSynchronous = false
         return options
     }
@@ -742,6 +743,7 @@ final class PhotosCarouselController: NSObject {
                 contentMode: .aspectFill,
                 options: options
             ) { [weak self] image, info in
+                StorageMonitor.reportIfCloudPhotoLowStorage(info: info)
                 guard let self, let image = image else { return }
                 let isDegraded = (info?[PHImageResultIsDegradedKey] as? NSNumber)?.boolValue == true
                 Task {

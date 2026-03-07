@@ -37,7 +37,7 @@ final class NameFacesFeedCombinedViewController: UIViewController {
 
     // MARK: - Child View Controllers
 
-    private var feedViewController: TikTokFeedViewController!
+    private var feedViewController: (UIViewController & FeedArchitectureProvider)!
     private var carouselViewController: WelcomeFaceNamingViewController?
     private var carouselLoadingViewController: UIViewController?
     private var carouselAssets: [PHAsset]?
@@ -87,6 +87,7 @@ final class NameFacesFeedCombinedViewController: UIViewController {
     func setBottomBarHeight(_ height: CGFloat) {
         bottomBarHeight = max(height, tabBarMinimumHeight)
         updateCarouselBottomInset()
+        updateFeedBottomInset()
     }
 
     /// When false (tab switched away), video is paused. Matches TikTok/Instagram behavior.
@@ -111,6 +112,12 @@ final class NameFacesFeedCombinedViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(photosFeedScrollToTopIfNeeded),
+            name: .photosFeedScrollToTop,
+            object: nil
+        )
         setupContainers()
         setupFeedChild()
         setupModeToggle()
@@ -148,7 +155,7 @@ final class NameFacesFeedCombinedViewController: UIViewController {
     }
 
     private func setupFeedChild() {
-        let feed = TikTokFeedViewController()
+        let feed = FeedArchitectureMode.current.makeFeedViewController()
         feed.coordinator = coordinator
         feed.isFeedVisible = (displayMode == .feed)
         feed.view.translatesAutoresizingMaskIntoConstraints = false
@@ -166,6 +173,7 @@ final class NameFacesFeedCombinedViewController: UIViewController {
         ])
 
         feedViewController = feed
+        updateFeedBottomInset()
         updateVisibility()
     }
 
@@ -185,6 +193,11 @@ final class NameFacesFeedCombinedViewController: UIViewController {
             modeToggleButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
             modeToggleButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16)
         ])
+    }
+
+    @objc private func photosFeedScrollToTopIfNeeded() {
+        guard displayMode == .feed else { return }
+        feedViewController?.scrollToTop()
     }
 
     private func updateModeToggleTitle() {
@@ -389,6 +402,10 @@ final class NameFacesFeedCombinedViewController: UIViewController {
         carousel.additionalSafeAreaInsets = UIEdgeInsets(top: 0, left: 0, bottom: bottomBarHeight, right: 0)
     }
 
+    private func updateFeedBottomInset() {
+        feedViewController?.additionalSafeAreaInsets = UIEdgeInsets(top: 0, left: 0, bottom: bottomBarHeight, right: 0)
+    }
+
     // MARK: - Visibility
 
     private func updateVisibility() {
@@ -398,6 +415,7 @@ final class NameFacesFeedCombinedViewController: UIViewController {
         feedContainerView.isUserInteractionEnabled = isFeed
         carouselContainerView.alpha = isFeed ? 0 : 1
         carouselContainerView.isUserInteractionEnabled = !isFeed
+        carouselViewController?.notifyCarouselBecameVisible(!isFeed)
     }
 
     // MARK: - Mode Toggle with Hero Morph

@@ -12,7 +12,7 @@ import AVFoundation
 import Combine
 
 @MainActor
-final class TikTokFeedViewController: UIViewController {
+final class TikTokFeedViewController: UIViewController, FeedArchitectureProvider {
 
     var coordinator: CombinedMediaCoordinator?
     var currentFeedItems: [FeedItem] { viewModel.items }
@@ -110,6 +110,10 @@ final class TikTokFeedViewController: UIViewController {
         applyViewModelUpdates()
     }
 
+    func scrollToTop() {
+        pagedController?.scrollToIndex(0)
+    }
+
     private func consumeBridgeIfNeeded() {
         guard isFeedVisible, let coord = coordinator else { return }
         let bridgeID = coord.consumeBridgeTarget()
@@ -167,7 +171,11 @@ final class TikTokFeedViewController: UIViewController {
         controller.effectiveIsActive = { [weak self] curr, idx in
             (curr == idx) && (self?.isFeedVisible ?? false)
         }
-
+        let coord = strictUnbindCoordinator ?? {
+            let c = StrictUnbindCoordinator()
+            strictUnbindCoordinator = c
+            return c
+        }()
         addChild(controller)
         controller.view.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(controller.view)

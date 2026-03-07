@@ -2,8 +2,12 @@
 //  AppLaunchCoordinator.swift
 //  Names 3
 //
-//  Single owner of post-launch phases: runs services in order with signposts
-//  so launch stays minimal and all deferred work is measurable in Instruments.
+//  Single owner of post-launch service startup. Runs in strict phases so every
+//  millisecond is measurable in Instruments → Points of Interest.
+//
+//  Call site: Names_3App.task, ONCE, after ModelContainer is created and BEFORE
+//  modelContainer is published to the UI. This guarantees all services are live
+//  the moment any view appears — for both returning users AND new users in onboarding.
 //
 
 import Foundation
@@ -12,16 +16,24 @@ import UIKit
 import os
 import os.signpost
 
-/// Orchestrates post-launch work in phases so the first frame is not blocked.
-/// Call `runPostLaunchPhases` once from WindowGroup `.task` after the window appears.
+/// Orchestrates post-launch service startup in phases.
+///
+/// **Phase 1a** (sync, <1 ms): Start ConnectivityMonitor, StorageMonitor, CloudKitReset.
+/// **Phase 1b** (sync, ~5 ms): Configure TipKit, register photo-library observer.
+/// **Phase 2**  (async, background): UUID migration + storage-shrink migration — never blocks UI.
+/// **Phase 3**  (sync): Onboarding edge-case gate (e.g. onboarding reset from Settings).
 @MainActor
 final class AppLaunchCoordinator {
 
     static let shared = AppLaunchCoordinator()
 
-    private static let launchLogger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Names3", category: "Launch")
+    private static let launchLogger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "Names3",
+        category: "Launch"
+    )
 
-    private var hasRunPostLaunch = false
+    /// Guards against running phases more than once per process lifetime.
+    private(set) var hasRunPostLaunch = false
 
     private init() {
         ProcessReportCoordinator.shared.register(name: "AppLaunchCoordinator") { [weak self] in
@@ -32,8 +44,12 @@ final class AppLaunchCoordinator {
         }
     }
 
-    /// Run Phase 1 (immediate), Phase 2 (UUID migration off main), then schedule Phase 3 and 4.
-    /// Main thread is never blocked by Phase 2 so the app stays interactive immediately.
+    /// Start all services and run background migrations.
+    ///
+    /// - This is `async` so callers can `await` it before publishing the `ModelContainer` to the UI,
+    ///   guaranteeing services are ready before any view renders.
+    /// - Phase 2 is fire-and-forget (`Task.detached`) so this function returns in ~5 ms.
+    /// - Idempotent: subsequent calls are no-ops (guarded by `hasRunPostLaunch`).
     func runPostLaunchPhases(
         modelContainer: ModelContainer,
         appDelegate: AppDelegate
@@ -47,99 +63,113 @@ final class AppLaunchCoordinator {
         LaunchProfiler.markLaunchStart()
         LaunchProfiler.logCheckpoint("PostLaunch orchestration started (\(LaunchProfiler.mainThreadTag))")
 
-        // Phase 1a: immediate, minimal – start connectivity and CloudKit reset observer only.
-        // Phase 1b (TipKit, photo observer) is deferred so the main thread stays responsive
-        // while Core Data / CloudKit do WAL checkpoints and sync; otherwise Phase 1 can block 100s+.
-        let state1 = LaunchProfiler.beginPhase("PostLaunchPhase1")
-        LaunchProfiler.logCheckpoint("PostLaunch Phase 1 starting")
+        // MARK: Phase 1a — Core services (sync, ~1 ms)
+        // Keep this minimal: ConnectivityMonitor and StorageMonitor are needed immediately.
+        // CloudKitReset is lightweight to start.
+        let phase1State = LaunchProfiler.beginPhase("PostLaunchPhase1")
         ConnectivityMonitor.shared.start()
-        LaunchProfiler.logCheckpoint("PostLaunch Phase 1 after ConnectivityMonitor")
         StorageMonitor.shared.start()
         CloudKitMirroringResetCoordinator.shared.start()
-        LaunchProfiler.logCheckpoint("PostLaunch Phase 1 after CloudKitReset")
-        LaunchProfiler.endPhase("PostLaunchPhase1", state1)
-        LaunchProfiler.logCheckpoint("PostLaunch Phase 1 done (deferring TipKit + photo)")
+        LaunchProfiler.endPhase("PostLaunchPhase1", phase1State)
+        LaunchProfiler.logCheckpoint("PostLaunch Phase 1 done")
 
-        // Phase 1b: run immediately (main thread no longer blocked by ContentView @Query).
-        LaunchProfiler.logCheckpoint("PostLaunch Phase 1b (TipKit + photo) starting")
+        // MARK: Phase 1b — Deferred startup (sync, ~5 ms)
+        // TipKit and photo-library observer are deferred from Phase 1a to keep the
+        // critical path as short as possible; they are still safe to run before UI appears.
+        let phase1bState = LaunchProfiler.beginPhase("PostLaunchPhase1b")
         TipManager.shared.configure()
-        LaunchProfiler.logCheckpoint("PostLaunch Phase 1b after TipManager")
         appDelegate.registerPhotoLibraryObserverIfNeeded()
+        LaunchProfiler.endPhase("PostLaunchPhase1b", phase1bState)
         LaunchProfiler.logCheckpoint("PostLaunch Phase 1b done")
 
-        // Phase 2: run UUID migration and storage shrink off main so launch stays interactive (no blocking)
-        let state2 = LaunchProfiler.beginPhase("PostLaunchPhase2")
+        // MARK: Phase 2 — Background migrations (async, fire-and-forget)
+        // Never blocks the main thread. Runs on a background priority thread.
         let uuidDone = UserDefaults.standard.bool(forKey: UUIDMigrationService.defaultsKey)
         let storageShrinkDone = UserDefaults.standard.bool(forKey: StorageShrinkMigrationService.defaultsKey)
+
         if uuidDone && storageShrinkDone {
-            LaunchProfiler.endPhase("PostLaunchPhase2", state2)
-            LaunchProfiler.logCheckpoint("PostLaunch Phase 2 (migrations) skipped – already done")
+            LaunchProfiler.logCheckpoint("PostLaunch Phase 2 skipped – all migrations already done")
             LaunchProfiler.markTimeToInteractive()
         } else {
-            LaunchProfiler.logCheckpoint("PostLaunch Phase 2 (migrations) running in background")
-            LaunchProfiler.endPhase("PostLaunchPhase2", state2)
+            LaunchProfiler.logCheckpoint("PostLaunch Phase 2 – migrations queued on background thread")
             Task.detached(priority: .userInitiated) {
-                let context = ModelContext(modelContainer)
-
-                if !uuidDone {
-                    if UUIDMigrationService.isStoreEmpty(context: context) {
-                        await MainActor.run {
-                            UserDefaults.standard.set(true, forKey: UUIDMigrationService.defaultsKey)
-                            Self.launchLogger.info("🚀 [Launch] UUID migration skipped – store empty, marking done")
-                            LaunchProfiler.logCheckpoint("UUID migration (background) skipped – store empty")
-                        }
-                    } else {
-                        let anyFixed = UUIDMigrationService.runMigration(context: context)
-                        await MainActor.run {
-                            UserDefaults.standard.set(true, forKey: UUIDMigrationService.defaultsKey)
-                            LaunchProfiler.logCheckpoint("UUID migration (background) finished, anyFixed=\(anyFixed)")
-                        }
-                    }
-                }
-
-                if !storageShrinkDone {
-                    if StorageShrinkMigrationService.isStoreEmpty(context: context) {
-                        await MainActor.run {
-                            UserDefaults.standard.set(true, forKey: StorageShrinkMigrationService.defaultsKey)
-                            LaunchProfiler.logCheckpoint("Storage shrink (background) skipped – store empty")
-                        }
-                    } else {
-                        let (contacts, embeddings) = StorageShrinkMigrationService.runMigration(context: context)
-                        await MainActor.run {
-                            UserDefaults.standard.set(true, forKey: StorageShrinkMigrationService.defaultsKey)
-                            LaunchProfiler.logCheckpoint("Storage shrink (background) finished, contacts=\(contacts), embeddings=\(embeddings)")
-                        }
-                    }
-                }
+                await Self.runBackgroundMigrations(
+                    modelContainer: modelContainer,
+                    uuidDone: uuidDone,
+                    storageShrinkDone: storageShrinkDone
+                )
             }
-            // TTI = main thread is free (Phase 2 runs in background, does not block)
             LaunchProfiler.markTimeToInteractive()
         }
 
-        // Phase 3: onboarding check (edge case: e.g. onboarding reset from Settings).
-        LaunchProfiler.logCheckpoint("PostLaunch Phase 3 starting")
-        runPhase3Onboarding(modelContainer: modelContainer)
+        // MARK: Phase 3 — Onboarding edge-case gate
+        // Handles the case where onboarding was reset from Settings (e.g. QA / re-onboarding flows).
+        runPhase3OnboardingGate(modelContainer: modelContainer)
 
         LaunchProfiler.logCheckpoint("PostLaunch orchestration finished")
     }
 
-    private func runPhase3Onboarding(modelContainer: ModelContainer) {
-        let state3 = LaunchProfiler.beginPhase("PostLaunchPhase3")
-        LaunchProfiler.logCheckpoint("PostLaunch Phase 3 (onboarding) starting")
-        defer {
-            LaunchProfiler.endPhase("PostLaunchPhase3", state3)
-            LaunchProfiler.logCheckpoint("PostLaunch Phase 3 done")
+    // MARK: - Private
+
+    private static func runBackgroundMigrations(
+        modelContainer: ModelContainer,
+        uuidDone: Bool,
+        storageShrinkDone: Bool
+    ) async {
+        let context = ModelContext(modelContainer)
+
+        if !uuidDone {
+            if UUIDMigrationService.isStoreEmpty(context: context) {
+                await MainActor.run {
+                    UserDefaults.standard.set(true, forKey: UUIDMigrationService.defaultsKey)
+                    LaunchProfiler.logCheckpoint("UUID migration skipped – store empty")
+                }
+            } else {
+                let anyFixed = UUIDMigrationService.runMigration(context: context)
+                await MainActor.run {
+                    UserDefaults.standard.set(true, forKey: UUIDMigrationService.defaultsKey)
+                    LaunchProfiler.logCheckpoint("UUID migration finished, anyFixed=\(anyFixed)")
+                }
+            }
         }
-        guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-              let window = windowScene.windows.first else {
-            Self.launchLogger.error("🚀 [Launch] No window for onboarding")
+
+        if !storageShrinkDone {
+            if StorageShrinkMigrationService.isStoreEmpty(context: context) {
+                await MainActor.run {
+                    UserDefaults.standard.set(true, forKey: StorageShrinkMigrationService.defaultsKey)
+                    LaunchProfiler.logCheckpoint("Storage shrink skipped – store empty")
+                }
+            } else {
+                let (contacts, embeddings) = StorageShrinkMigrationService.runMigration(context: context)
+                await MainActor.run {
+                    UserDefaults.standard.set(true, forKey: StorageShrinkMigrationService.defaultsKey)
+                    LaunchProfiler.logCheckpoint("Storage shrink finished, contacts=\(contacts), embeddings=\(embeddings)")
+                }
+            }
+        }
+    }
+
+    private func runPhase3OnboardingGate(modelContainer: ModelContainer) {
+        let phase3State = LaunchProfiler.beginPhase("PostLaunchPhase3")
+        defer { LaunchProfiler.endPhase("PostLaunchPhase3", phase3State) }
+
+        // Prefer the foreground-active scene; fall back to first available.
+        let targetScene = UIApplication.shared.connectedScenes
+            .first(where: { $0.activationState == .foregroundActive })
+            ?? UIApplication.shared.connectedScenes.first
+        guard let windowScene = targetScene as? UIWindowScene,
+              let window = windowScene.windows.first(where: { $0.isKeyWindow })
+                ?? windowScene.windows.first else {
+            Self.launchLogger.error("🚀 [Launch] Phase 3: no window available for onboarding check")
             return
         }
+
         let modelContext = ModelContext(modelContainer)
         OnboardingCoordinatorManager.shared.showOnboarding(
             in: window,
             forced: false,
             modelContext: modelContext
         )
+        LaunchProfiler.logCheckpoint("PostLaunch Phase 3 done")
     }
 }

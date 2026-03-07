@@ -2,62 +2,59 @@
 //  LaunchRootView.swift
 //  Names 3
 //
-//  Root that shows the main feed immediately. Post-launch phases run in the background
-//  using Swift Concurrency, without gating ContentView’s first paint.
+//  Root view shown after the ModelContainer and post-launch services are ready.
+//  By the time this view appears, AppLaunchCoordinator has already run Phase 1+2,
+//  so all services (ConnectivityMonitor, StorageMonitor, etc.) are live.
+//
+//  View hierarchy:
+//    Names_3App → LaunchRootView → LaunchGateView → ContentView   (returning user)
+//    Names_3App → LaunchRootView → OnboardingGateView             (new user)
+//
+//  Environment values (connectivityMonitor, storageMonitor, modelContainer, etc.)
+//  are injected once in Names_3App and propagate automatically — no re-injection needed here.
 //
 
 import SwiftUI
 import SwiftData
 import UIKit
 
-private let hasCompletedOnboardingKey = "Names3.hasCompletedOnboarding"
-private let onboardingVersionKey = "Names3.onboardingVersion"
-private let currentOnboardingVersion = 1
-private let hasShownSyncTransitionKey = "Names3.hasShownSyncTransition"
+// MARK: - UserDefaults Keys
 
-/// Minimal gate: NO @Query, so main thread stays free. Runs post-launch FIRST, then ContentView.
-/// Critical: ContentView's @Query blocks 100s+ during CloudKit sync; this gate lets post-launch
-/// and scenePhase run before the heavy fetch.
+private enum LaunchKeys {
+    static let hasCompletedOnboarding = "Names3.hasCompletedOnboarding"
+    static let onboardingVersion = "Names3.onboardingVersion"
+    static let hasShownSyncTransition = "Names3.hasShownSyncTransition"
+    static let currentOnboardingVersion = 1
+}
+
+// MARK: - LaunchGateView
+
+/// Shown for returning users. Displays a brief sync splash on the very first post-onboarding
+/// launch, then shows ContentView. Services are already running when this view appears.
 private struct LaunchGateView: View {
     let modelContainer: ModelContainer
-    let appDelegate: AppDelegate
     let isFirstLaunchAfterOnboarding: Bool
+
     @State private var showContentView = false
     @Binding var hasShownSyncTransition: Bool
+
+    /// AppSettings is owned here (app-scoped once main UI is shown) and flows to ContentView
+    /// and all its descendants via environmentObject propagation.
     @StateObject private var feedAppSettings = AppSettings()
 
     var body: some View {
         Group {
             if showContentView {
                 ContentView(containerForAsyncLoad: modelContainer)
-                    .modelContainer(modelContainer)
-                    .environment(\.connectivityMonitor, ConnectivityMonitor.shared)
-                    .environment(\.cloudKitMirroringResetCoordinator, CloudKitMirroringResetCoordinator.shared)
-                    .environment(\.storageMonitor, StorageMonitor.shared)
                     .environmentObject(feedAppSettings)
                     .reportFirstFrame()
             } else {
-                ZStack {
-                    Color(uiColor: .systemGroupedBackground)
-                        .ignoresSafeArea()
-                    if isFirstLaunchAfterOnboarding {
-                        VStack(spacing: 12) {
-                            ProgressView()
-                                .scaleEffect(1.1)
-                                .tint(.white)
-                            Text("Syncing…")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
+                splashView
             }
         }
         .task {
-            await AppLaunchCoordinator.shared.runPostLaunchPhases(
-                modelContainer: modelContainer,
-                appDelegate: appDelegate
-            )
+            // Services are already started by the time this view appears.
+            // Just handle the first-launch sync splash delay.
             if isFirstLaunchAfterOnboarding {
                 try? await Task.sleep(for: .milliseconds(300))
             }
@@ -65,62 +62,69 @@ private struct LaunchGateView: View {
             showContentView = true
         }
     }
+
+    @ViewBuilder
+    private var splashView: some View {
+        ZStack {
+            Color(uiColor: .systemGroupedBackground)
+                .ignoresSafeArea()
+            if isFirstLaunchAfterOnboarding {
+                VStack(spacing: 12) {
+                    ProgressView()
+                        .scaleEffect(1.1)
+                        .tint(.white)
+                    Text("Syncing…")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
 }
 
+// MARK: - LaunchRootView
+
+/// Routes to the main app or onboarding based on completion state.
+/// All environments and modelContainer flow from Names_3App — do not re-inject here.
 struct LaunchRootView: View {
     let modelContainer: ModelContainer
     let appDelegate: AppDelegate
 
-    @AppStorage(hasCompletedOnboardingKey) private var hasCompletedOnboarding = false
-    @AppStorage(onboardingVersionKey) private var onboardingVersion = 0
+    @AppStorage(LaunchKeys.hasCompletedOnboarding) private var hasCompletedOnboarding = false
+    @AppStorage(LaunchKeys.onboardingVersion) private var onboardingVersion = 0
+    @AppStorage(LaunchKeys.hasShownSyncTransition) private var hasShownSyncTransition = false
 
     private var showMainApp: Bool {
-        hasCompletedOnboarding && onboardingVersion >= currentOnboardingVersion
+        hasCompletedOnboarding && onboardingVersion >= LaunchKeys.currentOnboardingVersion
     }
-
-    @AppStorage(hasShownSyncTransitionKey) private var hasShownSyncTransition = false
 
     var body: some View {
         Group {
             if showMainApp {
                 LaunchGateView(
                     modelContainer: modelContainer,
-                    appDelegate: appDelegate,
                     isFirstLaunchAfterOnboarding: !hasShownSyncTransition,
                     hasShownSyncTransition: $hasShownSyncTransition
                 )
-                .environment(\.connectivityMonitor, ConnectivityMonitor.shared)
-                .environment(\.cloudKitMirroringResetCoordinator, CloudKitMirroringResetCoordinator.shared)
-                .environment(\.storageMonitor, StorageMonitor.shared)
             } else {
                 OnboardingGateView(modelContainer: modelContainer, appDelegate: appDelegate)
-                    .modelContainer(modelContainer)
-                    .environment(\.connectivityMonitor, ConnectivityMonitor.shared)
-                    .environment(\.cloudKitMirroringResetCoordinator, CloudKitMirroringResetCoordinator.shared)
-                    .environment(\.storageMonitor, StorageMonitor.shared)
             }
         }
         .onAppear {
             LaunchProfiler.logCheckpoint("LaunchRootView: showing \(showMainApp ? "LaunchGate" : "OnboardingGate")")
-            // Ensure window receives touches on device (fixes unresponsive tap on physical device).
-            if let window = UIApplication.shared.connectedScenes
-                .compactMap({ $0 as? UIWindowScene })
-                .flatMap({ $0.windows })
-                .first(where: { $0.isKeyWindow }) ?? UIApplication.shared.connectedScenes
-                .compactMap({ $0 as? UIWindowScene })
-                .flatMap({ $0.windows })
-                .first {
-                window.makeKeyAndVisible()
-            }
         }
     }
 }
 
+// MARK: - Preview
+
 #Preview {
-    // Preview with in-memory container for speed
     let container = try! ModelContainer(
         for: Contact.self, Note.self, Tag.self,
         configurations: ModelConfiguration(isStoredInMemoryOnly: true)
     )
     LaunchRootView(modelContainer: container, appDelegate: AppDelegate())
+        .environment(\.connectivityMonitor, ConnectivityMonitor.shared)
+        .environment(\.storageMonitor, StorageMonitor.shared)
+        .modelContainer(container)
 }

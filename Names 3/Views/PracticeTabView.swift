@@ -15,7 +15,6 @@ struct PracticeTabView: View {
     let quizResetTrigger: UUID
     let onSelectQuiz: (QuizType) -> Void
     let onQuizComplete: () -> Void
-    let onClose: () -> Void
 
     var body: some View {
         Group {
@@ -24,9 +23,7 @@ struct PracticeTabView: View {
             } else {
                 QuizMenuView(
                     contacts: contacts,
-                    onSelectQuiz: onSelectQuiz,
-                    onDismiss: onClose,
-                    isInline: true
+                    onSelectQuiz: onSelectQuiz
                 )
             }
         }

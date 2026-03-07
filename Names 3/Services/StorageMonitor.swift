@@ -8,6 +8,7 @@
 
 import Foundation
 import os
+import Photos
 
 /// Threshold below which we consider the device "low on storage" (sync and saves may fail).
 /// Apple recommends using volumeAvailableCapacityForImportantUsageKey for "can the system grant space for important work."
@@ -56,10 +57,24 @@ final class StorageMonitor {
         }
     }
 
-    /// Call with a save error; if it's ENOSPC, immediately reports low storage. Safe to call from any context.
+    /// Call with a save or load error; if it's ENOSPC (or has underlying ENOSPC), immediately reports low storage. Safe to call from any context.
     static nonisolated func reportIfENOSPC(_ error: Error) {
-        let ns = error as NSError
-        if ns.domain == NSPOSIXErrorDomain && ns.code == 28 {
+        func isENOSPC(_ e: NSError) -> Bool {
+            if e.domain == NSPOSIXErrorDomain && e.code == 28 { return true }
+            if let underlying = e.userInfo[NSUnderlyingErrorKey] as? NSError { return isENOSPC(underlying) }
+            return false
+        }
+        if isENOSPC(error as NSError) {
+            Task { @MainActor in
+                shared.reportLowStorage()
+            }
+        }
+    }
+
+    /// Call with Photos framework info dict; if CloudPhotoLibraryErrorDomain 1005 ("Disk space is very low"), reports low storage so the banner shows.
+    static nonisolated func reportIfCloudPhotoLowStorage(info: [AnyHashable: Any]?) {
+        guard let err = info?[PHImageErrorKey] as? NSError else { return }
+        if err.domain == "CloudPhotoLibraryErrorDomain" && err.code == 1005 {
             Task { @MainActor in
                 shared.reportLowStorage()
             }
