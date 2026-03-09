@@ -253,16 +253,17 @@ final class Arch4_SnapshotDiffFeedVC: UIViewController, FeedArchitectureProvider
 
     private func setupObservers() {
         deletedObserver = NotificationCenter.default.addObserver(forName: .deletedVideosChanged, object: nil, queue: .main) { [weak self] _ in
-            self?.reloadFeed()
+            Task { @MainActor in self?.reloadFeed() }
         }
         settingsObserver = NotificationCenter.default.addObserver(forName: .feedSettingsDidChange, object: nil, queue: .main) { [weak self] _ in
-            self?.reloadFeed()
+            Task { @MainActor in self?.reloadFeed() }
         }
     }
 
     private func loadInitial() {
-        if let bridgeID = coordinator?.consumeBridgeTarget() {
-            loadBridge(assetID: bridgeID)
+        let bridgeID = coordinator?.consumeBridgeTarget()
+        if let id = bridgeID {
+            loadBridge(assetID: id)
         } else {
             _ = snapshotBuilder.setup()
             if let _ = snapshotBuilder.loadInitialDay() {
@@ -270,6 +271,13 @@ final class Arch4_SnapshotDiffFeedVC: UIViewController, FeedArchitectureProvider
                 prefetchNearby()
             }
         }
+    }
+
+    func savePositionToStore() {
+        let items = snapshotBuilder.allItems
+        guard items.indices.contains(currentIndex),
+              let id = FeedDataHelpers.assetID(for: items[currentIndex]) else { return }
+        FeedPositionStore.save(assetID: id)
     }
 
     private func loadBridge(assetID: String) {
@@ -481,6 +489,7 @@ extension Arch4_SnapshotDiffFeedVC: UICollectionViewDelegateFlowLayout {
         let total = snapshotBuilder.allItems.count
         currentIndex = max(0, min(total - 1, page))
         updateCoordinator(index: currentIndex)
+        savePositionToStore()
         refreshVisibleCellsActiveState()
         prefetchNearby()
         loadMoreIfNeeded()

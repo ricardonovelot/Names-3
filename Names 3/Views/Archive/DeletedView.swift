@@ -187,7 +187,7 @@ struct DeletedView: View {
                 selectedPhotoIDs.removeAll()
             }
         }
-        .onChange(of: category) { _ in
+        .onChange(of: category) { _, _ in
             selectedContactIDs.removeAll()
             selectedNoteIDs.removeAll()
             selectedTagIDs.removeAll()

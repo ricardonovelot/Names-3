@@ -49,7 +49,7 @@ enum NameFacesMemory {
         guard let rows = assignments[assetIdentifier], !rows.isEmpty else {
             return (Array(repeating: "", count: faceCount), [:])
         }
-        var names: [String] = (0..<faceCount).map { i in i < rows.count ? rows[i].n : "" }
+        let names: [String] = (0..<faceCount).map { i in i < rows.count ? rows[i].n : "" }
         var contactUUIDsByIndex: [Int: UUID] = [:]
         for (i, row) in rows.enumerated() where i < faceCount && !row.u.isEmpty {
             if let uuid = UUID(uuidString: row.u) {

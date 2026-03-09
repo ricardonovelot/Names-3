@@ -146,21 +146,11 @@ struct PhotosDayPickerContentView: View {
                     case .detailView:
                         if let attempt = attemptQuickAssign {
                             Task {
-                                do {
-                                    let handled = try await attempt(image, date)
-                                    await MainActor.run {
-                                        if handled {
-                                            print("✅ [PhotosDayPicker] Quick-assign handled.")
-                                        } else {
-                                            selectedImageForDetail = image
-                                            selectedDateForDetail = date
-                                            navigationDestination = PhotoDetailDestination(image: image, assetIdentifier: assetIdentifier, date: date)
-                                            isPresentingDetail = true
-                                        }
-                                    }
-                                } catch {
-                                    print("❌ [PhotosDayPicker] Quick-assign error: \(error)")
-                                    await MainActor.run {
+                                let handled = await attempt(image, date)
+                                await MainActor.run {
+                                    if handled {
+                                        print("✅ [PhotosDayPicker] Quick-assign handled.")
+                                    } else {
                                         selectedImageForDetail = image
                                         selectedDateForDetail = date
                                         navigationDestination = PhotoDetailDestination(image: image, assetIdentifier: assetIdentifier, date: date)

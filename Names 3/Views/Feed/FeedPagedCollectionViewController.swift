@@ -36,6 +36,8 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
     var initialIndexOverride: Int?
     private var currentIndex: Int = 0
     private var didInitialScroll = false
+    /// True while performing programmatic scroll to restored position; ignore scrollViewDidScroll during this.
+    private var isPerformingInitialScroll = false
     private var prefetchedIndices: Set<Int> = []
     private var activeIndexUpdate: ((Int) -> Void)?
     init(items: [FeedItem], index: Int, idProvider: @escaping (FeedItem) -> String, contentBuilder: @escaping (Int, FeedItem, Bool) -> UIView, onPrefetch: @escaping (IndexSet, CGSize) -> Void, onCancelPrefetch: @escaping (IndexSet, CGSize) -> Void, isPageReady: @escaping (Int) -> Bool, onIndexChange: @escaping (Int) -> Void) {
@@ -105,8 +107,8 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
 
     func scrollToIndex(_ idx: Int) {
         guard items.indices.contains(idx), collectionView.bounds.height > 0 else { return }
-        let offsetY = collectionView.bounds.height * CGFloat(idx)
-        collectionView.setContentOffset(CGPoint(x: 0, y: offsetY), animated: false)
+        let indexPath = IndexPath(item: idx, section: 0)
+        collectionView.scrollToItem(at: indexPath, at: .top, animated: false)
         currentIndex = idx
         activeIndexUpdate?(idx)
         refreshVisibleCells()
@@ -141,20 +143,43 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
         collectionView.delegate = self
         collectionView.prefetchDataSource = self
         collectionView.register(FeedCell.self, forCellWithReuseIdentifier: FeedCell.reuseId)
+        collectionView.keyboardDismissMode = .interactive
+
+        let tap = UITapGestureRecognizer(target: self, action: #selector(dismissKeyboardFromTap))
+        tap.cancelsTouchesInView = false
+        tap.delaysTouchesBegan = false
+        tap.delaysTouchesEnded = false
+        collectionView.addGestureRecognizer(tap)
+    }
+
+    @objc private func dismissKeyboardFromTap() {
+        NotificationCenter.default.post(name: .quickInputResignFocus, object: nil)
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         (collectionView.collectionViewLayout as? UICollectionViewFlowLayout)?.itemSize = collectionView.bounds.size
         if !didInitialScroll, items.indices.contains(currentIndex), collectionView.bounds.height > 0 {
-            scrollToIndex(currentIndex)
-            didInitialScroll = true
-            applyScrollSettledState()
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                let contentH = self.collectionView.contentSize.height
-                let boundsH = self.collectionView.bounds.height
-                print("[PhotoGroupingScroll] FeedPaged: initialLayout items=\(self.items.count) contentH=\(Int(contentH)) boundsH=\(Int(boundsH))")
+            let requiredHeight = CGFloat(currentIndex + 1) * collectionView.bounds.height
+            if collectionView.contentSize.height >= requiredHeight {
+                isPerformingInitialScroll = true
+                scrollToIndex(currentIndex)
+                didInitialScroll = true
+                applyScrollSettledState()
+                isPerformingInitialScroll = false
+            } else {
+                // Defer until contentSize is valid (layout may not be ready yet)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, !self.didInitialScroll else { return }
+                    if self.items.indices.contains(self.currentIndex), self.collectionView.bounds.height > 0,
+                       self.collectionView.contentSize.height >= CGFloat(self.currentIndex + 1) * self.collectionView.bounds.height {
+                        self.isPerformingInitialScroll = true
+                        self.scrollToIndex(self.currentIndex)
+                        self.didInitialScroll = true
+                        self.applyScrollSettledState()
+                        self.isPerformingInitialScroll = false
+                    }
+                }
             }
         }
     }
@@ -199,11 +224,11 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
 
     override func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard collectionView.bounds.height > 0 else { return }
+        // Ignore scroll events until initial programmatic scroll is done; otherwise
+        // layout fires with offset 0 and overwrites our restored index (e.g. 12→0)
+        guard didInitialScroll, !isPerformingInitialScroll else { return }
         let target = computedPage()
         guard target != currentIndex else { return }
-
-        let offsetRatio = scrollView.contentOffset.y / collectionView.bounds.height
-        print("[PhotoGroupingScroll] FeedPaged: page \(currentIndex)→\(target) offsetRatio=\(String(format: "%.2f", offsetRatio))")
 
         currentIndex = target
         activeIndexUpdate?(target)

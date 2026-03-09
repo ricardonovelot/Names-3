@@ -541,7 +541,7 @@ final class ContentViewModel {
             let request = VNDetectFaceRectanglesRequest()
             let handler = VNImageRequestHandler(cgImage: cgImage)
             try handler.perform([request])
-            observations = (request.results as? [VNFaceObservation]) ?? []
+            observations = request.results ?? []
         } catch {
             Self.logger.error("Face detection failed: \(error.localizedDescription)")
             return false

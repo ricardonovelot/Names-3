@@ -398,7 +398,7 @@ struct ContentView: View {
                     }
                 case .journal: NotificationCenter.default.post(name: .journalFeedScrollToTop, object: nil)
                 case .practice: break
-                case .photos: NotificationCenter.default.post(name: .photosFeedScrollToTop, object: nil)
+                case .photos: break  // No scroll-to-top when re-tapping Photos tab
                 }
             }
         ) {
@@ -643,6 +643,16 @@ private struct MainContentSheetsModifier: ViewModifier {
                                     NotificationCenter.default.post(name: .quickInputRequestFocus, object: nil)
                                 }
                             }
+                        },
+                        onRequestAddNote: {
+                            vm.selectedContact = contact
+                            withAnimation(.spring(response: 0.4, dampingFraction: 0.82)) {
+                                vm.isQuickInputExpanded = true
+                            }
+                            Task { @MainActor in
+                                try? await Task.sleep(for: .milliseconds(200))
+                                NotificationCenter.default.post(name: .quickInputRequestFocus, object: nil)
+                            }
                         }
                     )
                 }
@@ -667,7 +677,18 @@ private struct MainContentSheetsModifier: ViewModifier {
                                     NotificationCenter.default.post(name: .quickInputRequestFocus, object: nil)
                                 }
                             }
-                        }, highlightedNoteUUID: target.noteUUID
+                        },
+                        onRequestAddNote: {
+                            vm.selectedContact = contact
+                            withAnimation(.spring(response: 0.4, dampingFraction: 0.82)) {
+                                vm.isQuickInputExpanded = true
+                            }
+                            Task { @MainActor in
+                                try? await Task.sleep(for: .milliseconds(200))
+                                NotificationCenter.default.post(name: .quickInputRequestFocus, object: nil)
+                            }
+                        },
+                        highlightedNoteUUID: target.noteUUID
                     )
                 }
             }

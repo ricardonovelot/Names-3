@@ -588,8 +588,8 @@ struct QuickInputView: View {
     /// Parses input text into contacts, tag names, and filter string. Used for autocomplete metadata
     /// (filterString, parsedTagNames) and for save() when creating contacts.
     private func parseInputToContactsAndMetadata(_ input: String) -> (contacts: [Contact], tagNames: [String], filterString: String) {
-        var workingInput = input
-        var trimmed = workingInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let workingInput = input
+        let trimmed = workingInput.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if trimmed.isEmpty {
             return ([], [], "")
@@ -937,7 +937,6 @@ extension Notification.Name {
     static let peopleFeedScrollToTop = Notification.Name("Names3.PeopleFeedScrollToTop")
     static let journalFeedScrollToTop = Notification.Name("Names3.JournalFeedScrollToTop")
     static let practiceFeedScrollToTop = Notification.Name("Names3.PracticeFeedScrollToTop")
-    static let photosFeedScrollToTop = Notification.Name("Names3.PhotosFeedScrollToTop")
 }
 
 private extension View {

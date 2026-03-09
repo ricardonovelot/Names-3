@@ -147,7 +147,7 @@ private struct ConfirmDetectedFaceRow: View {
             Image(uiImage: uiImage)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
-        } else if let asset = item.asset {
+        } else if item.asset != nil {
             Group {
                 if let image = image {
                     Image(uiImage: image)

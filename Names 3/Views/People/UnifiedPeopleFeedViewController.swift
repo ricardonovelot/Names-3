@@ -231,8 +231,7 @@ final class UnifiedPeopleFeedViewController: UIViewController {
             )
             let group = NSCollectionLayoutGroup.horizontal(
                 layoutSize: groupSize,
-                subitem: item,
-                count: Layout.columns
+                subitems: Array(repeating: item, count: Layout.columns)
             )
             group.interItemSpacing = .fixed(Layout.itemSpacing)
 
@@ -313,7 +312,7 @@ final class UnifiedPeopleFeedViewController: UIViewController {
         dataSource = UICollectionViewDiffableDataSource<String, FeedItem>(
             collectionView: collectionView
         ) { [weak self] collectionView, indexPath, item in
-            guard let self else { return nil }
+            guard self != nil else { return nil }
             switch item {
             case .contact(let uuid, let isParsed):
                 if isParsed {
@@ -355,7 +354,7 @@ final class UnifiedPeopleFeedViewController: UIViewController {
     // MARK: - Snapshot
 
     private func applySnapshot(groups: [UnifiedFeedGroup], filter: PeopleFeedFilter) {
-        let wasEmpty = allGroups.isEmpty
+        _ = allGroups.isEmpty
         allGroups = groups
         groupByID.removeAll()
         for g in groups { groupByID[g.id] = g }

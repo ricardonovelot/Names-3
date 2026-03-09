@@ -90,7 +90,7 @@ struct CropView: View {
                             let rect = proxy.frame(in: .named("CROPVIEW"))
 
                             Color.clear
-                                .onChange(of: isInteracting) { newValue in
+                                .onChange(of: isInteracting) { _, newValue in
                                     withAnimation(.easeInOut(duration: 0.3)) {
                                         if rect.minX > 0 {
                                             offset.width -= rect.minX

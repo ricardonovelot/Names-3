@@ -179,12 +179,12 @@ private struct CropScrollViewRepresentable: UIViewRepresentable {
             imageView
         }
 
-        func scrollViewDidZoom(_ scrollView: UIScrollView) {
+        func scrollViewDidZoom(_: UIScrollView) {
             centerImageIfNeeded()
         }
 
         func centerImageIfNeeded() {
-            guard let scrollView = scrollView, let imageView = imageView else { return }
+            guard let imageView = imageView else { return }
             
             let boundsSize = cropSize
             var frameToCenter = imageView.frame
@@ -249,7 +249,7 @@ private struct CropScrollViewRepresentable: UIViewRepresentable {
         static func normalizeOrientation(of image: UIImage) -> UIImage {
             if image.imageOrientation == .up { return image }
             
-            guard let cgImage = image.cgImage else { return image }
+            guard image.cgImage != nil else { return image }
             let size = image.size
             
             UIGraphicsBeginImageContextWithOptions(size, false, image.scale)

@@ -2,18 +2,20 @@ import TipKit
 import SwiftUI
 
 struct QuickInputFormatTip: Tip {
+    private static let contactCreatedEvent = Tips.Event(id: "app.tips.contact.created")
+
     var title: Text {
         Text("Quick Add Your First Friend")
     }
-    
+
     var message: Text? {
         Text("Type their name, add double colon (::), then what you remember about them. Add \"long time ago\" if you haven't seen them recently.")
     }
-    
+
     var image: Image? {
         Image(systemName: "person.fill.questionmark")
     }
-    
+
     var actions: [Action] {
         [
             Action(id: "try-example", title: "Try Example") {
@@ -25,82 +27,73 @@ struct QuickInputFormatTip: Tip {
             }
         ]
     }
-    
+
     var rules: [Rule] {
-        [
-            #Rule(TipEvents.contactCreated) {
-                $0.donations.count == 0
-            }
-        ]
+        [ #Rule(Self.contactCreatedEvent) { $0.donations.count == 0 } ]
     }
 }
 
 struct QuickInputBulkAddTip: Tip {
+    private static let contactCreatedEvent = Tips.Event(id: "app.tips.contact.created")
+
     var title: Text {
         Text("Add Multiple People at Once")
     }
-    
+
     var message: Text? {
         Text("Type names separated by commas to quickly add multiple contacts. Example: \"Alice, Bob, Charlie\"")
     }
-    
+
     var image: Image? {
         Image(systemName: "person.2.fill")
     }
-    
+
     var rules: [Rule] {
-        [
-            #Rule(TipEvents.contactCreated) {
-                $0.donations.count >= 3
-            }
-        ]
+        [ #Rule(Self.contactCreatedEvent) { $0.donations.count >= 3 } ]
     }
 }
 
 struct QuickInputTagsTip: Tip {
+    private static let contactCreatedEvent = Tips.Event(id: "app.tips.contact.created")
+    private static let tagAddedEvent = Tips.Event(id: "app.tips.tag.added")
+
     var title: Text {
         Text("Organize with Tags")
     }
-    
+
     var message: Text? {
         Text("Add tags to contacts using #hashtags. Example: \"Alice #work #designer\"")
     }
-    
+
     var image: Image? {
         Image(systemName: "number")
     }
-    
+
     var rules: [Rule] {
         [
-            #Rule(TipEvents.contactCreated) {
-                $0.donations.count >= 5
-            },
-            #Rule(TipEvents.tagAdded) {
-                $0.donations.count == 0
-            }
+            #Rule(Self.contactCreatedEvent) { $0.donations.count >= 5 },
+            #Rule(Self.tagAddedEvent) { $0.donations.count == 0 }
         ]
     }
 }
 
 struct QuickInputDateParsingTip: Tip {
+    private static let contactCreatedEvent = Tips.Event(id: "app.tips.contact.created")
+
     var title: Text {
         Text("Add Dates Naturally")
     }
-    
+
     var message: Text? {
         Text("Include dates like \"yesterday\", \"last week\", or \"June 15\" and they'll be automatically parsed")
     }
-    
+
     var image: Image? {
         Image(systemName: "calendar")
     }
-    
+
     var rules: [Rule] {
-        [
-            #Rule(TipEvents.contactCreated) {
-                $0.donations.count >= 8
-            }
-        ]
+        [ #Rule(Self.contactCreatedEvent) { $0.donations.count >= 8 } ]
     }
 }
 

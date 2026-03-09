@@ -330,16 +330,18 @@ struct TikTokFeedView: View {
 
             if firstCellFrameObserver == nil {
                 firstCellFrameObserver = NotificationCenter.default.addObserver(forName: .playerFirstFrameDisplayed, object: nil, queue: .main) { _ in
-                    BootUIMetrics.shared.endFirstFrameToFirstCell()
-                    didShowFirstFrame = true
-                    criticalPrefetchedIDs.removeAll()
-                    let sizePts = UIScreen.main.bounds.size
-                    Diagnostics.log("FirstFrame: gate lifted → trigger prefetch window around idx=\(index)")
-                    prefetchWindow(around: index, sizePx: sizePts)
-                    preheatActiveCarouselIfAny(at: index)
-                    if let obs = firstCellFrameObserver {
-                        NotificationCenter.default.removeObserver(obs)
-                        firstCellFrameObserver = nil
+                    Task { @MainActor in
+                        BootUIMetrics.shared.endFirstFrameToFirstCell()
+                        didShowFirstFrame = true
+                        criticalPrefetchedIDs.removeAll()
+                        let sizePts = UIScreen.main.bounds.size
+                        Diagnostics.log("FirstFrame: gate lifted → trigger prefetch window around idx=\(index)")
+                        prefetchWindow(around: index, sizePx: sizePts)
+                        preheatActiveCarouselIfAny(at: index)
+                        if let obs = firstCellFrameObserver {
+                            NotificationCenter.default.removeObserver(obs)
+                            firstCellFrameObserver = nil
+                        }
                     }
                 }
             }
@@ -878,7 +880,7 @@ struct TikTokFeedView: View {
                 let primaryCap = 18
                 let totalCap = 48
                 if primary.count > primaryCap { primary = Array(primary.prefix(primaryCap)) }
-                var remainderBudget = max(0, totalCap - primary.count)
+                let remainderBudget = max(0, totalCap - primary.count)
                 if secondary.count > remainderBudget { secondary = Array(secondary.prefix(remainderBudget)) }
 
                 if !primary.isEmpty {
@@ -1410,7 +1412,7 @@ struct TikTokFeedView: View {
             .onAppear {
                 if let id = currentAssetID {
                     Task {
-                        let ref = try? await VideoAudioOverrides.shared.songReference(for: id)
+                        let ref = await VideoAudioOverrides.shared.songReference(for: id)
                         await MainActor.run {
                             hasAssignedSong = ref != nil
                         }
@@ -1422,7 +1424,7 @@ struct TikTokFeedView: View {
             .onChange(of: currentAssetID) { _, newID in
                 if let id = newID {
                     Task {
-                        let ref = try? await VideoAudioOverrides.shared.songReference(for: id)
+                        let ref = await VideoAudioOverrides.shared.songReference(for: id)
                         await MainActor.run {
                             hasAssignedSong = ref != nil
                         }
@@ -1434,7 +1436,7 @@ struct TikTokFeedView: View {
             .onReceive(NotificationCenter.default.publisher(for: .videoAudioOverrideChanged).compactMap { $0.userInfo?["id"] as? String }) { changedID in
                 guard let currentID = currentAssetID, changedID == currentID else { return }
                 Task {
-                    let ref = try? await VideoAudioOverrides.shared.songReference(for: changedID)
+                    let ref = await VideoAudioOverrides.shared.songReference(for: changedID)
                     await MainActor.run {
                         hasAssignedSong = ref != nil
                     }

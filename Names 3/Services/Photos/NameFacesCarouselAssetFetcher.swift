@@ -124,7 +124,6 @@ enum NameFacesCarouselAssetFetcher {
                 assets.append(asset)
                 if assets.count >= limit { stop.pointee = true }
             }
-            let imgCount = assets.count
             let videoOpts = PHFetchOptions()
             videoOpts.predicate = NSPredicate(
                 format: "mediaType == %d AND creationDate >= %@ AND creationDate <= %@",

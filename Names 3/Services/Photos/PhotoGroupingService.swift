@@ -25,7 +25,7 @@ actor PhotoGroupingService {
         logger.debug("Grouped into \(groupedByDay.count) days")
         print("📅 Initial grouping: \(groupedByDay.count) days")
         
-        var dayGroups: [(date: Date, assets: [PHAsset])] = groupedByDay.map { ($0.key, $0.value) }
+        let dayGroups: [(date: Date, assets: [PHAsset])] = groupedByDay.map { ($0.key, $0.value) }
             .sorted { $0.date > $1.date }
         
         var processed = Set<Date>()

@@ -7,7 +7,7 @@
 //
 
 import Foundation
-import SwiftData
+@preconcurrency import SwiftData
 import Photos
 import UIKit
 import ImageIO
@@ -232,8 +232,8 @@ final class ManualFaceRecognitionService {
                 } catch { }
                 let toProcess = assets.filter { !assetIdsWithStoredFaces.contains($0.localIdentifier) }
                 let toMatchOnly = assets.filter { assetIdsWithStoredFaces.contains($0.localIdentifier) }
-                var foundFacesCount = 0
-                var processedCount = 0
+                final class Counters { var foundFacesCount = 0; var processedCount = 0 }
+                let counters = Counters()
                 let totalToProcess = min(toProcess.count, self.initialBatchLimit)
                 let stoppedEarly = toProcess.count > self.initialBatchLimit
                 for batchStart in stride(from: 0, to: totalToProcess, by: self.batchSize) {
@@ -245,9 +245,10 @@ final class ManualFaceRecognitionService {
                         contactUUID: contactUUID,
                         modelContext: ctx
                     )
-                    foundFacesCount += matchCount
-                    processedCount += batch.count
-                    await MainActor.run { progressHandler(processedCount, totalToProcess) }
+                    counters.foundFacesCount += matchCount
+                    counters.processedCount += batch.count
+                    let p = counters.processedCount
+                    await MainActor.run { progressHandler(p, totalToProcess) }
                 }
                 let matchOnlyCount = await self.matchStoredEmbeddingsOnly(
                     assets: toMatchOnly,
@@ -255,12 +256,13 @@ final class ManualFaceRecognitionService {
                     contactUUID: contactUUID,
                     modelContext: ctx
                 )
-                foundFacesCount += matchOnlyCount
+                counters.foundFacesCount += matchOnlyCount
+                let total = counters.foundFacesCount
                 await MainActor.run {
-                    completion(.success(foundFacesCount))
+                    completion(.success(total))
                     self.removeProcessing(contactUUID: contactUUID)
                 }
-                if stoppedEarly, processedCount < toProcess.count {
+                if stoppedEarly, counters.processedCount < toProcess.count {
                     for batchStart in stride(from: totalToProcess, to: toProcess.count, by: self.batchSize) {
                         let batchEnd = min(batchStart + self.batchSize, toProcess.count)
                         let batch = Array(toProcess[batchStart..<batchEnd])
@@ -371,8 +373,9 @@ final class ManualFaceRecognitionService {
         let refDatas = referenceEmbeddings.map(\.embeddingData)
         let assetIds = assets.map(\.localIdentifier)
         let results = await processPhotoBatchOffMainActor(assetIds: assetIds, referenceEmbeddingDatas: refDatas, contactUUID: contactUUID)
+        let ctxRef = SendableRef(modelContext)
         await MainActor.run {
-            insertFaceMatchResults(results, contactUUID: contactUUID, modelContext: modelContext)
+            insertFaceMatchResults(results, contactUUID: contactUUID, modelContext: ctxRef.value)
         }
         return results.count
     }

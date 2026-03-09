@@ -227,22 +227,16 @@ actor YouTubeAPI {
     private static func parseISO8601Duration(_ str: String) -> TimeInterval? {
         var hours = 0, minutes = 0, seconds = 0
         let scanner = Scanner(string: str)
-        guard scanner.scanString("P", into: nil),
-              scanner.scanString("T", into: nil) else { return nil }
-        var value: NSString?
-        if scanner.scanUpToCharacters(from: CharacterSet(charactersIn: "HMS"), into: &value) {
-            if scanner.scanString("H", into: nil) { hours = Int(value! as String) ?? 0 }
-            else if scanner.scanString("M", into: nil) { minutes = Int(value! as String) ?? 0 }
-            else if scanner.scanString("S", into: nil) { seconds = Int(value! as String) ?? 0 }
-        }
+        guard scanner.scanString("P") != nil,
+              scanner.scanString("T") != nil else { return nil }
+        let hms = CharacterSet(charactersIn: "HMS")
         while !scanner.isAtEnd {
-            if scanner.scanUpToCharacters(from: CharacterSet(charactersIn: "HMS"), into: &value) {
-                if scanner.scanString("H", into: nil) { hours = Int(value! as String) ?? 0 }
-                else if scanner.scanString("M", into: nil) { minutes = Int(value! as String) ?? 0 }
-                else if scanner.scanString("S", into: nil) { seconds = Int(value! as String) ?? 0 }
-            } else {
-                break
-            }
+            guard let value = scanner.scanUpToCharacters(from: hms) else { break }
+            let v = Int(value) ?? 0
+            if scanner.scanString("H") != nil { hours = v }
+            else if scanner.scanString("M") != nil { minutes = v }
+            else if scanner.scanString("S") != nil { seconds = v }
+            else { break }
         }
         return TimeInterval(hours * 3600 + minutes * 60 + seconds)
     }

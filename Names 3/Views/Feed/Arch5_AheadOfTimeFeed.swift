@@ -354,10 +354,10 @@ final class Arch5_AheadOfTimeFeedVC: UIViewController, FeedArchitectureProvider 
 
     private func setupObservers() {
         deletedObserver = NotificationCenter.default.addObserver(forName: .deletedVideosChanged, object: nil, queue: .main) { [weak self] _ in
-            self?.invalidateAndRebuild()
+            Task { @MainActor in self?.invalidateAndRebuild() }
         }
         settingsObserver = NotificationCenter.default.addObserver(forName: .feedSettingsDidChange, object: nil, queue: .main) { [weak self] _ in
-            self?.invalidateAndRebuild()
+            Task { @MainActor in self?.invalidateAndRebuild() }
         }
     }
 
@@ -372,8 +372,9 @@ final class Arch5_AheadOfTimeFeedVC: UIViewController, FeedArchitectureProvider 
     // MARK: Loading
 
     private func loadManifest() {
-        if let bridgeID = coordinator?.consumeBridgeTarget() {
-            loadBridge(assetID: bridgeID)
+        let bridgeID = coordinator?.consumeBridgeTarget()
+        if let id = bridgeID {
+            loadBridge(assetID: id)
             return
         }
 
@@ -459,6 +460,13 @@ final class Arch5_AheadOfTimeFeedVC: UIViewController, FeedArchitectureProvider 
         didInitialScroll = true
         currentIndex = idx
         refreshVisibleCellsActiveState()
+    }
+
+    func savePositionToStore() {
+        let items = manifest.feedItems
+        guard items.indices.contains(currentIndex),
+              let id = FeedDataHelpers.assetID(for: items[currentIndex]) else { return }
+        FeedPositionStore.save(assetID: id)
     }
 
     // MARK: Content Cache
@@ -582,6 +590,7 @@ extension Arch5_AheadOfTimeFeedVC: UICollectionViewDataSource, UICollectionViewD
         currentIndex = max(0, min(manifest.feedItems.count - 1, page))
         updateCoordinator(index: currentIndex)
         refreshVisibleCellsActiveState()
+        savePositionToStore()
         predictivePrefetch.onScroll(currentIndex: currentIndex, items: manifest.feedItems)
     }
 }

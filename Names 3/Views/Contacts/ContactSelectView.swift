@@ -47,14 +47,9 @@ struct ContactSelectView: View {
                     }
                 }
             }
-            .background(
-                NavigationLink(
-                    destination: OptionalContactDetails(contact: created),
-                    isActive: $navigateNew,
-                    label: { EmptyView() }
-                )
-                .hidden()
-            )
+            .navigationDestination(isPresented: $navigateNew) {
+                OptionalContactDetails(contact: created)
+            }
         }
         .sheet(isPresented: $showCreateSheet) {
             if let c = created {

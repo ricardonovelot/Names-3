@@ -177,7 +177,7 @@ final class ContactsFeedViewController: UIViewController {
 
     private func createCompositionalLayout() -> UICollectionViewLayout {
         let layout = UICollectionViewCompositionalLayout { [weak self] sectionIndex, environment in
-            guard let self else { return nil }
+            guard self != nil else { return nil }
 
             let containerWidth = environment.container.contentSize.width
             let horizontalInset = Layout.sectionInset.leading + Layout.sectionInset.trailing
@@ -198,8 +198,7 @@ final class ContactsFeedViewController: UIViewController {
             )
             let group = NSCollectionLayoutGroup.horizontal(
                 layoutSize: groupSize,
-                subitem: item,
-                count: Layout.columns
+                subitems: Array(repeating: item, count: Layout.columns)
             )
             group.interItemSpacing = .fixed(Layout.itemSpacing)
 
@@ -285,7 +284,7 @@ final class ContactsFeedViewController: UIViewController {
         dataSource = UICollectionViewDiffableDataSource<Section, ContactItem>(
             collectionView: collectionView
         ) { [weak self] collectionView, indexPath, item in
-            guard let self else { return nil }
+            guard self != nil else { return nil }
             if item.isParsed {
                 return collectionView.dequeueConfiguredReusableCell(
                     using: parsedCellRegistration,
@@ -302,7 +301,7 @@ final class ContactsFeedViewController: UIViewController {
         }
 
         dataSource.supplementaryViewProvider = { [weak self] collectionView, kind, indexPath in
-            guard let self, kind == UICollectionView.elementKindSectionHeader else { return nil }
+            guard self != nil, kind == UICollectionView.elementKindSectionHeader else { return nil }
             return collectionView.dequeueConfiguredReusableSupplementary(
                 using: headerRegistration,
                 for: indexPath

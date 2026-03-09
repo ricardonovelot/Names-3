@@ -40,6 +40,7 @@ final class TikTokFeedViewController: UIViewController, FeedArchitectureProvider
 
     private var prefetchObserver: NSObjectProtocol?
     private var playbackReadyObserver: NSObjectProtocol?
+    private var backgroundObserver: NSObjectProtocol?
     private var cancellables = Set<AnyCancellable>()
 
     override func viewDidLoad() {
@@ -67,26 +68,38 @@ final class TikTokFeedViewController: UIViewController, FeedArchitectureProvider
         consumeBridgeIfNeeded()
     }
 
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        saveFeedPosition(index: index)
+    }
+
     deinit {
         let vm = viewModel
         DispatchQueue.main.async { vm.configureAudioSession(active: false) }
         prefetchObserver.map { NotificationCenter.default.removeObserver($0) }
         playbackReadyObserver.map { NotificationCenter.default.removeObserver($0) }
+        backgroundObserver.map { NotificationCenter.default.removeObserver($0) }
     }
 
     private func setupObservers() {
         prefetchObserver = NotificationCenter.default.addObserver(
             forName: .videoPrefetcherDidCacheAsset, object: nil, queue: .main
         ) { [weak self] note in
-            if let id = note.userInfo?["id"] as? String {
-                self?.readyVideoIDs.insert(id)
-            }
+            guard let self, let id = note.userInfo?["id"] as? String else { return }
+            Task { @MainActor in self.readyVideoIDs.insert(id) }
         }
         playbackReadyObserver = NotificationCenter.default.addObserver(
             forName: .videoPlaybackItemReady, object: nil, queue: .main
         ) { [weak self] note in
-            if let id = note.userInfo?["id"] as? String {
-                self?.readyVideoIDs.insert(id)
+            guard let self, let id = note.userInfo?["id"] as? String else { return }
+            Task { @MainActor in self.readyVideoIDs.insert(id) }
+        }
+        backgroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.saveFeedPosition(index: self.index)
             }
         }
     }
@@ -97,7 +110,7 @@ final class TikTokFeedViewController: UIViewController, FeedArchitectureProvider
             pendingScrollToAssetID = id
             viewModel.initialBridgeAssetID = id
         }
-        // viewModel.onAppear will call loadWindowOrBridgeTarget which uses initialBridgeAssetID
+        // viewModel.onAppear will call loadWindowOrBridgeTarget; parent sets bridge from saved position
     }
 
     /// Injects Carousel assets when switching Carousel→Feed. No fetch—exact same assets.
@@ -165,13 +178,14 @@ final class TikTokFeedViewController: UIViewController, FeedArchitectureProvider
                 self?.index = newIndex
                 self?.updateCoordinatorCurrentAsset(index: newIndex)
                 self?.viewModel.loadMoreIfNeeded(currentIndex: newIndex)
+                self?.saveFeedPosition(index: newIndex)
             }
         )
         controller.initialIndexOverride = clamped
         controller.effectiveIsActive = { [weak self] curr, idx in
             (curr == idx) && (self?.isFeedVisible ?? false)
         }
-        let coord = strictUnbindCoordinator ?? {
+        _ = strictUnbindCoordinator ?? {
             let c = StrictUnbindCoordinator()
             strictUnbindCoordinator = c
             return c
@@ -234,6 +248,17 @@ final class TikTokFeedViewController: UIViewController, FeedArchitectureProvider
             isVideo = false
         }
         coordinator?.setFocusedAsset(assetID, isVideo: isVideo)
+    }
+
+    private func saveFeedPosition(index: Int) {
+        guard viewModel.items.indices.contains(index) else { return }
+        if let id = FeedDataHelpers.assetID(for: viewModel.items[index]) {
+            FeedPositionStore.save(assetID: id)
+        }
+    }
+
+    func savePositionToStore() {
+        saveFeedPosition(index: index)
     }
 
     func refreshVisibleCellsActiveState() {

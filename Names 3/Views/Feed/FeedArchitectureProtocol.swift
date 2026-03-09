@@ -12,10 +12,13 @@ protocol FeedArchitectureProvider: AnyObject {
     func injectFromCarousel(assets: [PHAsset], scrollToAssetID: String?)
     /// Scroll to top (index 0, most recent). Called when user taps the already-selected Photos tab.
     func scrollToTop()
+    /// Persist current scroll position so user returns to same video when reopening app.
+    func savePositionToStore()
 }
 
 extension FeedArchitectureProvider {
     func scrollToTop() {}
+    func savePositionToStore() {}
 }
 
 typealias FeedViewController = UIViewController & FeedArchitectureProvider
@@ -281,6 +284,13 @@ enum FeedDataHelpers {
         switch item.kind {
         case .video(let a): return a.localIdentifier == assetID
         case .photoCarousel(let arr): return arr.contains { $0.localIdentifier == assetID }
+        }
+    }
+
+    static func assetID(for item: FeedItem) -> String? {
+        switch item.kind {
+        case .video(let a): return a.localIdentifier
+        case .photoCarousel(let arr): return arr.first?.localIdentifier
         }
     }
 

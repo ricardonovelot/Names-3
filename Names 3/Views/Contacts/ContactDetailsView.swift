@@ -15,6 +15,10 @@ struct ContactDetailsView: View {
     var onBack: (() -> Void)? = nil
     /// Called when the view appears. Use to sync quick input (set selectedContact, expand, focus) when entering via feed or quick input.
     var onAppearSyncQuickInput: (() -> Void)? = nil
+    /// Called when user taps "Add note" in the empty state. Use to expand and focus QuickInput.
+    var onRequestAddNote: (() -> Void)? = nil
+
+    @AppStorage(ContactDetailsNoNotesLayoutPreference.userDefaultsKey) private var noNotesLayoutRaw: String = ContactDetailsNoNotesLayoutPreference.summaryFirst.rawValue
 
     @State var viewState = CGSize.zero
 
@@ -97,6 +101,12 @@ struct ContactDetailsView: View {
                     .listRowBackground(Color.clear)
 
                     Section {
+                        if hasNoNotes, noNotesLayout == .emptyStatePrompt {
+                            emptyStatePromptView
+                                .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 6, trailing: 16))
+                                .listRowSeparator(.hidden)
+                                .listRowBackground(Color.clear)
+                        }
                         ForEach(activeNotesForList, id: \.uuid) { note in
                             noteCard(note)
                                 .id(note.uuid)
@@ -361,6 +371,9 @@ struct ContactDetailsView: View {
             
             VStack(spacing: 0) {
                 headerControls
+                if hasNoNotes, noNotesLayout == .addNoteBanner {
+                    addNoteBannerView
+                }
                 summaryField
             }
             .frame(maxWidth: .infinity)
@@ -517,11 +530,72 @@ struct ContactDetailsView: View {
         .padding(.bottom, 8)
     }
 
+    // MARK: - No-Notes Empty State Views
+
+    @ViewBuilder
+    private var addNoteBannerView: some View {
+        Button {
+            onRequestAddNote?()
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "plus.circle.fill")
+                    .font(.system(size: 24))
+                    .foregroundColor(image != UIImage() ? .white.opacity(0.9) : .accentColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Add your first note")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundColor(image != UIImage() ? .white : .primary)
+                    Text("Use the bar below to remember details")
+                        .font(.caption)
+                        .foregroundColor(image != UIImage() ? .white.opacity(0.8) : .secondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(image != UIImage() ? .white.opacity(0.7) : .secondary)
+            }
+            .padding(16)
+            .liquidGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous), stroke: true, style: .clear)
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal)
+        .padding(.top, 12)
+    }
+
+    @ViewBuilder
+    private var emptyStatePromptView: some View {
+        Button {
+            onRequestAddNote?()
+        } label: {
+            VStack(spacing: 12) {
+                Image(systemName: "note.text.badge.plus")
+                    .font(.system(size: 40))
+                    .foregroundStyle(.secondary)
+                Text("No notes yet")
+                    .font(.headline)
+                Text("Tap to use the bar below and add a note about \(contact.displayName)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(24)
+            .liquidGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous), stroke: true, style: .clear)
+        }
+        .buttonStyle(.plain)
+    }
+
     // MARK: - Notes Section
+
+    private var noNotesLayout: ContactDetailsNoNotesLayoutPreference {
+        ContactDetailsNoNotesLayoutPreference(rawValue: noNotesLayoutRaw) ?? .summaryFirst
+    }
+
+    private var hasNoNotes: Bool { activeNotesForList.isEmpty }
 
     private var activeNotesForList: [Note] {
         (contact.notes ?? []).filter { $0.isArchived == false }
-            .sorted { ($0.creationDate ?? .distantPast) > ($1.creationDate ?? .distantPast) }
+            .sorted { $0.creationDate > $1.creationDate }
     }
     
     @ViewBuilder
@@ -530,7 +604,7 @@ struct ContactDetailsView: View {
             TextField(
                 "Note Content",
                 text: Binding(
-                    get: { note.content ?? "" },
+                    get: { note.content },
                     set: { newValue in
                         note.content = newValue
                         do {
@@ -880,7 +954,7 @@ private struct SuggestedMatchRow: View {
             Image(uiImage: uiImage)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
-        } else if let asset = item.asset {
+        } else if item.asset != nil {
             Group {
                 if let image = image {
                     Image(uiImage: image)

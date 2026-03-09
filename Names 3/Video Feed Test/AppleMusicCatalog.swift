@@ -256,7 +256,7 @@ actor AppleMusicCatalog {
     }
 
     private static func inferStorefront() -> String? {
-        if let region = Locale.current.regionCode?.lowercased() {
+        if let region = Locale.current.region?.identifier.lowercased() {
             return region
         }
         return nil

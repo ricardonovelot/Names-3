@@ -32,10 +32,10 @@ final class MusicPlaybackMonitor: ObservableObject {
 
         for name in names {
             tokens.append(center.addObserver(forName: name, object: appPlayer, queue: .main) { [weak self] _ in
-                self?.refresh()
+                Task { @MainActor in self?.refresh() }
             })
             tokens.append(center.addObserver(forName: name, object: sysPlayer, queue: .main) { [weak self] _ in
-                self?.refresh()
+                Task { @MainActor in self?.refresh() }
             })
         }
 

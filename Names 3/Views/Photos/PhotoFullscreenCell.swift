@@ -153,7 +153,7 @@ final class PhotoFullscreenCell: UICollectionViewCell {
         do {
             try handler.perform([request])
             
-            if let observations = request.results as? [VNFaceObservation] {
+            if let observations = request.results {
                 // Capture assetID and representedAssetIdentifier before async dispatch
                 let capturedAssetID = assetID
                 let capturedRepresentedID = self.representedAssetIdentifier
@@ -186,9 +186,9 @@ final class PhotoFullscreenCell: UICollectionViewCell {
     private func showFaceOverlays(observations: [VNFaceObservation], imageSize: CGSize) {
         clearFaceOverlays()
         
-        guard let displayedImage = imageView.image else { return }
+        guard imageView.image != nil else { return }
         
-        for (index, observation) in observations.enumerated() {
+        for (index, _) in observations.enumerated() {
             let overlayView = FaceOverlayView(index: index)
             overlayView.translatesAutoresizingMaskIntoConstraints = false
             overlayView.alpha = 0

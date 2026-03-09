@@ -41,7 +41,7 @@ final class MusicLibraryPrefetchService: FeatureService {
         // MOVE heavy work off-main; make incremental selection without full sort.
         Task.detached(priority: .utility) {
             let t0 = CACurrentMediaTime()
-            Diagnostics.log("MLP(bg) query.songs begin onMain=\(Thread.isMainThread)")
+            Diagnostics.log("MLP(bg) query.songs begin")
             let songs = MPMediaQuery.songs().items ?? []
             let tQ = CACurrentMediaTime()
             Diagnostics.log("MLP(bg) query.songs done count=\(songs.count) dt=\(String(format: "%.3f", tQ - t0))s")

@@ -38,6 +38,7 @@ extension PhotosCarouselControllerDelegate {
 
 // MARK: - PhotosCarouselController
 
+@MainActor
 final class PhotosCarouselController: NSObject {
 
     enum SlideDirection {
@@ -349,12 +350,14 @@ final class PhotosCarouselController: NSObject {
         let assetIDToSave: String? = isValidCarouselIndex(indexToSave)
             ? assets[indexToSave].localIdentifier
             : nil
-        DispatchQueue.global(qos: .utility).async { [carouselPositionKey, carouselPositionAssetIDKey] in
-            UserDefaults.standard.set(indexToSave, forKey: carouselPositionKey)
+        let key = carouselPositionKey
+        let assetKey = carouselPositionAssetIDKey
+        DispatchQueue.global(qos: .utility).async {
+            UserDefaults.standard.set(indexToSave, forKey: key)
             if let id = assetIDToSave {
-                UserDefaults.standard.set(id, forKey: carouselPositionAssetIDKey)
+                UserDefaults.standard.set(id, forKey: assetKey)
             } else {
-                UserDefaults.standard.removeObject(forKey: carouselPositionAssetIDKey)
+                UserDefaults.standard.removeObject(forKey: assetKey)
             }
         }
     }
@@ -568,7 +571,7 @@ final class PhotosCarouselController: NSObject {
                     }
                 }
             }
-            await MainActor.run {
+            _ = await MainActor.run {
                 self.thumbnailLoadingTasks.removeValue(forKey: index)
             }
         }
@@ -822,40 +825,38 @@ final class PhotosCarouselController: NSObject {
         guard !isSlidingWindow, itemCount >= slideTriggerMargin, centerIndex >= itemCount - slideTriggerMargin else { return }
         guard let lastDate = assets.last?.creationDate else { return }
         isSlidingWindow = true
-        Task {
+        Task { @MainActor in
             let newBatch = await NameFacesCarouselAssetFetcher.fetchAssetsOlderThan(lastDate, limit: slideWindowChunk)
-            await MainActor.run {
-                defer { isSlidingWindow = false }
-                guard !newBatch.isEmpty else { return }
-                isProgrammaticallyScrollingCarousel = true
-                let oldCount = assets.count
-                let oldCenter = currentIndex
-                let dropCount = min(slideWindowChunk, oldCount)
-                let deletePaths = (0..<dropCount).map { IndexPath(item: $0, section: 0) }
-                let insertPaths = (oldCount - dropCount..<oldCount - dropCount + newBatch.count).map { IndexPath(item: $0, section: 0) }
-                assets = Array(assets.dropFirst(dropCount)) + newBatch
-                carouselThumbnails = Array(carouselThumbnails.dropFirst(dropCount)) + Array(repeating: nil, count: newBatch.count)
-                (0..<dropCount).forEach { thumbnailLoadingTasks.removeValue(forKey: $0) }
-                thumbnailLoadingTasks.forEach { $0.value.cancel() }
-                thumbnailLoadingTasks.removeAll()
-                windowStartIndex += dropCount
-                currentIndex = clampCarouselIndex(max(0, oldCenter - dropCount))
-                cachedDisplayImages.removeAll()
-                lastCachedDisplayWindow = nil
-                lastCarouselThumbnailWindow = nil
-                lastEvictionCenterIndex = nil
-                UIView.performWithoutAnimation {
-                    collectionView.performBatchUpdates {
-                        collectionView.deleteItems(at: deletePaths)
-                        collectionView.insertItems(at: insertPaths)
-                    }
+            defer { isSlidingWindow = false }
+            guard !newBatch.isEmpty else { return }
+            isProgrammaticallyScrollingCarousel = true
+            let oldCount = assets.count
+            let oldCenter = currentIndex
+            let dropCount = min(slideWindowChunk, oldCount)
+            let deletePaths = (0..<dropCount).map { IndexPath(item: $0, section: 0) }
+            let insertPaths = (oldCount - dropCount..<oldCount - dropCount + newBatch.count).map { IndexPath(item: $0, section: 0) }
+            assets = Array(assets.dropFirst(dropCount)) + newBatch
+            carouselThumbnails = Array(carouselThumbnails.dropFirst(dropCount)) + Array(repeating: nil, count: newBatch.count)
+            (0..<dropCount).forEach { thumbnailLoadingTasks.removeValue(forKey: $0) }
+            thumbnailLoadingTasks.forEach { $0.value.cancel() }
+            thumbnailLoadingTasks.removeAll()
+            windowStartIndex += dropCount
+            currentIndex = clampCarouselIndex(max(0, oldCenter - dropCount))
+            cachedDisplayImages.removeAll()
+            lastCachedDisplayWindow = nil
+            lastCarouselThumbnailWindow = nil
+            lastEvictionCenterIndex = nil
+            UIView.performWithoutAnimation {
+                collectionView.performBatchUpdates {
+                    collectionView.deleteItems(at: deletePaths)
+                    collectionView.insertItems(at: insertPaths)
                 }
-                scrollCarouselToCurrentIndex()
-                loadPhotoAtCarouselIndex(currentIndex)
-                startCachingDisplayImages(around: currentIndex)
-                delegate?.photosCarouselControllerDidSlideWindow(self, direction: .forward)
-                delegate?.photosCarouselController(self, assetsDidChange: assets)
             }
+            scrollCarouselToCurrentIndex()
+            loadPhotoAtCarouselIndex(currentIndex)
+            startCachingDisplayImages(around: currentIndex)
+            delegate?.photosCarouselControllerDidSlideWindow(self, direction: .forward)
+            delegate?.photosCarouselController(self, assetsDidChange: assets)
         }
     }
 
@@ -863,40 +864,38 @@ final class PhotosCarouselController: NSObject {
         guard !isSlidingWindow, windowStartIndex > 0, centerIndex < slideTriggerMargin else { return }
         guard let firstDate = assets.first?.creationDate else { return }
         isSlidingWindow = true
-        Task {
+        Task { @MainActor in
             let newBatch = await NameFacesCarouselAssetFetcher.fetchAssetsNewerThan(firstDate, limit: slideWindowChunk)
-            await MainActor.run {
-                defer { isSlidingWindow = false }
-                guard !newBatch.isEmpty else { return }
-                isProgrammaticallyScrollingCarousel = true
-                let oldCount = assets.count
-                let oldCenter = currentIndex
-                let dropCount = min(slideWindowChunk, oldCount)
-                let deletePaths = (oldCount - dropCount..<oldCount).map { IndexPath(item: $0, section: 0) }
-                let insertPaths = (0..<newBatch.count).map { IndexPath(item: $0, section: 0) }
-                assets = newBatch + Array(assets.dropLast(dropCount))
-                carouselThumbnails = Array(repeating: nil, count: newBatch.count) + Array(carouselThumbnails.dropLast(dropCount))
-                (oldCount - dropCount..<oldCount).forEach { thumbnailLoadingTasks.removeValue(forKey: $0) }
-                thumbnailLoadingTasks.forEach { $0.value.cancel() }
-                thumbnailLoadingTasks.removeAll()
-                windowStartIndex = max(0, windowStartIndex - dropCount)
-                currentIndex = clampCarouselIndex(oldCenter + newBatch.count)
-                cachedDisplayImages.removeAll()
-                lastCachedDisplayWindow = nil
-                lastCarouselThumbnailWindow = nil
-                lastEvictionCenterIndex = nil
-                UIView.performWithoutAnimation {
-                    collectionView.performBatchUpdates {
-                        collectionView.insertItems(at: insertPaths)
-                        collectionView.deleteItems(at: deletePaths)
-                    }
+            defer { isSlidingWindow = false }
+            guard !newBatch.isEmpty else { return }
+            isProgrammaticallyScrollingCarousel = true
+            let oldCount = assets.count
+            let oldCenter = currentIndex
+            let dropCount = min(slideWindowChunk, oldCount)
+            let deletePaths = (oldCount - dropCount..<oldCount).map { IndexPath(item: $0, section: 0) }
+            let insertPaths = (0..<newBatch.count).map { IndexPath(item: $0, section: 0) }
+            assets = newBatch + Array(assets.dropLast(dropCount))
+            carouselThumbnails = Array(repeating: nil, count: newBatch.count) + Array(carouselThumbnails.dropLast(dropCount))
+            (oldCount - dropCount..<oldCount).forEach { thumbnailLoadingTasks.removeValue(forKey: $0) }
+            thumbnailLoadingTasks.forEach { $0.value.cancel() }
+            thumbnailLoadingTasks.removeAll()
+            windowStartIndex = max(0, windowStartIndex - dropCount)
+            currentIndex = clampCarouselIndex(oldCenter + newBatch.count)
+            cachedDisplayImages.removeAll()
+            lastCachedDisplayWindow = nil
+            lastCarouselThumbnailWindow = nil
+            lastEvictionCenterIndex = nil
+            UIView.performWithoutAnimation {
+                collectionView.performBatchUpdates {
+                    collectionView.insertItems(at: insertPaths)
+                    collectionView.deleteItems(at: deletePaths)
                 }
-                scrollCarouselToCurrentIndex()
-                loadPhotoAtCarouselIndex(currentIndex)
-                startCachingDisplayImages(around: currentIndex)
-                delegate?.photosCarouselControllerDidSlideWindow(self, direction: .backward)
-                delegate?.photosCarouselController(self, assetsDidChange: assets)
             }
+            scrollCarouselToCurrentIndex()
+            loadPhotoAtCarouselIndex(currentIndex)
+            startCachingDisplayImages(around: currentIndex)
+            delegate?.photosCarouselControllerDidSlideWindow(self, direction: .backward)
+            delegate?.photosCarouselController(self, assetsDidChange: assets)
         }
     }
 }

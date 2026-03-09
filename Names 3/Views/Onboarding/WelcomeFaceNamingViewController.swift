@@ -5,7 +5,7 @@ import Photos
 import Vision
 import AVFoundation
 
-protocol WelcomeFaceNamingViewControllerDelegate: AnyObject {
+@MainActor protocol WelcomeFaceNamingViewControllerDelegate: AnyObject {
     func welcomeFaceNamingViewControllerDidFinish(_ controller: WelcomeFaceNamingViewController)
 }
 
@@ -1207,6 +1207,9 @@ final class WelcomeFaceNamingViewController: UIViewController {
     
     @objc private func dismissKeyboard() {
         view.endEditing(true)
+        if useQuickInputForName {
+            NotificationCenter.default.post(name: .quickInputResignFocus, object: nil)
+        }
     }
     
     @objc private func keyboardWillShow(_ notification: Notification) {
@@ -1279,7 +1282,6 @@ final class WelcomeFaceNamingViewController: UIViewController {
         case .changed:
             // Calculate new time based on horizontal pan
             let translation = gesture.translation(in: videoPlayerView)
-            let viewWidth = videoPlayerView.bounds.width
             
             // Map horizontal movement to video duration
             // Every 100 points = 1 second of video (adjust sensitivity here)
@@ -1432,7 +1434,7 @@ final class WelcomeFaceNamingViewController: UIViewController {
             let previousFaceCount = await MainActor.run { self.detectedFaces.count }
             
             // Run face detection on current frame
-            let (hasFaces, hasNewFaces) = await detectAndCheckFaceDiversity(currentImage)
+            let (hasFaces, _) = await detectAndCheckFaceDiversity(currentImage)
             
             await MainActor.run {
                 let currentFaceCount = self.detectedFaces.count
@@ -1837,7 +1839,7 @@ final class WelcomeFaceNamingViewController: UIViewController {
                 
                 do {
                     try handler.perform([request])
-                    let count = (request.results as? [VNFaceObservation])?.count ?? 0
+                    let count = request.results?.count ?? 0
                     continuation.resume(returning: count)
                 } catch {
                     continuation.resume(returning: 0)
@@ -2735,18 +2737,15 @@ final class WelcomeFaceNamingViewController: UIViewController {
         let currentTime = player.currentTime()
         
         return await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let generator = AVAssetImageGenerator(asset: asset)
-                generator.appliesPreferredTrackTransform = true
-                generator.maximumSize = self.detectionTargetSize
-                generator.requestedTimeToleranceBefore = .zero
-                generator.requestedTimeToleranceAfter = .zero
-                
-                do {
-                    let cgImage = try generator.copyCGImage(at: currentTime, actualTime: nil)
-                    let image = UIImage(cgImage: cgImage)
-                    continuation.resume(returning: image)
-                } catch {
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = self.detectionTargetSize
+            generator.requestedTimeToleranceBefore = .zero
+            generator.requestedTimeToleranceAfter = .zero
+            generator.generateCGImageAsynchronously(for: currentTime) { cgImage, _, _ in
+                if let cgImage {
+                    continuation.resume(returning: UIImage(cgImage: cgImage))
+                } else {
                     continuation.resume(returning: nil)
                 }
             }
@@ -2771,14 +2770,13 @@ final class WelcomeFaceNamingViewController: UIViewController {
                 
                 // Extract first frame (time 0) for seamless match with video playback
                 let time = CMTime.zero
-                
-                do {
-                    let cgImage = try generator.copyCGImage(at: time, actualTime: nil)
-                    let image = UIImage(cgImage: cgImage)
-                    continuation.resume(returning: image)
-                } catch {
-                    print("⚠️ Failed to extract video frame: \(error)")
-                    continuation.resume(returning: nil)
+                generator.generateCGImageAsynchronously(for: time) { cgImage, _, error in
+                    if let cgImage {
+                        continuation.resume(returning: UIImage(cgImage: cgImage))
+                    } else {
+                        if let error { print("⚠️ Failed to extract video frame: \(error)") }
+                        continuation.resume(returning: nil)
+                    }
                 }
             }
         }
@@ -2798,14 +2796,13 @@ final class WelcomeFaceNamingViewController: UIViewController {
                 do {
                     try handler.perform([faceDetectionRequest, faceLandmarksRequest])
                     
-                    guard let faceObservations = faceDetectionRequest.results as? [VNFaceObservation],
+                    guard let faceObservations = faceDetectionRequest.results,
                           !faceObservations.isEmpty else {
                         continuation.resume(returning: (false, false))
                         return
                     }
                     
                     let imageSize = CGSize(width: CGFloat(cgImage.width), height: CGFloat(cgImage.height))
-                    let fullRect = CGRect(origin: .zero, size: imageSize)
                     
                     var faces: [DetectedFaceInfo] = []
                     var newFacePrints: [Data] = []
@@ -3002,26 +2999,26 @@ final class WelcomeFaceNamingViewController: UIViewController {
         guard let photoData = await MainActor.run(body: { self.currentPhotoData }) else { return }
         
         let facesToSave = await MainActor.run {
-            self.faceAssignments.enumerated().compactMap { (index, name) -> (Int, String, DetectedFaceInfo, Date, Contact?)? in
+            self.faceAssignments.enumerated().compactMap { (index, name) -> (Int, String, DetectedFaceInfo, Date, UUID?)? in
                 let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { return nil }
                 guard index < self.detectedFaces.count else { return nil }
-                return (index, trimmed, self.detectedFaces[index], photoData.date, self.faceAssignedExistingContact[index])
+                return (index, trimmed, self.detectedFaces[index], photoData.date, self.faceAssignedExistingContact[index]?.uuid)
             }
         }
         
         // Process JPEG compression in background (expensive operation); use storage-sized images to limit app footprint.
         var savedCount = 0
-        for (_, name, faceInfo, date, existingContact) in facesToSave {
+        for (_, name, faceInfo, date, existingContactUUID) in facesToSave {
             let thumbnailData = jpegDataForStoredFaceThumbnail(faceInfo.image)
             let contactPhotoData = jpegDataForStoredContactPhoto(faceInfo.image)
             
             await MainActor.run {
-                if let existing = existingContact {
+                if let contactUUID = existingContactUUID {
                     // Don't replace contact's main photo; store this face as one more image of the contact (FaceEmbedding).
                     let embedding = FaceEmbedding(
                         assetIdentifier: "name-faces-\(UUID().uuidString)",
-                        contactUUID: existing.uuid,
+                        contactUUID: contactUUID,
                         photoDate: date, isManuallyVerified: true, thumbnailData: thumbnailData
                     )
                     self.modelContext.insert(embedding)
@@ -3141,7 +3138,7 @@ final class WelcomeFaceNamingViewController: UIViewController {
                 }
             }
             
-            await MainActor.run {
+            _ = await MainActor.run {
                 self.thumbnailLoadingTasks.removeValue(forKey: index)
             }
         }
@@ -3583,7 +3580,6 @@ extension WelcomeFaceNamingViewController: UICollectionViewDelegate {
             hasUserStoppedScrolling = true
             guard !isProgrammaticallyScrollingCarousel, !isSlidingWindow else { return }
             guard hasUserInteractedWithCarousel, let centeredIndex = findCenteredItemIndex() else { return }
-            let prev = currentCarouselIndex
             currentCarouselIndex = centeredIndex
             saveCarouselPosition()
             performPostScrollUpdates(for: centeredIndex)
@@ -3598,7 +3594,6 @@ extension WelcomeFaceNamingViewController: UICollectionViewDelegate {
             hasUserStoppedScrolling = true
             guard !isProgrammaticallyScrollingCarousel, !isSlidingWindow else { return }
             guard hasUserInteractedWithCarousel, let centeredIndex = findCenteredItemIndex() else { return }
-            let prev = currentCarouselIndex
             currentCarouselIndex = centeredIndex
             saveCarouselPosition()
             performPostScrollUpdates(for: centeredIndex)

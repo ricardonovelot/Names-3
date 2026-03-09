@@ -636,13 +636,14 @@ extension BulkAddFacesView {
 
             do {
                 try fullHandler.perform([fullRequest])
-                observations = (fullRequest.results as? [VNFaceObservation]) ?? []
+                observations = fullRequest.results ?? []
             } catch {
                 print("Face detection error: \(error)")
             }
 
+            let obs = observations
             await MainActor.run {
-                self.generateFaceThumbnails(from: observations, in: cgImage)
+                self.generateFaceThumbnails(from: obs, in: cgImage)
             }
         }
 
@@ -657,7 +658,7 @@ extension BulkAddFacesView {
                 let bb = face.boundingBox
                 let scaleFactor: CGFloat = 1.8
 
-                var scaledBox = CGRect(
+                let scaledBox = CGRect(
                     x: bb.origin.x * imageSize.width - (bb.width * imageSize.width * (scaleFactor - 1)) / 2,
                     y: (1 - bb.origin.y - bb.height) * imageSize.height - (bb.height * imageSize.height * (scaleFactor - 1)) / 2,
                     width: bb.width * imageSize.width * scaleFactor,

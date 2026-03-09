@@ -2,24 +2,22 @@ import TipKit
 import SwiftUI
 
 struct QuizStreakTip: Tip {
+    private static let quizCompletedEvent = Tips.Event(id: "app.tips.quiz.completed")
+
     var title: Text {
         Text("Build Your Memory Streak")
     }
-    
+
     var message: Text? {
         Text("Take quizzes daily to strengthen your face recognition and build a streak")
     }
-    
+
     var image: Image? {
         Image(systemName: "rectangle.stack.fill")
     }
-    
+
     var rules: [Rule] {
-        [
-            #Rule(TipEvents.quizCompleted) {
-                $0.donations.count > 0
-            }
-        ]
+        [ #Rule(Self.quizCompletedEvent) { $0.donations.count > 0 } ]
     }
 }
 

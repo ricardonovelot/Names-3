@@ -41,7 +41,7 @@ final class FaceDetectionViewModel: ObservableObject {
         do {
             try handler.perform([request])
             
-            if let observations = request.results as? [VNFaceObservation] {
+            if let observations = request.results {
                 faceObservations = observations
                 
                 let imageSize = CGSize(width: CGFloat(cgImage.width), height: CGFloat(cgImage.height))

@@ -107,7 +107,7 @@ final class PhotosPickerViewModel: ObservableObject {
             print("🔄 [PhotosVM] Requesting authorization")
             
             Task {
-                let newStatus = try await photoService.requestAuthorization()
+                let newStatus = await photoService.requestAuthorization()
                 authorizationStatus = newStatus
                 print("✅ [PhotosVM] Authorization result: \(newStatus.rawValue)")
                 

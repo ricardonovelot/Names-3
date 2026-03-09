@@ -20,8 +20,11 @@ extension PHAsset {
             throw NSError(domain: "Export", code: -3, userInfo: [NSLocalizedDescriptionKey: "Failed to load AVAsset"])
         }
 
-        let presets = AVAssetExportSession.exportPresets(compatibleWith: avAsset)
-        let preset = presets.contains(AVAssetExportPresetPassthrough) ? AVAssetExportPresetPassthrough : AVAssetExportPresetHighestQuality
+        let preset: String = await withCheckedContinuation { cont in
+            AVAssetExportSession.determineCompatibility(ofExportPreset: AVAssetExportPresetPassthrough, with: avAsset, outputFileType: .mp4) { compatible in
+                cont.resume(returning: compatible ? AVAssetExportPresetPassthrough : AVAssetExportPresetHighestQuality)
+            }
+        }
         guard let export = AVAssetExportSession(asset: avAsset, presetName: preset) else {
             throw NSError(domain: "Export", code: -4, userInfo: [NSLocalizedDescriptionKey: "Cannot create export session"])
         }
@@ -31,29 +34,10 @@ extension PHAsset {
         if fm.fileExists(atPath: tmp.path) {
             try? fm.removeItem(at: tmp)
         }
-        export.outputURL = tmp
-        if export.supportedFileTypes.contains(.mp4) {
-            export.outputFileType = .mp4
-        } else if export.supportedFileTypes.contains(.mov) {
-            export.outputFileType = .mov
-        } else {
-            export.outputFileType = export.supportedFileTypes.first
-        }
+        let fileType: AVFileType = export.supportedFileTypes.contains(.mp4) ? .mp4 : (export.supportedFileTypes.contains(.mov) ? .mov : (export.supportedFileTypes.first ?? .mp4))
         export.shouldOptimizeForNetworkUse = true
-        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<URL, Error>) in
-            export.exportAsynchronously {
-                switch export.status {
-                case .completed:
-                    cont.resume(returning: tmp)
-                case .failed:
-                    cont.resume(throwing: export.error ?? NSError(domain: "Export", code: -5, userInfo: [NSLocalizedDescriptionKey: "Export failed"]))
-                case .cancelled:
-                    cont.resume(throwing: NSError(domain: "Export", code: -6, userInfo: [NSLocalizedDescriptionKey: "Export cancelled"]))
-                default:
-                    cont.resume(throwing: NSError(domain: "Export", code: -7, userInfo: [NSLocalizedDescriptionKey: "Export unknown state"]))
-                }
-            }
-        }
+        try await export.export(to: tmp, as: fileType)
+        return tmp
     }
 
     private static func sanitizeFilename(_ name: String) -> String {
@@ -65,36 +49,32 @@ extension PHAsset {
 
 extension PHAsset {
     static func firstFrameImage(for asset: PHAsset, maxDimension: CGFloat) async -> UIImage? {
-        await withCheckedContinuation { (cont: CheckedContinuation<UIImage?, Never>) in
+        let avAsset: AVAsset? = await withCheckedContinuation { cont in
             let opts = PHVideoRequestOptions()
             opts.deliveryMode = .highQualityFormat
             opts.isNetworkAccessAllowed = true
-            PHImageManager.default().requestAVAsset(forVideo: asset, options: opts) { avAsset, _, _ in
-                guard let avAsset else {
-                    cont.resume(returning: nil)
-                    return
-                }
-                let gen = AVAssetImageGenerator(asset: avAsset)
-                gen.appliesPreferredTrackTransform = true
-                gen.requestedTimeToleranceBefore = .zero
-                gen.requestedTimeToleranceAfter = .zero
-                gen.maximumSize = CGSize(width: maxDimension, height: maxDimension)
-                let cg = try? gen.copyCGImage(at: .zero, actualTime: nil)
-                cont.resume(returning: cg.map { UIImage(cgImage: $0) })
+            PHImageManager.default().requestAVAsset(forVideo: asset, options: opts) { a, _, _ in
+                cont.resume(returning: a)
             }
         }
+        guard let avAsset else { return nil }
+        let gen = AVAssetImageGenerator(asset: avAsset)
+        gen.appliesPreferredTrackTransform = true
+        gen.requestedTimeToleranceBefore = .zero
+        gen.requestedTimeToleranceAfter = .zero
+        gen.maximumSize = CGSize(width: maxDimension, height: maxDimension)
+        guard let (cgImage, _) = try? await gen.image(at: .zero) else { return nil }
+        return UIImage(cgImage: cgImage)
     }
 
-    static func firstFrameImage(fromVideoAt url: URL, maxDimension: CGFloat) -> UIImage? {
-        let asset = AVAsset(url: url)
+    static func firstFrameImage(fromVideoAt url: URL, maxDimension: CGFloat) async -> UIImage? {
+        let asset = AVURLAsset(url: url)
         let gen = AVAssetImageGenerator(asset: asset)
         gen.appliesPreferredTrackTransform = true
         gen.requestedTimeToleranceBefore = .zero
         gen.requestedTimeToleranceAfter = .zero
         gen.maximumSize = CGSize(width: maxDimension, height: maxDimension)
-        if let cg = try? gen.copyCGImage(at: .zero, actualTime: nil) {
-            return UIImage(cgImage: cg)
-        }
-        return nil
+        guard let (cgImage, _) = try? await gen.image(at: .zero) else { return nil }
+        return UIImage(cgImage: cgImage)
     }
 }

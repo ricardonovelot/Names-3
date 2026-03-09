@@ -42,11 +42,11 @@ final class ServiceOrchestrator {
             var spPrepare: OSSignpostID?
             Diagnostics.signpostBegin("ServicePrepare", id: &spPrepare)
             let t0 = CACurrentMediaTime()
-            FirstLaunchProbe.shared.servicePrepareBegin(key: key, onMain: Thread.isMainThread)
+            FirstLaunchProbe.shared.servicePrepareBegin(key: key, onMain: true)
             await svc.prepare()
-            FirstLaunchProbe.shared.servicePrepareEnd(key: key, onMain: Thread.isMainThread)
+            FirstLaunchProbe.shared.servicePrepareEnd(key: key, onMain: true)
             let dt = CACurrentMediaTime() - t0
-            Diagnostics.log(#"Orchestrator: \#(key) prepare dt=\#(String(format: "%.3f", dt))s onMain=\#(Thread.isMainThread)"#)
+            Diagnostics.log(#"Orchestrator: \#(key) prepare dt=\#(String(format: "%.3f", dt))s onMain=true"#)
             Diagnostics.signpostEnd("ServicePrepare", id: spPrepare)
             preparing.remove(key)
         }
@@ -66,11 +66,11 @@ final class ServiceOrchestrator {
         var spStart: OSSignpostID?
         Diagnostics.signpostBegin("ServiceStart", id: &spStart)
         let t1 = CACurrentMediaTime()
-        FirstLaunchProbe.shared.serviceStartBegin(key: key, onMain: Thread.isMainThread)
+        FirstLaunchProbe.shared.serviceStartBegin(key: key, onMain: true)
         await svc.start()
-        FirstLaunchProbe.shared.serviceStartEnd(key: key, onMain: Thread.isMainThread)
+        FirstLaunchProbe.shared.serviceStartEnd(key: key, onMain: true)
         let dtStart = CACurrentMediaTime() - t1
-        Diagnostics.log(#"Orchestrator: \#(key) start dt=\#(String(format: "%.3f", dtStart))s onMain=\#(Thread.isMainThread)"#)
+        Diagnostics.log(#"Orchestrator: \#(key) start dt=\#(String(format: "%.3f", dtStart))s onMain=true"#)
         Diagnostics.signpostEnd("ServiceStart", id: spStart)
 
         started.insert(key)

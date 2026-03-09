@@ -118,7 +118,11 @@ private final class TripleBufferCoordinator {
         memoryObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.didReceiveMemoryWarningNotification,
             object: nil, queue: .main
-        ) { [weak self] _ in self?.evictUnderPressure() }
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.evictUnderPressure()
+            }
+        }
     }
 
     deinit {

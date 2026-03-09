@@ -64,11 +64,11 @@ final class TikTokFeedViewModel: ObservableObject {
         PlayerLeakDetector.shared.snapshotActive(log: true)
         configureAudioSession(active: true)
         NotificationCenter.default.addObserver(forName: .deletedVideosChanged, object: nil, queue: .main) { [weak self] _ in
-            self?.handleDeletedVideosChanged()
+            Task { @MainActor in self?.handleDeletedVideosChanged() }
         }
         if feedSettingsObserver == nil {
             feedSettingsObserver = NotificationCenter.default.addObserver(forName: .feedSettingsDidChange, object: nil, queue: .main) { [weak self] _ in
-                self?.reload()
+                Task { @MainActor in self?.reload() }
             }
         }
     }
@@ -124,7 +124,7 @@ final class TikTokFeedViewModel: ObservableObject {
         }
     }
 
-    /// Uses bridge target if set (Carousel→Feed); otherwise normal load.
+    /// Uses bridge target if set (Carousel→Feed or saved position from parent); otherwise normal load.
     private func loadWindowOrBridgeTarget() {
         // #region agent log
         Diagnostics.debugBridge(hypothesisId: "C", location: "TikTokFeedViewModel.loadWindowOrBridgeTarget", message: "loadWindowOrBridgeTarget", data: ["initialBridgeAssetID": initialBridgeAssetID ?? "nil"])
@@ -574,7 +574,7 @@ final class TikTokFeedViewModel: ObservableObject {
         commonFetchSetup()
         Diagnostics.log("BridgeWindow: loading for asset \(assetID) mediaType=\(asset.mediaType.rawValue)")
         Task { @MainActor in
-            let (mixedAssets, targetIdx) = await NameFacesCarouselAssetFetcher.fetchMixedAssetsAround(
+            let (mixedAssets, _) = await NameFacesCarouselAssetFetcher.fetchMixedAssetsAround(
                 targetAsset: asset,
                 rangeDays: 14,
                 limit: 80

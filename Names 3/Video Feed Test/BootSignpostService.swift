@@ -17,7 +17,7 @@ final class BootSignpostService: FeatureService {
         guard !didStart else { return }
         didStart = true
         Diagnostics.log("BootSignpost start")
-        let id = Diagnostics.signpostBegin("BootToFirstFrame", id: &signpostID)
+        _ = Diagnostics.signpostBegin("BootToFirstFrame", id: &signpostID)
 
         task = Task.detached { [signpostID] in
             let ok = await PhaseGate.shared.waitUntil(.firstFrame, timeout: 5)

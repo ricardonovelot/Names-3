@@ -399,14 +399,13 @@ final class PhotoDetailViewController: UIViewController {
     }
     
     private func dismissView() {
-        if let onComplete = onComplete {
-        } else {
+        if onComplete == nil {
             dismiss(animated: true)
         }
     }
     
     private func updateUIForSelectedContact() {
-        print("🔵 [PhotoDetailVC] updateUIForSelectedContact() contact: \(selectedContact?.name ?? "nil")")
+        print("🔵 [PhotoDetailVC] updateUIForSelectedContact() contact: \(String(describing: selectedContact?.name))")
         if let contact = selectedContact {
             presentSingleAssignView(with: contact)
         } else {
@@ -415,7 +414,7 @@ final class PhotoDetailViewController: UIViewController {
     }
     
     private func presentSingleAssignView(with contact: Contact) {
-        print("🔵 [PhotoDetailVC] presentSingleAssignView for contact: \(contact.name)")
+        print("🔵 [PhotoDetailVC] presentSingleAssignView for contact: \(String(describing: contact.name))")
         hostingController?.view.isHidden = true
         carouselContainerView.isHidden = true
         quickInputContainerView.isHidden = true
@@ -769,7 +768,7 @@ struct PhotoDetailContentView: View {
                             return
                         }
                         let uuidArray = Array(contactUUIDs)
-                        var descriptor = FetchDescriptor<Contact>(
+                        let descriptor = FetchDescriptor<Contact>(
                             predicate: #Predicate<Contact> { c in uuidArray.contains(c.uuid) }
                         )
                         let contacts = (try? contactsContext.fetch(descriptor)) ?? []

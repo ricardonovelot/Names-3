@@ -13,7 +13,7 @@ final class DeletedVideosViewModel: ObservableObject {
     init() {
         reload()
         NotificationCenter.default.addObserver(forName: .deletedVideosChanged, object: nil, queue: .main) { [weak self] _ in
-            self?.reload()
+            Task { @MainActor in self?.reload() }
         }
     }
 

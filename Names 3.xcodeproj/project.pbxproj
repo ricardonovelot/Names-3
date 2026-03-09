@@ -105,8 +105,9 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 1600;
-				LastUpgradeCheck = 1600;
+				LastSwiftUpdateCheck = 9999;
+				LastUpgradeCheck = 9999;
+				LastXcodeVersionUpgradeCheck = 9999;
 				TargetAttributes = {
 					8C5BEF292CBCF6D8007D0D5E = {
 						CreatedOnToolsVersion = 16.0;
@@ -187,6 +188,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = "com.ricardo.Names-3";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = minimal;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -221,6 +223,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = "com.ricardo.Names-3";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = minimal;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};

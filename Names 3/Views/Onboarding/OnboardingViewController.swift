@@ -36,14 +36,20 @@ final class OnboardingViewController: UIViewController {
     private lazy var continueButton: UIButton = {
         let button = UIButton(type: .system)
         button.translatesAutoresizingMaskIntoConstraints = false
-        button.setTitle(NSLocalizedString("onboarding.button.continue", comment: "Continue button"), for: .normal)
-        button.titleLabel?.font = UIFont.systemFont(ofSize: 17, weight: .semibold)
-        button.setTitleColor(.white, for: .normal)
         button.backgroundColor = UIColor.white.withAlphaComponent(0.15)
         button.layer.cornerRadius = 14
         button.layer.cornerCurve = .continuous
         button.addTarget(self, action: #selector(continueButtonTapped), for: .touchUpInside)
-        button.contentEdgeInsets = UIEdgeInsets(top: 16, left: 32, bottom: 16, right: 32)
+        var config = UIButton.Configuration.plain()
+        config.contentInsets = NSDirectionalEdgeInsets(top: 16, leading: 32, bottom: 16, trailing: 32)
+        config.title = NSLocalizedString("onboarding.button.continue", comment: "Continue button")
+        config.baseForegroundColor = .white
+        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var outgoing = incoming
+            outgoing.font = UIFont.systemFont(ofSize: 17, weight: .semibold)
+            return outgoing
+        }
+        button.configuration = config
         
         let blurEffect = UIBlurEffect(style: .systemUltraThinMaterialLight)
         let blurView = UIVisualEffectView(effect: blurEffect)

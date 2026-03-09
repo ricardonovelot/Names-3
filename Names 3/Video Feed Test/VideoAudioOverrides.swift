@@ -19,7 +19,7 @@ actor VideoAudioOverrides {
     private let maxEntries = 800
 
     init() {
-        load()
+        Task { await load() }
     }
 
     func volumeOverride(for id: String?) -> Float? {
@@ -39,12 +39,9 @@ actor VideoAudioOverrides {
     }
 
     func setVolumeOverride(for id: String, volume: Float?) {
-        var v = min(max(volume ?? 0, 0), 1)
-        if volume == nil {
-            v = 0
-        }
+        let clampedVolume = volume.map { min(max($0, 0), 1) }
         var entry = map[id] ?? VideoAudioOverride(volume: nil, song: nil, updatedAt: Date(), appleMusicStoreID: nil)
-        entry.volume = volume
+        entry.volume = clampedVolume
         entry.updatedAt = Date()
         map[id] = entry
         trimIfNeeded()

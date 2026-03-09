@@ -1,6 +1,11 @@
 import Foundation
 import UIKit
 
+@MainActor
+private func currentAppState() -> UIApplication.State {
+    UIApplication.shared.applicationState
+}
+
 enum LaunchPhase: Int {
     case appInit
     case firstFrame
@@ -33,13 +38,14 @@ actor PhaseGate {
 
     func waitUntilAppActive(timeout: TimeInterval = 5) async -> Bool {
         let t0 = Date()
-        while UIApplication.shared.applicationState != .active {
+        while true {
+            let state = await currentAppState()
+            if state == .active { return true }
             try? await Task.sleep(for: .milliseconds(60))
             if Date().timeIntervalSince(t0) > timeout {
                 Diagnostics.log("PhaseGate wait appActive timeout")
                 return false
             }
         }
-        return true
     }
 }

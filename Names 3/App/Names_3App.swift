@@ -116,7 +116,7 @@ struct Names_3App: App {
             // Wraps the detached task in a group task. The `await` is a suspension point:
             // cancellation interrupts it immediately without waiting for the blocking init call.
             group.addTask(priority: .userInitiated) {
-                try? await cloudKitTask.value
+                await cloudKitTask.value
             }
             group.addTask {
                 try? await Task.sleep(for: .seconds(cloudKitTimeoutSeconds))

@@ -50,7 +50,7 @@ final class PhotosDayPickerViewController: UIViewController {
         
         viewModel.requestAuthorizationIfNeeded()
         Task {
-            await viewModel.reloadForScope(scope)
+            viewModel.reloadForScope(scope)
         }
     }
     

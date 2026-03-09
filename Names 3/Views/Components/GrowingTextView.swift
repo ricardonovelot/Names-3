@@ -78,7 +78,7 @@ struct GrowingTextView: UIViewRepresentable {
                 guard let uiView else { return }
                 if !coordinator.desiredFirstResponder, uiView.isFirstResponder {
                     growingTextLogger.debug("updateUIView — deferred resign confirmed, resigning")
-                    uiView.resignFirstResponder()
+                    _ = uiView.resignFirstResponder()
                 } else {
                     growingTextLogger.debug("updateUIView — deferred resign cancelled (desiredFirstResponder=\(coordinator.desiredFirstResponder)) — stale render recovered ✅")
                 }

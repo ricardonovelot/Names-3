@@ -42,7 +42,7 @@ final class AppleMusicFeatureService: FeatureService {
         Diagnostics.signpostBegin("AppleMusicFeatureStart", id: &sp)
 
         let t0 = CACurrentMediaTime()
-        Diagnostics.log("AppleMusicFeature prewarm onMain=\(Thread.isMainThread)")
+        Diagnostics.log("AppleMusicFeature prewarm (begin)")
         await MainActor.run {
             AppleMusicController.shared.prewarm()
         }

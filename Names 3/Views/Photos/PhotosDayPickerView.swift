@@ -223,7 +223,7 @@ struct PhotosDayPickerView: View {
         case .detailView:
             if let attempt = attemptQuickAssign {
                 Task {
-                    let handled = try await attempt(image, date)
+                    let handled = await attempt(image, date)
                     await MainActor.run {
                         if handled {
                             print("✅ [PhotosDayPicker] Quick-assign handled. Dismissing.")

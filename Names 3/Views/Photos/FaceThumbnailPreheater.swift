@@ -20,13 +20,12 @@ actor FaceThumbnailPreheater {
         if let task = inFlight[key] { return await task.value }
         let task = Task.detached(priority: .utility) { [weak self] () -> UIImage? in
             guard let self else { return nil }
-            let img = await self.renderCircleThumbnail(from: face.image, diameter: diameter, scale: scale)
-            if let img { self.cache.setImage(img, for: key) }
-            return img
+            return await self.renderCircleThumbnail(from: face.image, diameter: diameter, scale: scale)
         }
         inFlight[key] = task
         let result = await task.value
         inFlight[key] = nil
+        if let result { cache.setImage(result, for: key) }
         return result
     }
     
@@ -50,14 +49,13 @@ actor FaceThumbnailPreheater {
             if inFlight[key] != nil { continue }
             let task = Task.detached(priority: .utility) { [weak self] () -> UIImage? in
                 guard let self else { return nil }
-                let img = await self.renderCircleThumbnail(from: face.image, diameter: diameter, scale: scale)
-                if let img { self.cache.setImage(img, for: key) }
-                return img
+                return await self.renderCircleThumbnail(from: face.image, diameter: diameter, scale: scale)
             }
             inFlight[key] = task
             // Fire and forget; optionally await a small subset if you want back-pressure
-            _ = await task.value
+            let img = await task.value
             inFlight[key] = nil
+            if let img { cache.setImage(img, for: key) }
         }
     }
     

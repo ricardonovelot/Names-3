@@ -116,10 +116,20 @@ struct SettingsView: View {
                         }
                     }
                     .pickerStyle(.menu)
+
+                    Picker("Contact details (no notes)", selection: $contactDetailsNoNotesLayout) {
+                        ForEach(ContactDetailsNoNotesLayoutPreference.allCases) { layout in
+                            Text(layout.rawValue).tag(layout.rawValue)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    Text(ContactDetailsNoNotesLayoutPreference(rawValue: contactDetailsNoNotesLayout)?.description ?? "")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 } header: {
                     Text("Usage")
                 } footer: {
-                    Text("How to use the quick input bar to add names, tags, dates, and notes in one line. Icon A/B test: choose which icon appears when the bar is collapsed.")
+                    Text("How to use the quick input bar to add names, tags, dates, and notes in one line. Icon A/B test: choose which icon appears when the bar is collapsed. Contact details: choose what appears when a contact has no notes.")
                 }
 
                 practiceReminderSection
@@ -431,6 +441,7 @@ struct SettingsView: View {
     }
 
     @AppStorage(QuickInputExpandIconPreference.userDefaultsKey) private var quickInputExpandIcon: String = QuickInputExpandIconPreference.magnifyingglass.rawValue
+    @AppStorage(ContactDetailsNoNotesLayoutPreference.userDefaultsKey) private var contactDetailsNoNotesLayout: String = ContactDetailsNoNotesLayoutPreference.summaryFirst.rawValue
 
     @AppStorage(CarouselSamplingSettings.modeKey) private var carouselSamplingMode: String = CarouselSamplingMode.none.rawValue
     @AppStorage(CarouselSamplingSettings.uniformMaxKey) private var carouselUniformMax: Int = 8

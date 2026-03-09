@@ -2,46 +2,42 @@ import TipKit
 import SwiftUI
 
 struct PhotoFaceNamingTip: Tip {
+    private static let faceAssignedEvent = Tips.Event(id: "app.tips.photo.face.assigned")
+
     var title: Text {
         Text("Swipe to Name Faces")
     }
-    
+
     var message: Text? {
         Text("Swipe through detected faces and type a name to quickly assign them to contacts")
     }
-    
+
     var image: Image? {
         Image(systemName: "person.crop.rectangle.stack")
     }
-    
+
     var rules: [Rule] {
-        [
-            #Rule(TipEvents.faceAssigned) {
-                $0.donations.count < 2
-            }
-        ]
+        [ #Rule(Self.faceAssignedEvent) { $0.donations.count < 2 } ]
     }
 }
 
 struct PhotoMultipleFacesTip: Tip {
+    private static let multipleFacesDetectedEvent = Tips.Event(id: "app.tips.photo.faces.multiple")
+
     var title: Text {
         Text("Multiple Faces Detected")
     }
-    
+
     var message: Text? {
         Text("We found multiple faces in this photo. Swipe through to name each person")
     }
-    
+
     var image: Image? {
         Image(systemName: "person.3.fill")
     }
-    
+
     var rules: [Rule] {
-        [
-            #Rule(TipEvents.multipleFacesDetected) {
-                $0.donations.count >= 1
-            }
-        ]
+        [ #Rule(Self.multipleFacesDetectedEvent) { $0.donations.count >= 1 } ]
     }
 }
 

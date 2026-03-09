@@ -104,8 +104,18 @@ actor SuperFavoritesStore {
     }
 }
 
+private final class PhotoLibraryChangeForwarder: NSObject, PHPhotoLibraryChangeObserver {
+    weak var target: CurrentMonthGridViewModel?
+    func photoLibraryDidChange(_ changeInstance: PHChange) {
+        Diagnostics.log("PhotoLibrary didChange received, reloading month")
+        Task { @MainActor in
+            target?.loadSelectedMonth()
+        }
+    }
+}
+
 @MainActor
-final class CurrentMonthGridViewModel: NSObject, ObservableObject, PHPhotoLibraryChangeObserver {
+final class CurrentMonthGridViewModel: NSObject, ObservableObject {
     @Published var authorization: PHAuthorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     @Published var assets: [PHAsset] = []
     @Published var isLoading = false
@@ -117,6 +127,7 @@ final class CurrentMonthGridViewModel: NSObject, ObservableObject, PHPhotoLibrar
     @Published var superFavoriteIDs: Set<String> = []
 
     private let superFavoritesStore = SuperFavoritesStore()
+    private let photoLibraryForwarder = PhotoLibraryChangeForwarder()
     private var cachedIDs: Set<String> = []
     private var idToIndex: [String: Int] = [:]
     private var loadGeneration: Int = 0
@@ -128,7 +139,8 @@ final class CurrentMonthGridViewModel: NSObject, ObservableObject, PHPhotoLibrar
     override init() {
         super.init()
         if authorization == .authorized || authorization == .limited {
-            PHPhotoLibrary.shared().register(self)
+            photoLibraryForwarder.target = self
+            PHPhotoLibrary.shared().register(photoLibraryForwarder)
         }
         Task { [weak self] in
             guard let self else { return }
@@ -140,7 +152,7 @@ final class CurrentMonthGridViewModel: NSObject, ObservableObject, PHPhotoLibrar
     }
 
     deinit {
-        PHPhotoLibrary.shared().unregisterChangeObserver(self)
+        PHPhotoLibrary.shared().unregisterChangeObserver(photoLibraryForwarder)
         monthCachingManager.stopCachingImagesForAllAssets()
     }
 
@@ -159,7 +171,8 @@ final class CurrentMonthGridViewModel: NSObject, ObservableObject, PHPhotoLibrar
                     self?.authorization = newStatus
                     if newStatus == .authorized || newStatus == .limited {
                         guard let self else { return }
-                        PHPhotoLibrary.shared().register(self)
+                        self.photoLibraryForwarder.target = self
+                        PHPhotoLibrary.shared().register(self.photoLibraryForwarder)
                         self.loadSelectedMonth()
                     }
                 }
@@ -205,13 +218,6 @@ final class CurrentMonthGridViewModel: NSObject, ObservableObject, PHPhotoLibrar
             let request = PHAssetChangeRequest(for: asset)
             request.isFavorite = targetValue
         }, completionHandler: nil)
-    }
-
-    func photoLibraryDidChange(_ changeInstance: PHChange) {
-        Diagnostics.log("PhotoLibrary didChange received, reloading month")
-        Task { @MainActor in
-            self.loadSelectedMonth()
-        }
     }
 
     func preheat(center: Int, targetSize: CGSize, window: Int = 40) {
@@ -275,7 +281,7 @@ final class CurrentMonthGridViewModel: NSObject, ObservableObject, PHPhotoLibrar
         loadSelectedMonth()
     }
 
-    private func loadSelectedMonth() {
+    fileprivate func loadSelectedMonth() {
         isLoading = true
         let bounds = monthBounds()
         let options = PHFetchOptions()
@@ -982,7 +988,7 @@ private struct AssetGridCell: View {
             currentAssetID = ""
             image = nil
         }
-        .onChange(of: asset.localIdentifier) { newID in
+        .onChange(of: asset.localIdentifier) { _, newID in
             guard newID != currentAssetID else { return }
             currentAssetID = newID
             reloadImage()

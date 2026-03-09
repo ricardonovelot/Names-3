@@ -78,13 +78,6 @@ final class NoteRehearsalViewModel {
             
             let performance = getOrCreatePerformance(for: contact)
             
-            // Select contacts based on spacing algorithm
-            // Prioritize contacts that are due or overdue
-            let isDue = performance.dueDate <= now
-            let daysSinceLastRehearsal = performance.lastRehearsedDate.map {
-                Calendar.current.dateComponents([.day], from: $0, to: now).day ?? 0
-            } ?? Int.max
-            
             items.append(RehearsalItem(
                 contact: contact,
                 notes: validNotes,

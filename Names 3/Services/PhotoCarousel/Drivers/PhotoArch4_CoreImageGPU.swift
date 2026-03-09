@@ -170,8 +170,10 @@ private final class TextureCache {
         thumbnail.countLimit = 120
 
         NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.rendered.removeAllObjects()
-            self?.thumbnail.removeAllObjects()
+            Task { @MainActor in
+                self?.rendered.removeAllObjects()
+                self?.thumbnail.removeAllObjects()
+            }
         }
     }
 

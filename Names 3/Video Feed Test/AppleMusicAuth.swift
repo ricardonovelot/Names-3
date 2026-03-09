@@ -1,11 +1,12 @@
 import Foundation
-import StoreKit
+import MusicKit
 import Combine
 
 @MainActor
 final class AppleMusicAuth: ObservableObject {
-    @Published private(set) var authStatus: SKCloudServiceAuthorizationStatus = SKCloudServiceController.authorizationStatus()
-    @Published private(set) var capabilities: SKCloudServiceCapability = []
+    @Published private(set) var authStatus: MusicAuthorization.Status = .notDetermined
+    @Published private(set) var canPlayCatalogContent: Bool = false
+    @Published private(set) var canAddToCloudLibrary: Bool = false
     @Published private(set) var userToken: String?
     @Published private(set) var lastError: String?
 
@@ -16,45 +17,31 @@ final class AppleMusicAuth: ObservableObject {
         if let data = try? keychain.getData(key: userTokenKey), let token = String(data: data, encoding: .utf8) {
             self.userToken = token
         }
-        Task { await refreshCapabilities() }
+        Task { await refresh() }
     }
 
     var isAuthorized: Bool { authStatus == .authorized }
-    var hasCatalogPlayback: Bool { capabilities.contains(.musicCatalogPlayback) }
-    var canAddToCloudLibrary: Bool { capabilities.contains(.addToCloudMusicLibrary) }
+    var hasCatalogPlayback: Bool { canPlayCatalogContent }
 
     func requestAuthorization() async {
-        if #available(iOS 15.0, *) {
-            let status = await SKCloudServiceController.requestAuthorization()
-            authStatus = status
-            if status == .authorized {
-                await refreshCapabilities()
-            }
-        } else {
-            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-                SKCloudServiceController.requestAuthorization { [weak self] status in
-                    Task { @MainActor in
-                        self?.authStatus = status
-                        if status == .authorized {
-                            Task { await self?.refreshCapabilities() }
-                        }
-                        cont.resume()
-                    }
-                }
-            }
+        let status = await MusicAuthorization.request()
+        authStatus = status
+        if status == .authorized {
+            await refresh()
         }
     }
 
-    func refreshCapabilities() async {
-        let controller = SKCloudServiceController()
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            controller.requestCapabilities { [weak self] caps, error in
-                Task { @MainActor in
-                    self?.capabilities = caps
-                    self?.lastError = error?.localizedDescription
-                    cont.resume()
-                }
-            }
+    func refresh() async {
+        authStatus = MusicAuthorization.currentStatus
+        do {
+            let subscription = try await MusicSubscription.current
+            canPlayCatalogContent = subscription.canPlayCatalogContent
+            canAddToCloudLibrary = subscription.hasCloudLibraryEnabled
+            lastError = nil
+        } catch {
+            canPlayCatalogContent = false
+            canAddToCloudLibrary = false
+            lastError = error.localizedDescription
         }
     }
 
@@ -63,20 +50,9 @@ final class AppleMusicAuth: ObservableObject {
             lastError = "Missing APPLE_MUSIC_DEVELOPER_TOKEN in Info.plist."
             return
         }
-        let controller = SKCloudServiceController()
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            controller.requestUserToken(forDeveloperToken: devToken) { [weak self] token, error in
-                Task { @MainActor in
-                    if let token {
-                        self?.userToken = token
-                        try? self?.keychain.setData(Data(token.utf8), key: self?.userTokenKey ?? "appleMusic.userToken")
-                        self?.lastError = nil
-                    } else {
-                        self?.lastError = error?.localizedDescription ?? "Failed to get Apple Music user token."
-                    }
-                    cont.resume()
-                }
-            }
-        }
+        // MusicKit manages tokens for MusicDataRequest. For custom API calls that need a user token,
+        // use MusicDataRequest with the framework's token provider, or keep StoreKit for legacy flows.
+        // This method is retained for compatibility; consider migrating to MusicKit's request APIs.
+        lastError = "User token requests: use MusicKit's MusicDataRequest for catalog operations."
     }
 }

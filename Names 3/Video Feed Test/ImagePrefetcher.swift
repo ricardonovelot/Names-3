@@ -49,12 +49,12 @@ final class ImagePrefetcher {
                 let gen = AVAssetImageGenerator(asset: avAsset)
                 gen.appliesPreferredTrackTransform = true
                 gen.maximumSize = targetSize
-                let time = CMTime.zero
-                do {
-                    let cgImage = try gen.copyCGImage(at: time, actualTime: nil)
-                    cont.resume(returning: UIImage(cgImage: cgImage))
-                } catch {
-                    cont.resume(returning: nil)
+                gen.generateCGImageAsynchronously(for: .zero) { cgImage, _, _ in
+                    if let cgImage {
+                        cont.resume(returning: UIImage(cgImage: cgImage))
+                    } else {
+                        cont.resume(returning: nil)
+                    }
                 }
             }
         }

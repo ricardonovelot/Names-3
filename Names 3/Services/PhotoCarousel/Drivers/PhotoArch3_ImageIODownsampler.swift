@@ -142,8 +142,8 @@ private actor ImageDataFetcher {
 
 // MARK: - Tier Cache
 
-@MainActor
-private final class TierCache {
+/// NSCache is thread-safe; TierCache is nonisolated so memory-warning observer can clear from any queue.
+private final class TierCache: @unchecked Sendable {
     private let cache = NSCache<NSString, UIImage>()
     private let maxCostBytes: Int
 
@@ -153,7 +153,9 @@ private final class TierCache {
         cache.countLimit = 200
 
         NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.cache.removeAllObjects()
+            MainActor.assumeIsolated {
+                self?.cache.removeAllObjects()
+            }
         }
     }
 

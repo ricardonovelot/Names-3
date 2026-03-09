@@ -316,21 +316,24 @@ final class PhotoLibraryService: PhotoLibraryServiceProtocol {
         resizeMode: PHImageRequestOptionsResizeMode
     ) async throws -> UIImage? {
         guard isPhotoLibraryAvailable() else { throw PhotoLibraryUnavailableError() }
-        var requestID: PHImageRequestID = PHInvalidImageRequestID
+        final class RequestState {
+            var requestID: PHImageRequestID = PHInvalidImageRequestID
+            var didResume = false
+            var continuationRef: CheckedContinuation<UIImage?, Error>?
+        }
+        let state = RequestState()
         let lock = NSLock()
-        var didResume = false
-        var continuationRef: CheckedContinuation<UIImage?, Error>?
-        
+
         return try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<UIImage?, Error>) in
-                continuationRef = continuation
+                state.continuationRef = continuation
                 let options = PHImageRequestOptions()
                 options.deliveryMode = deliveryMode
                 options.resizeMode = resizeMode
                 options.isNetworkAccessAllowed = true
                 options.isSynchronous = false
-                
-                requestID = imageManager.requestImage(
+
+                state.requestID = imageManager.requestImage(
                     for: asset,
                     targetSize: targetSize,
                     contentMode: contentMode,
@@ -340,43 +343,45 @@ final class PhotoLibraryService: PhotoLibraryServiceProtocol {
                     let isCancelled = (info?[PHImageCancelledKey] as? NSNumber)?.boolValue == true
                     let isDegraded = (info?[PHImageResultIsDegradedKey] as? NSNumber)?.boolValue == true
                     let error = info?[PHImageErrorKey] as? Error
-                    
-                    lock.lock()
-                    defer { lock.unlock() }
-                    if didResume { return }
-                    
-                    if isCancelled {
-                        didResume = true
-                        continuation.resume(throwing: CancellationError())
-                        continuationRef = nil
-                        return
-                    }
-                    
-                    if let error {
-                        didResume = true
-                        self.setLibraryUnavailable()
-                        continuation.resume(throwing: error)
-                        continuationRef = nil
-                        return
-                    }
-                    
-                    if !isDegraded {
-                        didResume = true
-                        continuation.resume(returning: image)
-                        continuationRef = nil
+
+                    lock.withLock {
+                        guard !state.didResume else { return }
+
+                        if isCancelled {
+                            state.didResume = true
+                            state.continuationRef = nil
+                            continuation.resume(throwing: CancellationError())
+                            return
+                        }
+
+                        if let error {
+                            state.didResume = true
+                            state.continuationRef = nil
+                            self.setLibraryUnavailable()
+                            continuation.resume(throwing: error)
+                            return
+                        }
+
+                        if !isDegraded {
+                            state.didResume = true
+                            state.continuationRef = nil
+                            continuation.resume(returning: image)
+                        }
                     }
                 }
             }
         }, onCancel: {
-            if requestID != PHInvalidImageRequestID {
-                self.imageManager.cancelImageRequest(requestID)
+            let rid: PHImageRequestID = lock.withLock {
+                let r = state.requestID
+                if !state.didResume {
+                    state.didResume = true
+                    state.continuationRef?.resume(throwing: CancellationError())
+                    state.continuationRef = nil
+                }
+                return r
             }
-            lock.lock()
-            defer { lock.unlock() }
-            if !didResume {
-                didResume = true
-                continuationRef?.resume(throwing: CancellationError())
-                continuationRef = nil
+            if rid != PHInvalidImageRequestID {
+                self.imageManager.cancelImageRequest(rid)
             }
         })
     }

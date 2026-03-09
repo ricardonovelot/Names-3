@@ -57,6 +57,8 @@ final class NameFacesFeedCombinedViewController: UIViewController {
     /// Max asset IDs to persist in carousel cache. Keeps UserDefaults small; 200 is enough for instant open.
     private static let carouselCacheMaxSize = 200
 
+    private var backgroundObserver: NSObjectProtocol?
+
     // MARK: - Init
 
     init(
@@ -112,23 +114,37 @@ final class NameFacesFeedCombinedViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(photosFeedScrollToTopIfNeeded),
-            name: .photosFeedScrollToTop,
-            object: nil
-        )
         setupContainers()
+        // Restore feed position when reopening app (works for all feed architectures)
+        if let savedID = FeedPositionStore.savedAssetID {
+            coordinator.setBridgeTarget(savedID)
+        }
         setupFeedChild()
         setupModeToggle()
         if displayMode == .carousel || initialScrollDate != nil {
             loadCarouselAssetsIfNeeded()
         }
+        backgroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.feedViewController?.savePositionToStore()
+            }
+        }
+    }
+
+    deinit {
+        backgroundObserver.map { NotificationCenter.default.removeObserver($0) }
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         onDisplayModeChange?(displayMode == .feed)
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        feedViewController?.savePositionToStore()
     }
 
     // MARK: - Setup
@@ -185,7 +201,9 @@ final class NameFacesFeedCombinedViewController: UIViewController {
         modeToggleButton.layer.cornerCurve = .continuous
         modeToggleButton.layer.borderWidth = 1
         modeToggleButton.layer.borderColor = UIColor.white.withAlphaComponent(0.2).cgColor
-        modeToggleButton.contentEdgeInsets = UIEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+        var config = UIButton.Configuration.plain()
+        config.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12)
+        modeToggleButton.configuration = config
         view.addSubview(modeToggleButton)
         updateModeToggleTitle()
 
@@ -195,23 +213,24 @@ final class NameFacesFeedCombinedViewController: UIViewController {
         ])
     }
 
-    @objc private func photosFeedScrollToTopIfNeeded() {
-        guard displayMode == .feed else { return }
-        feedViewController?.scrollToTop()
-    }
-
     private func updateModeToggleTitle() {
         let isFeed = displayMode == .feed
         let iconName = isFeed ? "person.crop.rectangle" : "play.rectangle.fill"
         let title = isFeed
             ? String(localized: "combined.toggle.nameFaces")
             : String(localized: "combined.toggle.feed")
-        let config = UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
-        let image = UIImage(systemName: iconName, withConfiguration: config)
-        modeToggleButton.setImage(image, for: .normal)
-        modeToggleButton.setTitle(" \(title)", for: .normal)
-        modeToggleButton.setTitleColor(.white, for: .normal)
-        modeToggleButton.titleLabel?.font = .systemFont(ofSize: 13, weight: .medium)
+        let symbolConfig = UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+        let image = UIImage(systemName: iconName, withConfiguration: symbolConfig)
+        var config = modeToggleButton.configuration ?? UIButton.Configuration.plain()
+        config.image = image
+        config.title = " \(title)"
+        config.baseForegroundColor = .white
+        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var outgoing = incoming
+            outgoing.font = .systemFont(ofSize: 13, weight: .medium)
+            return outgoing
+        }
+        modeToggleButton.configuration = config
         modeToggleButton.tintColor = .white
     }
 

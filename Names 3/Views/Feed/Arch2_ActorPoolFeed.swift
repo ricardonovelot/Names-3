@@ -374,18 +374,19 @@ final class Arch2_ActorPoolFeedVC: UIViewController, FeedArchitectureProvider {
 
     private func setupObservers() {
         deletedObserver = NotificationCenter.default.addObserver(forName: .deletedVideosChanged, object: nil, queue: .main) { [weak self] _ in
-            self?.reloadFeed()
+            Task { @MainActor in self?.reloadFeed() }
         }
         settingsObserver = NotificationCenter.default.addObserver(forName: .feedSettingsDidChange, object: nil, queue: .main) { [weak self] _ in
-            self?.reloadFeed()
+            Task { @MainActor in self?.reloadFeed() }
         }
     }
 
     private func triggerInitialLoad() {
-        if let bridgeID = coordinator?.consumeBridgeTarget() {
+        let bridgeID = coordinator?.consumeBridgeTarget()
+        if let id = bridgeID {
             loadTask = Task { [weak self] in
                 guard let self else { return }
-                let batch = await self.loadActor.loadBridge(assetID: bridgeID)
+                let batch = await self.loadActor.loadBridge(assetID: id)
                 self.applyBatch(batch)
             }
         } else {
@@ -395,6 +396,12 @@ final class Arch2_ActorPoolFeedVC: UIViewController, FeedArchitectureProvider {
                 self.applyBatch(batch)
             }
         }
+    }
+
+    func savePositionToStore() {
+        guard items.indices.contains(currentIndex),
+              let id = FeedDataHelpers.assetID(for: items[currentIndex]) else { return }
+        FeedPositionStore.save(assetID: id)
     }
 
     private func reloadFeed() {
@@ -561,6 +568,7 @@ extension Arch2_ActorPoolFeedVC: UICollectionViewDataSource, UICollectionViewDel
         currentIndex = max(0, min(items.count - 1, page))
         updateCoordinator(index: currentIndex)
         refreshVisibleCellsActiveState()
+        savePositionToStore()
         prefetchNearby()
         loadTask?.cancel()
         loadTask = Task { [weak self] in

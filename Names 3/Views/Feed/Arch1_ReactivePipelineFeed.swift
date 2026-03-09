@@ -150,14 +150,11 @@ private final class ReactiveFeedPipeline {
 
         let semaphore = DispatchSemaphore(value: 0)
         var mixedAssets: [PHAsset] = []
-        var targetIdx = 0
-
         Task {
             let result = await NameFacesCarouselAssetFetcher.fetchMixedAssetsAround(
                 targetAsset: asset, rangeDays: 14, limit: 80
             )
             mixedAssets = result.assets
-            targetIdx = result.targetIndex
             semaphore.signal()
         }
         semaphore.wait()
@@ -411,19 +408,26 @@ final class Arch1_ReactivePipelineFeedVC: UIViewController, FeedArchitectureProv
 
     private func setupObservers() {
         deletedObserver = NotificationCenter.default.addObserver(forName: .deletedVideosChanged, object: nil, queue: .main) { [weak self] _ in
-            self?.pipeline.send(.reload)
+            Task { @MainActor in self?.pipeline.send(.reload) }
         }
         settingsObserver = NotificationCenter.default.addObserver(forName: .feedSettingsDidChange, object: nil, queue: .main) { [weak self] _ in
-            self?.pipeline.send(.reload)
+            Task { @MainActor in self?.pipeline.send(.reload) }
         }
     }
 
     private func triggerInitialLoad() {
-        if let bridgeID = coordinator?.consumeBridgeTarget() {
-            pipeline.send(.loadBridge(assetID: bridgeID))
+        let bridgeID = coordinator?.consumeBridgeTarget()
+        if let id = bridgeID {
+            pipeline.send(.loadBridge(assetID: id))
         } else {
             pipeline.send(.loadExplore)
         }
+    }
+
+    func savePositionToStore() {
+        guard items.indices.contains(currentIndex),
+              let id = FeedDataHelpers.assetID(for: items[currentIndex]) else { return }
+        FeedPositionStore.save(assetID: id)
     }
 
     // MARK: Snapshot
@@ -554,6 +558,7 @@ extension Arch1_ReactivePipelineFeedVC: UICollectionViewDelegateFlowLayout {
         currentIndex = max(0, min(items.count - 1, page))
         updateCoordinator(index: currentIndex)
         refreshVisibleCellsActiveState()
+        savePositionToStore()
         prefetch.updateWindow(page: currentIndex, items: items, collectionView: collectionView)
         pipeline.send(.loadMore(currentIndex: currentIndex))
     }

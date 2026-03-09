@@ -69,7 +69,7 @@ enum ImageAccessibleBackground {
         b = b * (1 - s) + l * s
 
         // Darken so we're in a readable range but keep hue visible (Apple Maps–style)
-        var currentL = luminance(r: r, g: g, b: b)
+        let currentL = luminance(r: r, g: g, b: b)
         if currentL > targetMaxLuminance {
             let scale = targetMaxLuminance / max(currentL, 0.01)
             r *= scale

@@ -3,22 +3,28 @@ import Photos
 import AVFoundation
 import QuartzCore
 
+/// Wraps Photos/AVFoundation types for use across actor boundaries (Swift 6).
+private struct PlayerItemResult: @unchecked Sendable {
+    let item: AVPlayerItem?
+    let info: [AnyHashable: Any]?
+}
+
 actor PlayerItemBootstrapper {
     static let shared = PlayerItemBootstrapper()
 
-    private var tasks: [String: Task<(AVPlayerItem?, [AnyHashable: Any]?), Never>] = [:]
+    private var tasks: [String: Task<PlayerItemResult, Never>] = [:]
 
     func ensureStarted(asset: PHAsset) {
         let id = asset.localIdentifier
         guard tasks[id] == nil else { return }
         let t0 = CACurrentMediaTime()
         Diagnostics.video("[Bootstrap] ensureStarted id=\(id)")
-        tasks[id] = Task { [weak self] in
+        tasks[id] = Task {
             // Phase-gate to appActive to avoid heavy subsystems before the app is active.
             let ok = await PhaseGate.shared.waitUntil(.appActive, timeout: 30)
             Diagnostics.video("[Bootstrap] gate appActive ok=\(ok) id=\(id) dt=\(String(format: "%.3f", CACurrentMediaTime() - t0))s")
 
-            if Task.isCancelled { return (nil, nil) }
+            if Task.isCancelled { return PlayerItemResult(item: nil, info: nil) }
 
             let options = PHVideoRequestOptions()
             // .automatic lets the system optimize for streaming (like Apple Photos); .mediumQualityFormat triggers FIGSANDBOX -17507 with iCloud videos
@@ -30,9 +36,9 @@ actor PlayerItemBootstrapper {
                 }
             }
 
-            let result: (AVPlayerItem?, [AnyHashable: Any]?) = await withCheckedContinuation { (cont: CheckedContinuation<(AVPlayerItem?, [AnyHashable: Any]?), Never>) in
+            let result = await withCheckedContinuation { (cont: CheckedContinuation<PlayerItemResult, Never>) in
                 let reqID = PHImageManager.default().requestPlayerItem(forVideo: asset, options: options) { item, info in
-                    cont.resume(returning: (item, info))
+                    cont.resume(returning: PlayerItemResult(item: item, info: info))
                 }
                 Diagnostics.video("[Bootstrap] requestPlayerItem started id=\(id) reqID=\(reqID)")
             }
@@ -45,8 +51,8 @@ actor PlayerItemBootstrapper {
         if tasks[id] == nil {
             ensureStarted(asset: asset)
         }
-        let res = await tasks[id]?.value ?? (nil, nil)
-        return res
+        let res = await tasks[id]?.value ?? PlayerItemResult(item: nil, info: nil)
+        return (res.item, res.info)
     }
 
     func cancel(id: String) {

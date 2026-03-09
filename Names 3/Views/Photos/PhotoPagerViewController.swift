@@ -128,7 +128,7 @@ final class PhotoPagerViewController: UIViewController {
             image: UIImage(systemName: "xmark"),
             style: .plain,
             target: self,
-            action: #selector(dismissTapped)
+            action: #selector(PhotoPagerViewController.dismissTapped)
         )
         
         updateNavigationTitle()
@@ -224,7 +224,7 @@ final class PhotoPagerViewController: UIViewController {
         )
         
         // Override back action to handle paging context
-        detailVC.customBackAction = { [weak self] in
+        detailVC.customBackAction = {
             // Do nothing - we're in paging mode
             // User can swipe to navigate or tap X to dismiss entire pager
         }

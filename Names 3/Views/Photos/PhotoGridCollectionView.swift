@@ -314,8 +314,7 @@ struct PhotoGridView: UIViewRepresentable {
             )
             let group = NSCollectionLayoutGroup.horizontal(
                 layoutSize: groupSize,
-                subitem: item,
-                count: columns
+                subitems: Array(repeating: item, count: columns)
             )
             group.interItemSpacing = .fixed(itemSpacing)
             

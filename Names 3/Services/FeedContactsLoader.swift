@@ -7,11 +7,12 @@
 //
 
 import Foundation
-import SwiftData
+@preconcurrency import SwiftData
 
 enum FeedContactsLoader {
 
     /// Fetches contact UUIDs on background thread (unblocks main), then refetches on main for display.
+    @MainActor
     static func loadContacts(
         container: ModelContainer,
         mainContext: ModelContext,
@@ -25,17 +26,15 @@ enum FeedContactsLoader {
             )
             descriptor.fetchLimit = fetchLimit
             let contacts = (try? ctx.fetch(descriptor)) ?? []
-            return contacts.map(\.uuid)
+            return contacts.map { $0.uuid }
         }.value
 
         guard !ids.isEmpty else { return [] }
 
-        return await MainActor.run {
-            let descriptor = FetchDescriptor<Contact>(
-                predicate: #Predicate<Contact> { ids.contains($0.uuid) },
-                sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
-            )
-            return (try? mainContext.fetch(descriptor)) ?? []
-        }
+        let descriptor = FetchDescriptor<Contact>(
+            predicate: #Predicate<Contact> { ids.contains($0.uuid) },
+            sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
+        )
+        return (try? mainContext.fetch(descriptor)) ?? []
     }
 }

@@ -74,14 +74,14 @@ final class ConnectivityMonitor {
                 self.isOffline = (path.status != .satisfied)
                 self.isConstrained = path.isConstrained
                 self.usesCellular = path.usesInterfaceType(.cellular)
-                self.reportLock.lock()
-                self._reportOffline = self.isOffline
-                self._reportConstrained = self.isConstrained
-                self._reportUsesCellular = self.usesCellular
-                self.reportLock.unlock()
-                ConnectivityCellularCache.lock.lock()
-                ConnectivityCellularCache.usesCellular = self.usesCellular
-                ConnectivityCellularCache.lock.unlock()
+                self.reportLock.withLock {
+                    self._reportOffline = self.isOffline
+                    self._reportConstrained = self.isConstrained
+                    self._reportUsesCellular = self.usesCellular
+                }
+                ConnectivityCellularCache.lock.withLock {
+                    ConnectivityCellularCache.usesCellular = self.usesCellular
+                }
                 if self.isOffline != wasOffline {
                     Self.logger.info("Connectivity changed: isOffline=\(self.isOffline), constrained=\(self.isConstrained), usesCellular=\(self.usesCellular)")
                 }

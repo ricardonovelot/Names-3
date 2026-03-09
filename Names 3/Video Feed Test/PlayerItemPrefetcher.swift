@@ -4,6 +4,11 @@ import AVFoundation
 import os
 import os.signpost
 
+/// Wraps Photos info dict for use in @Sendable closures (Swift 6).
+private struct SendableInfo: @unchecked Sendable {
+    let value: [AnyHashable: Any]?
+}
+
 actor PlayerItemPrefetchStore {
     private let cache = NSCache<NSString, AVPlayerItem>()
     private var inFlight: [String: PHImageRequestID] = [:]
@@ -52,8 +57,9 @@ actor PlayerItemPrefetchStore {
             spRequestToFinish[id] = spRF
 
             let reqID = PHImageManager.default().requestPlayerItem(forVideo: asset, options: options) { item, info in
+                let wrapped = SendableInfo(value: info)
                 Task { [weak self] in
-                    await self?.handleResult(id: id, item: item, info: info)
+                    await self?.handleResult(id: id, item: item, info: wrapped.value)
                 }
             }
             inFlight[id] = reqID
@@ -102,9 +108,7 @@ actor PlayerItemPrefetchStore {
         }
         
         let waiterID = UUID()
-        return await withTaskCancellationHandler {
-            Task { await self.cancelWaiter(for: id, waiterID: waiterID) }
-        } operation: {
+        return await withTaskCancellationHandler(operation: {
             await withCheckedContinuation { (cont: CheckedContinuation<AVPlayerItem?, Never>) in
                 Task {
                     await registerWaiter(for: id, waiterID: waiterID, continuation: cont)
@@ -114,16 +118,18 @@ actor PlayerItemPrefetchStore {
                     }
                 }
             }
-        }
+        }, onCancel: {
+            Task { await self.cancelWaiter(for: id, waiterID: waiterID) }
+        })
     }
     
-    private func registerWaiter(for id: String, waiterID: UUID, continuation: CheckedContinuation<AVPlayerItem?, Never>) {
+    private func registerWaiter(for id: String, waiterID: UUID, continuation: CheckedContinuation<AVPlayerItem?, Never>) async {
         var dict = waiters[id] ?? [:]
         dict[waiterID] = continuation
         waiters[id] = dict
     }
     
-    private func timeoutWaiter(for id: String, waiterID: UUID) {
+    private func timeoutWaiter(for id: String, waiterID: UUID) async {
         guard var dict = waiters[id] else { return }
         if let cont = dict.removeValue(forKey: waiterID) {
             waiters[id] = dict.isEmpty ? nil : dict
@@ -131,7 +137,7 @@ actor PlayerItemPrefetchStore {
         }
     }
     
-    private func cancelWaiter(for id: String, waiterID: UUID) {
+    private func cancelWaiter(for id: String, waiterID: UUID) async {
         guard var dict = waiters[id] else { return }
         if let cont = dict.removeValue(forKey: waiterID) {
             waiters[id] = dict.isEmpty ? nil : dict
@@ -158,8 +164,9 @@ actor PlayerItemPrefetchStore {
             cachedKeys.insert(id)
         }
         
+        let wrappedInfo = SendableInfo(value: info)
         await MainActor.run {
-            PhotoKitDiagnostics.logResultInfoIfNotable(prefix: "PlayerItemPrefetcher result", info: info)
+            PhotoKitDiagnostics.logResultInfoIfNotable(prefix: "PlayerItemPrefetcher result", info: wrappedInfo.value)
             NotificationCenter.default.post(name: .playerItemPrefetcherDidFinish, object: nil, userInfo: ["id": id, "success": item != nil])
             if item != nil {
                 DownloadTracker.shared.updateProgress(for: id, phase: .playerItem, progress: 1.0)

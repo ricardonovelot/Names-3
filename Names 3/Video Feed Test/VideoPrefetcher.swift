@@ -5,6 +5,11 @@ import os
 import os.signpost
 import QuartzCore
 
+private struct SendableInfo: @unchecked Sendable {
+    let value: [AnyHashable: Any]?
+    init(_ value: [AnyHashable: Any]?) { self.value = value }
+}
+
 actor VideoPrefetchStore {
     private let cache = NSCache<NSString, AVAsset>()
     private var inFlight: [String: PHImageRequestID] = [:]
@@ -78,8 +83,9 @@ actor VideoPrefetchStore {
             }
 
             let reqID = PHImageManager.default().requestAVAsset(forVideo: asset, options: options) { [weak self] avAsset, _, info in
+                let wrappedInfo = SendableInfo(info)
                 Task {
-                    await self?.handleResult(id: id, avAsset: avAsset, info: info)
+                    await self?.handleResult(id: id, avAsset: avAsset, info: wrappedInfo)
                 }
             }
 
@@ -141,19 +147,17 @@ actor VideoPrefetchStore {
         }
 
         let waiterID = UUID()
-        return await withTaskCancellationHandler {
-            Task { await self.cancelWaiter(for: id, waiterID: waiterID) }
-        } operation: {
+        return await withTaskCancellationHandler(operation: {
             await withCheckedContinuation { (cont: CheckedContinuation<AVAsset?, Never>) in
+                registerWaiter(for: id, waiterID: waiterID, continuation: cont)
                 Task {
-                    await registerWaiter(for: id, waiterID: waiterID, continuation: cont)
-                    Task {
-                        try? await Task.sleep(for: timeout)
-                        await timeoutWaiter(for: id, waiterID: waiterID)
-                    }
+                    try? await Task.sleep(for: timeout)
+                    timeoutWaiter(for: id, waiterID: waiterID)
                 }
             }
-        }
+        }, onCancel: {
+            Task { await self.cancelWaiter(for: id, waiterID: waiterID) }
+        })
     }
 
     private func registerWaiter(for id: String, waiterID: UUID, continuation: CheckedContinuation<AVAsset?, Never>) {
@@ -178,7 +182,7 @@ actor VideoPrefetchStore {
         }
     }
 
-    private func handleResult(id: String, avAsset: AVAsset?, info: [AnyHashable: Any]?) async {
+    private func handleResult(id: String, avAsset: AVAsset?, info: SendableInfo) async {
         inFlight.removeValue(forKey: id)
 
         if let sid = spRequestToResult.removeValue(forKey: id) {
@@ -194,11 +198,11 @@ actor VideoPrefetchStore {
             cachedKeys.insert(id)
             // CLEAR: success cancels backoff
             backoffUntil[id] = nil
-            await MainActor.run {
-                if let info {
-                    let inCloud = (info[PHImageResultIsInCloudKey] as? NSNumber)?.boolValue ?? false
-                    let cancelled = (info[PHImageCancelledKey] as? NSNumber)?.boolValue == true
-                    let errorDesc = (info[PHImageErrorKey] as? NSError)?.localizedDescription
+            await MainActor.run { [info] in
+                if let infoDict = info.value {
+                    let inCloud = (infoDict[PHImageResultIsInCloudKey] as? NSNumber)?.boolValue ?? false
+                    let cancelled = (infoDict[PHImageCancelledKey] as? NSNumber)?.boolValue == true
+                    let errorDesc = (infoDict[PHImageErrorKey] as? NSError)?.localizedDescription
                     let assetKind = String(describing: type(of: avAsset))
                     var scheme = "n/a"
                     if let urlAsset = avAsset as? AVURLAsset {
@@ -214,16 +218,16 @@ actor VideoPrefetchStore {
                 FirstLaunchProbe.shared.prefetchCached(id: id)
             }
         } else {
-            // evaluate error
-            let nsErr = info?[PHImageErrorKey] as? NSError
-            let cancelled = (info?[PHImageCancelledKey] as? NSNumber)?.boolValue == true
+            // evaluate error (extract before @Sendable closure)
+            let nsErr = info.value?[PHImageErrorKey] as? NSError
+            let cancelled = (info.value?[PHImageCancelledKey] as? NSNumber)?.boolValue == true
             let isTransientCloud = (nsErr?.domain == "CloudPhotoLibraryErrorDomain" && nsErr?.code == 1005)
             if isTransientCloud {
                 backoffUntil[id] = Date().addingTimeInterval(10)
-                StorageMonitor.reportIfCloudPhotoLowStorage(info: info)
+                StorageMonitor.reportIfCloudPhotoLowStorage(info: info.value)
             }
-            await MainActor.run {
-                PhotoKitDiagnostics.logResultInfo(prefix: "Prefetcher AVAsset nil", info: info)
+            await MainActor.run { [info] in
+                PhotoKitDiagnostics.logResultInfo(prefix: "Prefetcher AVAsset nil", info: info.value)
                 if !cancelled && !isTransientCloud {
                     if let err = nsErr {
                         StorageMonitor.reportIfENOSPC(err)

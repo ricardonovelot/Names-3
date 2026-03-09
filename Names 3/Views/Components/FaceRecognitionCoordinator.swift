@@ -6,8 +6,14 @@
 //
 
 import SwiftUI
-import SwiftData
+@preconcurrency import SwiftData
 import Photos
+
+/// Sendable box for passing non-Sendable refs into @Sendable closures when caller guarantees main-actor use.
+private final class SendableRef<T>: @unchecked Sendable {
+    nonisolated(unsafe) let value: T
+    init(_ value: T) { self.value = value }
+}
 
 /// Coordinator for managing face recognition UI interactions
 @MainActor
@@ -47,14 +53,15 @@ final class FaceRecognitionCoordinator: ObservableObject {
         }
         
         // Request Photos permission first
+        let contactRef = SendableRef(contact)
+        let contextRef = SendableRef(modelContext)
         PHPhotoLibrary.requestAuthorization(for: .readWrite) { [weak self] status in
             guard let self = self else { return }
-            
             Task { @MainActor in
                 switch status {
                 case .authorized, .limited:
                     print("[FaceRecognition] Photos authorized/limited, starting performFaceRecognition")
-                    self.performFaceRecognition(for: contact, in: modelContext)
+                    self.performFaceRecognition(for: contactRef.value, in: contextRef.value)
                 case .denied, .restricted:
                     print("[FaceRecognition] ❌ Photos denied or restricted")
                     self.errorMessage = "Photos access is required to find similar faces. Please enable it in Settings."

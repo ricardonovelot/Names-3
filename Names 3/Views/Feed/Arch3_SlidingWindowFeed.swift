@@ -125,9 +125,6 @@ private final class VirtualFeedResolver {
         guard let vResult = videoFetch, vResult.count > 0 else { return }
         let hidden = DeletedVideosStore.snapshot()
 
-        var videoIdx = 0
-        var feedIdx = 0
-        var lastVideoForPhotos: [PHAsset] = []
 
         let safeFrom = max(0, from)
         let safeTo = min(totalEstimatedCount - 1, to)
@@ -333,25 +330,33 @@ final class Arch3_SlidingWindowFeedVC: UIViewController, FeedArchitectureProvide
         memoryObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            self?.handleMemoryWarning()
+            Task { @MainActor in self?.handleMemoryWarning() }
         }
         deletedObserver = NotificationCenter.default.addObserver(forName: .deletedVideosChanged, object: nil, queue: .main) { [weak self] _ in
-            self?.reloadFeed()
+            Task { @MainActor in self?.reloadFeed() }
         }
         settingsObserver = NotificationCenter.default.addObserver(forName: .feedSettingsDidChange, object: nil, queue: .main) { [weak self] _ in
-            self?.reloadFeed()
+            Task { @MainActor in self?.reloadFeed() }
         }
     }
 
     private func loadInitial() {
-        if let bridgeID = coordinator?.consumeBridgeTarget() {
-            loadBridge(assetID: bridgeID)
+        let bridgeID = coordinator?.consumeBridgeTarget()
+        if let id = bridgeID {
+            loadBridge(assetID: id)
         } else {
             resolver.setup()
             materializeWindow(center: 0)
             collectionView.reloadData()
             prefetchWindow()
         }
+    }
+
+    func savePositionToStore() {
+        let localIdx = currentIndex - windowOffset
+        guard windowItems.indices.contains(localIdx),
+              let id = FeedDataHelpers.assetID(for: windowItems[localIdx]) else { return }
+        FeedPositionStore.save(assetID: id)
     }
 
     private func loadBridge(assetID: String) {
@@ -562,6 +567,7 @@ extension Arch3_SlidingWindowFeedVC: UICollectionViewDataSource, UICollectionVie
         let localClamped = max(0, min(windowItems.count - 1, localPage))
         currentIndex = localClamped + windowOffset
         updateCoordinator(index: localClamped)
+        savePositionToStore()
         refreshVisibleCellsActiveState()
         expandWindowIfNeeded()
         prefetchWindow()
