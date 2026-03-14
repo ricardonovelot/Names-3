@@ -437,6 +437,12 @@ final class SingleAssetPlayer: ObservableObject {
             Task { await NextVideoTraceCenter.shared.finish(cancelled: true, failed: false) }
         }
 
+        if FeatureFlags.enableAppleMusicIntegration {
+            AppleMusicController.shared.pauseIfManaged()
+            AppleMusicController.shared.stopManaging()
+        }
+        appliedSongID = nil
+
         hasPresentedFirstFrame = false
         player.replaceCurrentItem(with: nil)
         diagProbe = nil
@@ -959,7 +965,8 @@ final class SingleAssetPlayer: ObservableObject {
         songOverrideTask = nil
 
         guard isActive else {
-            Diagnostics.log("AM applySongIfAny skip (inactive). Leaving any managed playback running.")
+            Diagnostics.log("AM applySongIfAny skip (inactive). Pausing managed playback.")
+            AppleMusicController.shared.pauseIfManaged()
             return
         }
 
@@ -1050,8 +1057,10 @@ final class SingleAssetPlayer: ObservableObject {
                 startAMVerify(expectedStoreID: reference.appleMusicStoreID, reason: "play-reference")
             }
         } else {
-            Diagnostics.log("UpdateAM no reference -> keep current managed playback (beforeNowPlaying=\(beforeID))")
-            // Keep playing the current managed track; do not clear appliedSongID; no verification needed.
+            Diagnostics.log("UpdateAM no reference -> pause and stop managed playback (beforeNowPlaying=\(beforeID))")
+            AppleMusicController.shared.pauseIfManaged()
+            AppleMusicController.shared.stopManaging()
+            appliedSongID = nil
         }
 
         let afterID = AppleMusicController.shared.managedNowPlayingStoreID() ?? "nil"

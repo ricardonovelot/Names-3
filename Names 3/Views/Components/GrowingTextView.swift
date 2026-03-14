@@ -47,7 +47,6 @@ struct GrowingTextView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: AutoSizingTextView, context: Context) {
-        growingTextLogger.debug("updateUIView — binding.isFirstResponder=\(isFirstResponder) uiView.isFirstResponder=\(uiView.isFirstResponder) text.count=\(text.count)")
 
         // Record the latest desired state in the coordinator so deferred closures can re-check it
         // after the AttributeGraph has settled (avoids stale-render focus drops).
@@ -83,8 +82,6 @@ struct GrowingTextView: UIViewRepresentable {
                     growingTextLogger.debug("updateUIView — deferred resign cancelled (desiredFirstResponder=\(coordinator.desiredFirstResponder)) — stale render recovered ✅")
                 }
             }
-        } else {
-            growingTextLogger.debug("updateUIView — focus unchanged (binding=\(isFirstResponder), view=\(uiView.isFirstResponder))")
         }
     }
 
