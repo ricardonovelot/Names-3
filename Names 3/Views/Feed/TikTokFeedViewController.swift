@@ -38,9 +38,11 @@ final class TikTokFeedViewController: UIViewController, FeedArchitectureProvider
     private var pendingScrollToAssetID: String?
     private var pendingScrollLoadInFlight = false
 
+    private var carouselCurrentPage: [Int: Int] = [:]
     private var prefetchObserver: NSObjectProtocol?
     private var playbackReadyObserver: NSObjectProtocol?
     private var backgroundObserver: NSObjectProtocol?
+    private var willResignActiveObserver: NSObjectProtocol?
     private var cancellables = Set<AnyCancellable>()
 
     override func viewDidLoad() {
@@ -71,6 +73,11 @@ final class TikTokFeedViewController: UIViewController, FeedArchitectureProvider
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         saveFeedPosition(index: index)
+        viewModel.configureAudioSession(active: false)
+    }
+
+    func deactivateAudioSession() {
+        viewModel.configureAudioSession(active: false)
     }
 
     deinit {
@@ -79,7 +86,11 @@ final class TikTokFeedViewController: UIViewController, FeedArchitectureProvider
         prefetchObserver.map { NotificationCenter.default.removeObserver($0) }
         playbackReadyObserver.map { NotificationCenter.default.removeObserver($0) }
         backgroundObserver.map { NotificationCenter.default.removeObserver($0) }
+        willResignActiveObserver.map { NotificationCenter.default.removeObserver($0) }
+        feedSettingsObserver.map { NotificationCenter.default.removeObserver($0) }
     }
+
+    private var feedSettingsObserver: NSObjectProtocol?
 
     private func setupObservers() {
         prefetchObserver = NotificationCenter.default.addObserver(
@@ -96,6 +107,23 @@ final class TikTokFeedViewController: UIViewController, FeedArchitectureProvider
         }
         backgroundObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.viewModel.configureAudioSession(active: false)
+                self.saveFeedPosition(index: self.index)
+            }
+        }
+        willResignActiveObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.willResignActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.viewModel.configureAudioSession(active: false)
+            }
+        }
+        // Save position before ViewModel reloads so we can restore after settings change (e.g. Exclude screenshots)
+        feedSettingsObserver = NotificationCenter.default.addObserver(
+            forName: .feedSettingsDidChange, object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
@@ -181,6 +209,15 @@ final class TikTokFeedViewController: UIViewController, FeedArchitectureProvider
                 self?.saveFeedPosition(index: newIndex)
             }
         )
+        controller.onDeleteItem = { [weak self] idx, item in
+            self?.handleDeleteFeedItem(at: idx, item: item)
+        }
+        controller.carouselCurrentPageProvider = { [weak self] idx in
+            self?.carouselCurrentPage[idx] ?? 0
+        }
+        controller.onDeletePhotoFromCarousel = { [weak self] feedIndex, photoIndex in
+            self?.handleDeletePhotoFromCarousel(feedIndex: feedIndex, photoIndex: photoIndex)
+        }
         controller.initialIndexOverride = clamped
         controller.effectiveIsActive = { [weak self] curr, idx in
             (curr == idx) && (self?.isFeedVisible ?? false)
@@ -211,7 +248,13 @@ final class TikTokFeedViewController: UIViewController, FeedArchitectureProvider
             return buildVideoCell(asset: asset, isActive: isActive && isFeedVisible)
         case .photoCarousel(let assets):
             if FeatureFlags.enablePhotoPosts || !assets.isEmpty {
-                return MediaFeedCellView(content: .photoCarousel(assets))
+                return MediaFeedCellView(content: .photoCarousel(
+                    assets: assets,
+                    feedIndex: index,
+                    onPageChanged: { [weak self] feedIndex, page in
+                        self?.carouselCurrentPage[feedIndex] = page
+                    }
+                ))
             } else {
                 return UIView()
             }
@@ -257,6 +300,57 @@ final class TikTokFeedViewController: UIViewController, FeedArchitectureProvider
         }
     }
 
+    private func handleDeleteFeedItem(at idx: Int, item: FeedItem) {
+        guard viewModel.items.indices.contains(idx) else { return }
+        switch item.kind {
+        case .video(let asset):
+            let id = asset.localIdentifier
+            Task { @MainActor in
+                await DeletedVideosStore.shared.hide(id: id)
+                await PlaybackPositionStore.shared.clear(id: id)
+                VideoPrefetcher.shared.removeCached(for: [id])
+            }
+        case .photoCarousel:
+            break
+        }
+        viewModel.items.remove(at: idx)
+        if index >= viewModel.items.count {
+            index = max(0, viewModel.items.count - 1)
+        }
+        reindexCarouselCurrentPage(afterRemovingAt: idx)
+        pagedController?.updateItems(viewModel.items)
+        pagedController?.scrollToIndex(index)
+    }
+
+    private func handleDeletePhotoFromCarousel(feedIndex: Int, photoIndex: Int) {
+        guard viewModel.items.indices.contains(feedIndex) else { return }
+        guard case .photoCarousel(var assets) = viewModel.items[feedIndex].kind,
+              assets.indices.contains(photoIndex) else { return }
+        assets.remove(at: photoIndex)
+        if assets.count < 2 {
+            viewModel.items.remove(at: feedIndex)
+            if index >= viewModel.items.count {
+                index = max(0, viewModel.items.count - 1)
+            }
+            reindexCarouselCurrentPage(afterRemovingAt: feedIndex)
+            pagedController?.updateItems(viewModel.items)
+            pagedController?.scrollToIndex(index)
+        } else {
+            viewModel.items[feedIndex] = FeedItem.carousel(assets)
+            pagedController?.updateItems(viewModel.items)
+            pagedController?.scrollToIndex(feedIndex)
+        }
+    }
+
+    private func reindexCarouselCurrentPage(afterRemovingAt idx: Int) {
+        var next: [Int: Int] = [:]
+        for (k, v) in carouselCurrentPage {
+            if k < idx { next[k] = v }
+            else if k > idx { next[k - 1] = v }
+        }
+        carouselCurrentPage = next
+    }
+
     func savePositionToStore() {
         saveFeedPosition(index: index)
     }
@@ -299,6 +393,9 @@ final class TikTokFeedViewController: UIViewController, FeedArchitectureProvider
         if !videoAssets.isEmpty {
             VideoPrefetcher.shared.prefetch(videoAssets)
             PlayerItemPrefetcher.shared.prefetch(videoAssets)
+            if FeedScrollSmoothnessSettings.smoothScrollImprovements {
+                ImagePrefetcher.shared.preheatVideoFirstFrames(for: videoAssets)
+            }
         }
         if FeatureFlags.enablePhotoPosts, !photoAssets.isEmpty {
             let photoPx = photoTargetSizePx(for: viewportPx)

@@ -13,6 +13,38 @@ actor PlayerItemBootstrapper {
     static let shared = PlayerItemBootstrapper()
 
     private var tasks: [String: Task<PlayerItemResult, Never>] = [:]
+    /// Tracks which asset IDs have had their item consumed. AVPlayerItem can only be associated with one AVPlayer.
+    private var consumedItemIDs: Set<String> = []
+    private var activeRequests = 0
+    private var slotWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Limits concurrent requestPlayerItem calls to reduce FigFilePlayer -12860/-12780 burst and HALC overload.
+    private var maxConcurrent: Int {
+        #if targetEnvironment(simulator)
+        2
+        #else
+        3
+        #endif
+    }
+
+    private func waitForSlot() async {
+        if activeRequests < maxConcurrent {
+            activeRequests += 1
+            return
+        }
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            slotWaiters.append(cont)
+        }
+    }
+
+    private func releaseSlot() async {
+        if let first = slotWaiters.first {
+            slotWaiters.removeFirst()
+            first.resume()
+        } else {
+            activeRequests = max(0, activeRequests - 1)
+        }
+    }
 
     func ensureStarted(asset: PHAsset) {
         let id = asset.localIdentifier
@@ -26,6 +58,13 @@ actor PlayerItemBootstrapper {
 
             if Task.isCancelled { return PlayerItemResult(item: nil, info: nil) }
 
+            await waitForSlot()
+
+            if Task.isCancelled {
+                Task { await self.releaseSlot() }
+                return PlayerItemResult(item: nil, info: nil)
+            }
+
             let options = PHVideoRequestOptions()
             // .automatic lets the system optimize for streaming (like Apple Photos); .mediumQualityFormat triggers FIGSANDBOX -17507 with iCloud videos
             options.deliveryMode = .automatic
@@ -38,6 +77,7 @@ actor PlayerItemBootstrapper {
 
             let result = await withCheckedContinuation { (cont: CheckedContinuation<PlayerItemResult, Never>) in
                 let reqID = PHImageManager.default().requestPlayerItem(forVideo: asset, options: options) { item, info in
+                    Task { await self.releaseSlot() }
                     cont.resume(returning: PlayerItemResult(item: item, info: info))
                 }
                 Diagnostics.video("[Bootstrap] requestPlayerItem started id=\(id) reqID=\(reqID)")
@@ -52,10 +92,19 @@ actor PlayerItemBootstrapper {
             ensureStarted(asset: asset)
         }
         let res = await tasks[id]?.value ?? PlayerItemResult(item: nil, info: nil)
-        return (res.item, res.info)
+        // AVPlayerItem can only be associated with one AVPlayer. Give item to first consumer only.
+        let item: AVPlayerItem?
+        if consumedItemIDs.contains(id) {
+            item = nil
+        } else {
+            consumedItemIDs.insert(id)
+            item = res.item
+        }
+        return (item, res.info)
     }
 
     func cancel(id: String) {
+        consumedItemIDs.remove(id)
         if let t = tasks.removeValue(forKey: id) {
             t.cancel()
             Diagnostics.video("[Bootstrap] cancel id=\(id)")

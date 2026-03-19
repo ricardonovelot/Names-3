@@ -235,10 +235,11 @@ private final class ReactiveFeedPipeline {
             s.exploredDays.insert(dayIndex)
             return s
         }
+        let capped = FeedVideoHourCap.capOnePerHour(vSlice)
 
-        let pSlice = FeedDataHelpers.fetchPhotosAround(videos: vSlice, limit: 60, usedPhotoIDs: s.usedPhotoIDs)
+        let pSlice = FeedDataHelpers.fetchPhotosAround(videos: capped, limit: 60, usedPhotoIDs: s.usedPhotoIDs)
         let carousels = FeedDataHelpers.makeCarousels(from: pSlice)
-        let built = FeedDataHelpers.interleave(videos: vSlice, carousels: carousels)
+        let built = FeedDataHelpers.interleave(videos: capped, carousels: carousels)
 
         if asInitial {
             s.items = built
@@ -463,7 +464,7 @@ final class Arch1_ReactivePipelineFeedVC: UIViewController, FeedArchitectureProv
             return cached
         }
         evictDistantContent(keeping: index)
-        let view = FeedCellBuilder.buildContent(for: item, isActive: isActive, unbindCoordinator: unbindCoord)
+        let view = FeedCellBuilder.buildContent(for: item, index: index, isActive: isActive, unbindCoordinator: unbindCoord)
         contentCache[id] = view
         return view
     }

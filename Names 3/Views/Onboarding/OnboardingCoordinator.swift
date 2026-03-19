@@ -8,16 +8,16 @@ final class OnboardingCoordinator {
     
     init(window: UIWindow?) {
         self.window = window
-        print("🟢 [Coordinator] Initialized")
+        DiagnosticsConfig.verbosePrint("🟢 [Coordinator] Initialized")
     }
     
     deinit {
-        print("🔴 [Coordinator] Deinitialized")
+        DiagnosticsConfig.verbosePrint("🔴 [Coordinator] Deinitialized")
     }
     
     func start(completion: (() -> Void)? = nil) {
         self.completion = completion
-        print("🟢 [Coordinator] start() called")
+        DiagnosticsConfig.verbosePrint("🟢 [Coordinator] start() called")
         
         let onboardingVC = OnboardingViewController()
         onboardingVC.delegate = self
@@ -31,9 +31,9 @@ final class OnboardingCoordinator {
     }
     
     func dismiss() {
-        print("🔵 [Coordinator] dismiss() called")
+        DiagnosticsConfig.verbosePrint("🔵 [Coordinator] dismiss() called")
         onboardingViewController?.dismiss(animated: true) { [weak self] in
-            print("✅ [Coordinator] Dismiss completed")
+            DiagnosticsConfig.verbosePrint("✅ [Coordinator] Dismiss completed")
             self?.onboardingViewController = nil
             OnboardingManager.shared.completeOnboarding()
             self?.completion?()
@@ -43,28 +43,28 @@ final class OnboardingCoordinator {
     
     private func performPresentation(_ onboardingVC: OnboardingViewController) {
         guard let window = self.window else {
-            print("❌ [Coordinator] No window available")
+            DiagnosticsConfig.verbosePrint("❌ [Coordinator] No window available")
             completion?()
             completion = nil
             return
         }
         
-        print("🔍 [Coordinator] Finding presenter...")
+        DiagnosticsConfig.verbosePrint("🔍 [Coordinator] Finding presenter...")
         
         guard let rootVC = window.rootViewController else {
-            print("❌ [Coordinator] No root view controller")
+            DiagnosticsConfig.verbosePrint("❌ [Coordinator] No root view controller")
             completion?()
             completion = nil
             return
         }
         
         let presenter = findTopMostViewController(rootVC)
-        print("✅ [Coordinator] Found presenter: \(type(of: presenter))")
-        print("   Is presenting: \(presenter.presentedViewController != nil)")
-        print("   Can present: \(presenter.view.window != nil)")
+        DiagnosticsConfig.verbosePrint("✅ [Coordinator] Found presenter: \(type(of: presenter))")
+        DiagnosticsConfig.verbosePrint("   Is presenting: \(presenter.presentedViewController != nil)")
+        DiagnosticsConfig.verbosePrint("   Can present: \(presenter.view.window != nil)")
         
         if presenter.presentedViewController != nil {
-            print("⚠️ [Coordinator] Presenter is already presenting something, waiting...")
+            DiagnosticsConfig.verbosePrint("⚠️ [Coordinator] Presenter is already presenting something, waiting...")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
                 guard let self = self else { return }
                 self.performPresentation(onboardingVC)
@@ -72,9 +72,9 @@ final class OnboardingCoordinator {
             return
         }
         
-        print("🚀 [Coordinator] Presenting onboarding...")
+        DiagnosticsConfig.verbosePrint("🚀 [Coordinator] Presenting onboarding...")
         presenter.present(onboardingVC, animated: true) {
-            print("✅ [Coordinator] Presentation animation completed")
+            DiagnosticsConfig.verbosePrint("✅ [Coordinator] Presentation animation completed")
         }
     }
     
@@ -99,7 +99,7 @@ final class OnboardingCoordinator {
 
 extension OnboardingCoordinator: OnboardingViewControllerDelegate {
     func onboardingViewControllerDidFinish(_ controller: OnboardingViewController) {
-        print("✅ [Coordinator] Onboarding finished delegate called")
+        DiagnosticsConfig.verbosePrint("✅ [Coordinator] Onboarding finished delegate called")
         dismiss()
     }
 }

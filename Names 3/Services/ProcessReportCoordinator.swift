@@ -79,7 +79,9 @@ final class ProcessReportCoordinator {
         lock.lock()
         defer { lock.unlock() }
         contributors.append((name: name, report: report))
-        processReportLogger.debug("Registered process reporter: \(name)")
+        if DiagnosticsConfig.shared.verbosity != .off {
+            processReportLogger.debug("Registered process reporter: \(name)")
+        }
     }
     
     /// Unregister by name (e.g. when a VC or short-lived owner deallocates). Removes all contributors with that name.
@@ -94,7 +96,8 @@ final class ProcessReportCoordinator {
         lock.lock()
         let list = contributors
         lock.unlock()
-        
+
+        guard DiagnosticsConfig.shared.verbosity != .off else { return }
         processReportLogger.info("[ProcessReport] trigger=\(trigger) count=\(list.count)")
         for item in list {
             let snapshot = item.report()

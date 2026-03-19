@@ -117,13 +117,14 @@ actor PhotoGroupingService {
     }
     
     private func selectRepresentativePhotos(from assets: [PHAsset], count: Int) -> [PHAsset] {
+        let excludeScreenshots = ExcludeScreenshotsPreference.excludeScreenshots
         var scored: [(asset: PHAsset, score: Double)] = []
         scored.reserveCapacity(assets.count)
         
         for asset in assets {
             var score: Double = 0
 
-            if ExcludeScreenshotsPreference.shouldExcludeAsScreenshot(asset) { score -= 1000 }
+            if excludeScreenshots && ExcludeScreenshotsPreference.isLikelyRealScreenshot(asset) { score -= 1000 }
             if asset.isFavorite { score += 10 }
             
             let mediaSubtypes = asset.mediaSubtypes

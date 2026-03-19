@@ -146,11 +146,12 @@ private actor FeedLoadActor {
             exploredDays.insert(dayIdx)
             return nil
         }
+        let capped = FeedVideoHourCap.capOnePerHour(vSlice)
 
-        async let photos = fetchPhotosForDay(videos: vSlice)
+        async let photos = fetchPhotosForDay(videos: capped)
         let pSlice = await photos
         let carousels = makeCarouselsSync(from: pSlice)
-        let built = interleaveSync(videos: vSlice, carousels: carousels)
+        let built = interleaveSync(videos: capped, carousels: carousels)
 
         for item in built {
             if case .photoCarousel(let arr) = item.kind {
@@ -178,14 +179,17 @@ private actor FeedLoadActor {
             )
             opts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
             let result = PHAsset.fetchAssets(with: opts)
-            let count = min(180, result.count)
-            guard count > 0 else { cont.resume(returning: []); return }
-            let slice = result.objects(at: IndexSet(integersIn: 0..<count))
-            let filtered = slice.filter {
-                !self.usedPhotoIDs.contains($0.localIdentifier) &&
-                !ExcludeScreenshotsPreference.shouldExcludeAsScreenshot($0)
+            guard result.count > 0 else { cont.resume(returning: []); return }
+            let excludeScreenshots = ExcludeScreenshotsPreference.excludeScreenshots
+            var assets: [PHAsset] = []
+            assets.reserveCapacity(60)
+            result.enumerateObjects { asset, _, stop in
+                guard assets.count < 60 else { stop.pointee = true; return }
+                if self.usedPhotoIDs.contains(asset.localIdentifier) { return }
+                if excludeScreenshots && ExcludeScreenshotsPreference.isLikelyRealScreenshot(asset) { return }
+                assets.append(asset)
             }
-            cont.resume(returning: Array(filtered.prefix(60)))
+            cont.resume(returning: assets)
         }
     }
 
@@ -236,7 +240,15 @@ private actor FeedLoadActor {
         var cIdx = 0
         for v in videos {
             out.append(.video(v))
-            if cIdx < carousels.count { out.append(.carousel(carousels[cIdx])); cIdx += 1 }
+            if cIdx < carousels.count {
+                while cIdx < carousels.count && !FeedDataHelpers.isCarouselAlignedWithVideo(carousels[cIdx], video: v) {
+                    cIdx += 1
+                }
+                if cIdx < carousels.count {
+                    out.append(.carousel(carousels[cIdx]))
+                    cIdx += 1
+                }
+            }
         }
         return out
     }
@@ -463,7 +475,7 @@ final class Arch2_ActorPoolFeedVC: UIViewController, FeedArchitectureProvider {
             return cached
         }
         evictDistantContent(keeping: index)
-        let view = FeedCellBuilder.buildContent(for: item, isActive: isActive, unbindCoordinator: unbindCoord)
+        let view = FeedCellBuilder.buildContent(for: item, index: index, isActive: isActive, unbindCoordinator: unbindCoord)
         contentCache[item.id] = view
         return view
     }

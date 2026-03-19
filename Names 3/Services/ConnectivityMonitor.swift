@@ -88,7 +88,9 @@ final class ConnectivityMonitor {
             }
         }
         monitor.start(queue: queue)
-        Self.logger.debug("ConnectivityMonitor started")
+        if DiagnosticsConfig.shared.verbosity != .off {
+            Self.logger.debug("ConnectivityMonitor started")
+        }
     }
 
     /// Optional: stop when not needed (e.g. background). Not required for normal foreground use.

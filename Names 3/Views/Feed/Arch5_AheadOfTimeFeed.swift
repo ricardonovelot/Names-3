@@ -94,6 +94,18 @@ private final class FeedManifest {
 
     // MARK: Internal
 
+    /// Max 1 video per 1-hour window; when multiple in same hour, pick randomly.
+    private func capVideoEntriesOnePerHour(_ entries: [ManifestEntry]) -> [ManifestEntry] {
+        guard entries.count > 1 else { return entries }
+        var buckets: [Int: [ManifestEntry]] = [:]
+        for e in entries {
+            let bucket = Int(e.creationTimestamp / 3600)
+            buckets[bucket, default: []].append(e)
+        }
+        let capped = buckets.values.map { $0.randomElement()! }
+        return capped.sorted { $0.creationTimestamp > $1.creationTimestamp }
+    }
+
     private func fetchVideoEntries() async -> [ManifestEntry] {
         await withCheckedContinuation { cont in
             let opts = PHFetchOptions()
@@ -113,7 +125,8 @@ private final class FeedManifest {
                     groupTag: nil
                 ))
             }
-            cont.resume(returning: entries)
+            let capped = capVideoEntriesOnePerHour(entries)
+            cont.resume(returning: capped)
         }
     }
 
@@ -133,11 +146,16 @@ private final class FeedManifest {
             )
             opts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
             let result = PHAsset.fetchAssets(with: opts)
-            let count = min(900, result.count)
-            guard count > 0 else { cont.resume(returning: []); return }
-            let slice = result.objects(at: IndexSet(integersIn: 0..<count))
-            let filtered = slice.filter { !ExcludeScreenshotsPreference.shouldExcludeAsScreenshot($0) }
-            let entries = Array(filtered.prefix(300)).map { asset in
+            guard result.count > 0 else { cont.resume(returning: []); return }
+            let excludeScreenshots = ExcludeScreenshotsPreference.excludeScreenshots
+            var assets: [PHAsset] = []
+            assets.reserveCapacity(300)
+            result.enumerateObjects { asset, _, stop in
+                guard assets.count < 300 else { stop.pointee = true; return }
+                if excludeScreenshots && ExcludeScreenshotsPreference.isLikelyRealScreenshot(asset) { return }
+                assets.append(asset)
+            }
+            let entries = assets.map { asset in
                 ManifestEntry(
                     assetID: asset.localIdentifier,
                     isVideo: false,
@@ -477,7 +495,7 @@ final class Arch5_AheadOfTimeFeedVC: UIViewController, FeedArchitectureProvider 
             return cached
         }
         evictDistantContent(keeping: index)
-        let view = FeedCellBuilder.buildContent(for: item, isActive: isActive, unbindCoordinator: unbindCoord)
+        let view = FeedCellBuilder.buildContent(for: item, index: index, isActive: isActive, unbindCoordinator: unbindCoord)
         contentCache[item.id] = view
         return view
     }

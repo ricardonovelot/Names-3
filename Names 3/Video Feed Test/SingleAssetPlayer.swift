@@ -25,6 +25,7 @@ final class SingleAssetPlayer: ObservableObject {
 
     private var loadTask: Task<Void, Never>?
     private var currentAssetID: String?
+    private var albumIdentifier: String?
     private var isActive: Bool = false
 
     /// Exposed for CombinedMediaCoordinator: check if this player is showing the given asset (carousel can reuse instead of creating new).
@@ -54,6 +55,7 @@ final class SingleAssetPlayer: ObservableObject {
     private var timeJumpedObserver: NSObjectProtocol?
     private var failedToEndObserver: NSObjectProtocol?
     private var stallWatchdog: Task<Void, Never>?
+    private var stallRecoveryTask: Task<Void, Never>?
     private var blackScreenWatchdog: Task<Void, Never>?
     private var spApplyToReady: OSSignpostID?
     private var spApplyToFirstFrame: OSSignpostID?
@@ -265,7 +267,8 @@ final class SingleAssetPlayer: ObservableObject {
         overrideChangedObserver = NotificationCenter.default.addObserver(forName: .videoAudioOverrideChanged, object: nil, queue: .main) { [weak self] note in
             Task { @MainActor [weak self] in
                 guard let self, let id = note.userInfo?["id"] as? String else { return }
-                if id == self.currentAssetID {
+                let matches = id == self.currentAssetID || (self.albumIdentifier != nil && id == self.albumIdentifier)
+                if matches {
                     self.recomputeVolume()
                     self.applySongIfAny()
                 }
@@ -325,8 +328,17 @@ final class SingleAssetPlayer: ObservableObject {
         }
     }
 
+    func setAlbumIdentifier(_ id: String?) {
+        albumIdentifier = id
+    }
+
     func setActive(_ active: Bool) {
-        if !active { persistPlaybackPosition() }
+        if !active {
+            persistPlaybackPosition()
+            if FeatureFlags.enableAppleMusicIntegration {
+                AppleMusicController.shared.pauseIfManaged()
+            }
+        }
         isActive = active
         Diagnostics.log("[TikTokCell] setActive=\(active) appState=\(UIApplication.shared.applicationState.rawValue)")
         if active {
@@ -354,6 +366,10 @@ final class SingleAssetPlayer: ObservableObject {
     
     func cancel() {
         persistPlaybackPosition()
+        if FeatureFlags.enableAppleMusicIntegration {
+            AppleMusicController.shared.pauseIfManaged()
+            AppleMusicController.shared.stopManaging()
+        }
 
         loadTask?.cancel()
         loadTask = nil
@@ -393,6 +409,8 @@ final class SingleAssetPlayer: ObservableObject {
         }
         stallWatchdog?.cancel()
         stallWatchdog = nil
+        stallRecoveryTask?.cancel()
+        stallRecoveryTask = nil
         blackScreenWatchdog?.cancel()
         blackScreenWatchdog = nil
         spApplyToReady = nil
@@ -409,6 +427,8 @@ final class SingleAssetPlayer: ObservableObject {
         }
         stallWatchdog?.cancel()
         stallWatchdog = nil
+        stallRecoveryTask?.cancel()
+        stallRecoveryTask = nil
         blackScreenWatchdog?.cancel()
         blackScreenWatchdog = nil
         spApplyToReady = nil
@@ -437,7 +457,15 @@ final class SingleAssetPlayer: ObservableObject {
             Task { await NextVideoTraceCenter.shared.finish(cancelled: true, failed: false) }
         }
 
+        if FeatureFlags.enableAppleMusicIntegration {
+            AppleMusicController.shared.pauseIfManaged()
+            AppleMusicController.shared.stopManaging()
+        }
+        appliedSongID = nil
+
         hasPresentedFirstFrame = false
+        player.pause()
+        player.rate = 0
         player.replaceCurrentItem(with: nil)
         diagProbe = nil
         currentAssetID = nil
@@ -609,6 +637,7 @@ final class SingleAssetPlayer: ObservableObject {
                 self.spPlaybackStall = sp
                 self.loadProbe?.stallBegan()
                 Task { await NextVideoTraceCenter.shared.stallBegan() }
+                self.scheduleStallRecovery()
             }
         }
 
@@ -621,6 +650,39 @@ final class SingleAssetPlayer: ObservableObject {
                 guard let self else { return }
                 let t = CMTimeGetSeconds(self.player.currentTime())
                 Diagnostics.log("[TikTokCell] timeJumped id=\(self.currentAssetID ?? "nil") t=\(String(format: "%.2f", t))s")
+            }
+        }
+    }
+
+    /// Attempts to recover from a stall (e.g. FigFilePlayer -12860) by seeking to current time to kick the decoder.
+    /// Simulator: 800ms delay (faster recovery) since -12860 is common when DetachedSignatures path is missing.
+    private func scheduleStallRecovery() {
+        stallRecoveryTask?.cancel()
+        #if targetEnvironment(simulator)
+        let delayMs = 800
+        #else
+        let delayMs = 1200
+        #endif
+        stallRecoveryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(delayMs))
+            guard !Task.isCancelled, let self else { return }
+            guard let item = self.player.currentItem else { return }
+            guard self.isActive, UIApplication.shared.applicationState == .active else { return }
+            guard item.status == .readyToPlay else { return }
+            let hasBuffer = !item.loadedTimeRanges.isEmpty
+            guard hasBuffer else { return }
+            let target = self.player.currentTime()
+            guard CMTimeGetSeconds(target).isFinite, CMTimeGetSeconds(target) >= 0 else { return }
+            Diagnostics.log("[TikTokCell] stall RECOVERY attempt id=\(self.currentAssetID ?? "nil") t=\(String(format: "%.2f", CMTimeGetSeconds(target)))s")
+            self.player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
+                Task { @MainActor in
+                    guard let self, finished else { return }
+                    if self.isActive, self.player.currentItem?.status == .readyToPlay {
+                        PlaybackRegistry.shared.willPlay(self.player)
+                        self.player.play()
+                        Diagnostics.log("[TikTokCell] stall RECOVERY play id=\(self.currentAssetID ?? "nil")")
+                    }
+                }
             }
         }
     }
@@ -662,14 +724,10 @@ final class SingleAssetPlayer: ObservableObject {
     private func applyItem(_ item: AVPlayerItem) async {
         Diagnostics.log("[TikTokCell] applyItem: Applying AVPlayerItem to player. Asset ID: \(currentAssetID ?? "nil")")
         
-        // Load asset and track properties asynchronously before accessing them (AVAsynchronousKeyValueLoading).
+        // Load asset and all track properties asynchronously (AVAsynchronousKeyValueLoading).
         // Synchronous access to formatDescriptions, isEnabled, etc. blocks all other asset track loads.
         let asset = item.asset
-        await asset.loadCommonProperties()
-        let tracks = (try? await asset.load(.tracks)) ?? []
-        if let track = tracks.first(where: { $0.mediaType == .video }) {
-            await track.loadCommonProperties()
-        }
+        await asset.loadFullyForPlayback()
         
         attachObservers(to: item)
         Diagnostics.signpostBegin("ApplyItemToReady", id: &spApplyToReady)
@@ -751,6 +809,7 @@ final class SingleAssetPlayer: ObservableObject {
         installDiagnostics(for: item)
 
         stallWatchdog?.cancel()
+        stallRecoveryTask?.cancel()
         blackScreenWatchdog?.cancel()
         isStalledFlag = false
         lastObservedTime = .zero
@@ -802,6 +861,7 @@ final class SingleAssetPlayer: ObservableObject {
                     Diagnostics.signpostBegin("PlaybackStall", id: &self.spPlaybackStall)
                     self.loadProbe?.stallBegan()
                     Task { await NextVideoTraceCenter.shared.stallBegan() }
+                    self.scheduleStallRecovery()
                 }
             }
         }
@@ -865,6 +925,7 @@ final class SingleAssetPlayer: ObservableObject {
             loadProbe?.markPath(.prefetchedAsset)
             Task { await NextVideoTraceCenter.shared.markPath(.prefetchedAsset) }
             diagProbe?.startPhase("TikTok_UsePrefetchedAsset")
+            await warm.loadFullyForPlayback()
             let item = AVPlayerItem(asset: warm)
             diagProbe?.attach(item: item)
             await applyItem(item)
@@ -883,7 +944,21 @@ final class SingleAssetPlayer: ObservableObject {
         loadProbe?.markRequestStart()
         Task { await NextVideoTraceCenter.shared.markRequestStart() }
 
-        let (item, info) = await PlayerItemBootstrapper.shared.awaitResult(asset: asset)
+        var (item, info) = await PlayerItemBootstrapper.shared.awaitResult(asset: asset)
+
+        // Bootstrapper gives item to first consumer only. If we got nil, try fallback paths.
+        if item == nil, !Task.isCancelled {
+            if let warm = await VideoPrefetcher.shared.asset(for: asset.localIdentifier, timeout: .milliseconds(800)) {
+                await warm.loadFullyForPlayback()
+                item = AVPlayerItem(asset: warm)
+            }
+        }
+        if item == nil, !Task.isCancelled {
+            let opts = PHVideoRequestOptions()
+            opts.deliveryMode = .automatic
+            opts.isNetworkAccessAllowed = DataUsageGuardrails.shouldAllowNetworkForFeedMedia()
+            (item, info) = await requestPlayerItemAsync(for: asset, options: opts)
+        }
 
         Task { await NextVideoTraceCenter.shared.markRequestEnd(info: info) }
         loadProbe?.markRequestEnd(info: info)
@@ -939,17 +1014,25 @@ final class SingleAssetPlayer: ObservableObject {
     }
 
     private func recomputeVolume() {
+        let id = currentAssetID
+        let albumId = albumIdentifier
         let baseVolumeTask = Task { () -> Float in
-            if let id = self.currentAssetID, let per = await VideoAudioOverrides.shared.volumeOverride(for: id) {
+            if let id, let per = await VideoAudioOverrides.shared.volumeOverride(for: id) {
                 return per
             }
             return VideoVolumeManager.shared.userVolume
         }
+        let songRefTask = Task { () -> Bool in
+            guard let id else { return false }
+            let ref = await VideoAudioOverrides.shared.songReference(for: id, albumIdentifier: albumId)
+            return ref != nil
+        }
         Task { @MainActor [weak self] in
             guard let self else { return }
             let base = await baseVolumeTask.value
-            let musicPlaying: Bool = FeatureFlags.enableAppleMusicIntegration ? MusicCenter.shared.isPlaying : false
-            let effective: Float = musicPlaying ? min(base, VideoVolumeManager.shared.duckingCapWhileMusic) : base
+            let hasSongAssigned = await songRefTask.value
+            // When a song is assigned, mute the video so its audio doesn't interrupt the music.
+            let effective: Float = hasSongAssigned ? 0 : (FeatureFlags.enableAppleMusicIntegration && MusicCenter.shared.isPlaying ? min(base, VideoVolumeManager.shared.duckingCapWhileMusic) : base)
             self.player.volume = effective
         }
     }
@@ -959,7 +1042,8 @@ final class SingleAssetPlayer: ObservableObject {
         songOverrideTask = nil
 
         guard isActive else {
-            Diagnostics.log("AM applySongIfAny skip (inactive). Leaving any managed playback running.")
+            Diagnostics.log("AM applySongIfAny skip (inactive). Pausing managed playback.")
+            AppleMusicController.shared.pauseIfManaged()
             return
         }
 
@@ -974,9 +1058,10 @@ final class SingleAssetPlayer: ObservableObject {
         }
 
         let requestID = id
+        let albumId = albumIdentifier
         songOverrideTask = Task { [weak self] in
             guard let self else { return }
-            let ref = await VideoAudioOverrides.shared.songReference(for: requestID)
+            let ref = await VideoAudioOverrides.shared.songReference(for: requestID, albumIdentifier: albumId)
             Diagnostics.log("AM applySongIfAny id=\(requestID) ref=\(ref?.debugKey ?? "nil") isActive=\(self.isActive) hasFirst=\(self.hasPresentedFirstFrame)")
             guard !Task.isCancelled else { return }
 
@@ -1050,8 +1135,10 @@ final class SingleAssetPlayer: ObservableObject {
                 startAMVerify(expectedStoreID: reference.appleMusicStoreID, reason: "play-reference")
             }
         } else {
-            Diagnostics.log("UpdateAM no reference -> keep current managed playback (beforeNowPlaying=\(beforeID))")
-            // Keep playing the current managed track; do not clear appliedSongID; no verification needed.
+            Diagnostics.log("UpdateAM no reference -> pause and stop managed playback (beforeNowPlaying=\(beforeID))")
+            AppleMusicController.shared.pauseIfManaged()
+            AppleMusicController.shared.stopManaging()
+            appliedSongID = nil
         }
 
         let afterID = AppleMusicController.shared.managedNowPlayingStoreID() ?? "nil"

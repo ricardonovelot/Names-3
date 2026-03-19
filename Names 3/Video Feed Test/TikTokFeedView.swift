@@ -583,7 +583,7 @@ struct TikTokFeedView: View {
             }
         }
         .fullScreenCover(isPresented: $isMusicSearchPresented) {
-            AppleMusicSearchScreen(assetID: currentVideoAsset()?.localIdentifier) {
+            AppleMusicSearchScreen(assetIDs: currentVideoAsset().map { [$0.localIdentifier] } ?? []) {
                 isMusicSearchPresented = false
             }
         }
@@ -1209,27 +1209,21 @@ struct TikTokFeedView: View {
                         }
                     }
 
-                    if AppleMusicCatalog.isConfigured {
-                        Button {
-                            isSearchPresented = true
-                        } label: {
-                            Label("Search Apple Music", systemImage: "magnifyingglass")
-                                .font(.footnote.weight(.semibold))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .frame(minHeight: 44)
-                                .background(
-                                    Capsule().fill(Color.white.opacity(0.06))
-                                )
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Open Apple Music search")
-                    } else {
-                        Text("Apple Music search unavailable: missing developer token.")
-                            .foregroundStyle(.white.opacity(0.8))
-                            .font(.caption)
+                    Button {
+                        isSearchPresented = true
+                    } label: {
+                        Label("Search Apple Music", systemImage: "magnifyingglass")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .frame(minHeight: 44)
+                            .background(
+                                Capsule().fill(Color.white.opacity(0.06))
+                            )
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Open Apple Music search")
 
                     if !appleMusic.catalogMatches.isEmpty {
                         ScrollView(.horizontal, showsIndicators: false) {

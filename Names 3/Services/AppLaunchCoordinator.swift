@@ -55,7 +55,7 @@ final class AppLaunchCoordinator {
         appDelegate: AppDelegate
     ) async {
         guard !hasRunPostLaunch else {
-            Self.launchLogger.info("🚀 [Launch] PostLaunch already run, skipping")
+            LaunchProfiler.logInfo("🚀 [Launch] PostLaunch already run, skipping")
             return
         }
         hasRunPostLaunch = true
@@ -70,15 +70,21 @@ final class AppLaunchCoordinator {
         ConnectivityMonitor.shared.start()
         StorageMonitor.shared.start()
         CloudKitMirroringResetCoordinator.shared.start()
+        CloudKitSyncCoordinator.shared.configure(container: modelContainer)
+        AlbumStore.shared.configure(container: modelContainer)
         LaunchProfiler.endPhase("PostLaunchPhase1", phase1State)
         LaunchProfiler.logCheckpoint("PostLaunch Phase 1 done")
 
         // MARK: Phase 1b — Deferred startup (sync, ~5 ms)
-        // TipKit and photo-library observer are deferred from Phase 1a to keep the
-        // critical path as short as possible; they are still safe to run before UI appears.
+        // TipKit uses local-only datastore to avoid accountsd Code=7.
+        // Photo-library observer is deferred until firstFrame+appActive to avoid accountsd
+        // (PHPhotoLibrary touches account services); follows same pattern as MediaPlayer/Accounts.
         let phase1bState = LaunchProfiler.beginPhase("PostLaunchPhase1b")
         TipManager.shared.configure()
-        appDelegate.registerPhotoLibraryObserverIfNeeded()
+        scheduleDeferredPhotoLibraryObserver(appDelegate: appDelegate)
+        // Register Apple Music service so album song playback works.
+        // The service itself waits for firstFrame+appActive phase gates before touching MediaPlayer.
+        ServiceOrchestrator.shared.register(AppleMusicFeatureService())
         LaunchProfiler.endPhase("PostLaunchPhase1b", phase1bState)
         LaunchProfiler.logCheckpoint("PostLaunch Phase 1b done")
 
@@ -110,6 +116,16 @@ final class AppLaunchCoordinator {
     }
 
     // MARK: - Private
+
+    /// Registers the photo library observer after firstFrame+appActive to avoid accountsd Code=7
+    /// (PHPhotoLibrary touches account services). Follows same phase-gate pattern as MediaPlayer/Accounts.
+    private func scheduleDeferredPhotoLibraryObserver(appDelegate: AppDelegate) {
+        Task { @MainActor in
+            _ = await PhaseGate.shared.waitUntil(.firstFrame, timeout: 10)
+            _ = await PhaseGate.shared.waitUntilAppActive(timeout: 10)
+            appDelegate.registerPhotoLibraryObserverIfNeeded()
+        }
+    }
 
     private static func runBackgroundMigrations(
         modelContainer: ModelContainer,

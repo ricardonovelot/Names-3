@@ -9,6 +9,9 @@ protocol FeedArchitectureProvider: AnyObject {
     var isFeedVisible: Bool { get set }
     var currentFeedItems: [FeedItem] { get }
     func refreshVisibleCellsActiveState()
+    /// Deactivate audio session when feed becomes inactive (tab switch, background).
+    /// Reduces CAReportingClient "Reporter disconnected" by orderly teardown before connection drops.
+    func deactivateAudioSession()
     func injectFromCarousel(assets: [PHAsset], scrollToAssetID: String?)
     /// Scroll to top (index 0, most recent). Called when user taps the already-selected Photos tab.
     func scrollToTop()
@@ -19,6 +22,7 @@ protocol FeedArchitectureProvider: AnyObject {
 extension FeedArchitectureProvider {
     func scrollToTop() {}
     func savePositionToStore() {}
+    func deactivateAudioSession() {}
 }
 
 typealias FeedViewController = UIViewController & FeedArchitectureProvider
@@ -82,15 +86,21 @@ enum FeedArchitectureMode: String, CaseIterable, Identifiable {
 enum FeedCellBuilder {
     static func buildContent(
         for item: FeedItem,
+        index: Int,
         isActive: Bool,
-        unbindCoordinator: StrictUnbindCoordinator
+        unbindCoordinator: StrictUnbindCoordinator,
+        onCarouselPageChanged: ((Int, Int) -> Void)? = nil
     ) -> UIView {
         switch item.kind {
         case .video(let asset):
             return FeedImpl5CellView(asset: asset, isActive: isActive, coordinator: unbindCoordinator)
         case .photoCarousel(let assets):
             if FeatureFlags.enablePhotoPosts || !assets.isEmpty {
-                return MediaFeedCellView(content: .photoCarousel(assets))
+                return MediaFeedCellView(content: .photoCarousel(
+                    assets: assets,
+                    feedIndex: index,
+                    onPageChanged: onCarouselPageChanged ?? { _, _ in }
+                ))
             }
             return UIView()
         }
@@ -138,16 +148,18 @@ enum FeedDataHelpers {
             PHAssetMediaType.image.rawValue, lower as NSDate, upper as NSDate
         )
         opts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-        let fetchLimit = limit * 3
         let result = PHAsset.fetchAssets(with: opts)
-        let count = Swift.min(fetchLimit, result.count)
-        guard count > 0 else { return [] }
-        let slice = result.objects(at: IndexSet(integersIn: 0..<count))
-        let filtered = slice.filter { asset in
-            !usedPhotoIDs.contains(asset.localIdentifier) &&
-            !ExcludeScreenshotsPreference.shouldExcludeAsScreenshot(asset)
+        guard result.count > 0 else { return [] }
+        let excludeScreenshots = ExcludeScreenshotsPreference.excludeScreenshots
+        var assets: [PHAsset] = []
+        assets.reserveCapacity(limit)
+        result.enumerateObjects { asset, _, stop in
+            guard assets.count < limit else { stop.pointee = true; return }
+            if usedPhotoIDs.contains(asset.localIdentifier) { return }
+            if excludeScreenshots && ExcludeScreenshotsPreference.isLikelyRealScreenshot(asset) { return }
+            assets.append(asset)
         }
-        return Array(filtered.prefix(limit))
+        return assets
     }
 
     static func filterHidden(_ videos: [PHAsset]) -> [PHAsset] {
@@ -182,14 +194,29 @@ enum FeedDataHelpers {
         return res
     }
 
+    /// When screenshot filter is on, remaining photos may be from older days than videos.
+    /// Skip carousels whose date is too far from the preceding video to avoid date jumps.
+    static func isCarouselAlignedWithVideo(_ carousel: [PHAsset], video: PHAsset, toleranceDays: Int = 2) -> Bool {
+        guard let videoDate = video.creationDate,
+              let carouselDate = carousel.first?.creationDate ?? carousel.compactMap(\.creationDate).max() else { return true }
+        let tol = TimeInterval(toleranceDays) * 86400
+        return abs(videoDate.timeIntervalSince(carouselDate)) <= tol
+    }
+
     static func interleave(videos: [PHAsset], carousels: [[PHAsset]]) -> [FeedItem] {
         var out: [FeedItem] = []
         var cIdx = 0
         for v in videos {
             out.append(.video(v))
             if cIdx < carousels.count {
-                out.append(.carousel(carousels[cIdx]))
-                cIdx += 1
+                // Skip carousels that would cause a big date jump (common when screenshot filter removes recent photos)
+                while cIdx < carousels.count && !isCarouselAlignedWithVideo(carousels[cIdx], video: v) {
+                    cIdx += 1
+                }
+                if cIdx < carousels.count {
+                    out.append(.carousel(carousels[cIdx]))
+                    cIdx += 1
+                }
             }
         }
         return out

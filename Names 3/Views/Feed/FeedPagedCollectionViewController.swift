@@ -28,6 +28,12 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
     var onCancelPrefetch: (IndexSet, CGSize) -> Void = { _, _ in }
     var isPageReady: (Int) -> Bool = { _ in true }
     var onIndexChange: (Int) -> Void = { _ in }
+    /// Called when user selects Delete from the long-press context menu. Parent should remove the item and update.
+    var onDeleteItem: ((Int, FeedItem) -> Void)?
+    /// For carousels: returns current visible page index. Used when showing context menu to delete the visible photo.
+    var carouselCurrentPageProvider: ((Int) -> Int)?
+    /// Called when user deletes a single photo from a carousel. Parent should remove that photo and stay in carousel.
+    var onDeletePhotoFromCarousel: ((Int, Int) -> Void)?
 
     /// When set, used instead of (currentIndex == indexPath.item) for isActive. Enables parent to
     /// incorporate feed visibility (e.g. Feed↔Carousel mode switch) so video cells stay paused when hidden.
@@ -127,7 +133,9 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
             let item = items[indexPath.item]
             let isActive = isActiveForIndex(indexPath.item)
             if isActive, case .video(let asset) = item.kind {
-                print("[FeedPlayback] refreshVisibleCells: activating index=\(indexPath.item) asset=\(String(asset.localIdentifier.prefix(12)))...")
+                if DiagnosticsConfig.shared.verbosity != .off {
+                    print("[FeedPlayback] refreshVisibleCells: activating index=\(indexPath.item) asset=\(String(asset.localIdentifier.prefix(12)))...")
+                }
             }
             cell.setContent(getOrCreateContent(for: item, index: indexPath.item, isActive: isActive))
         }
@@ -222,6 +230,41 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
         onCancelPrefetch(set, sizePx)
     }
 
+    override func collectionView(_ collectionView: UICollectionView, contextMenuConfigurationForItemAt indexPath: IndexPath, point: CGPoint) -> UIContextMenuConfiguration? {
+        guard items.indices.contains(indexPath.item) else { return nil }
+        let index = indexPath.item
+        let item = items[index]
+        return UIContextMenuConfiguration(identifier: indexPath as NSCopying, previewProvider: nil) { [weak self] _ in
+            guard let self else { return nil }
+            let deleteAction: UIAction
+            switch item.kind {
+            case .video:
+                deleteAction = UIAction(
+                    title: "Delete",
+                    image: UIImage(systemName: "trash"),
+                    attributes: .destructive
+                ) { [weak self] _ in
+                    self?.onDeleteItem?(index, item)
+                }
+            case .photoCarousel(let assets):
+                let photoIndex = self.carouselCurrentPageProvider?(index) ?? 0
+                let usePhotoDelete = assets.indices.contains(photoIndex)
+                deleteAction = UIAction(
+                    title: "Delete",
+                    image: UIImage(systemName: "trash"),
+                    attributes: .destructive
+                ) { [weak self] _ in
+                    if usePhotoDelete {
+                        self?.onDeletePhotoFromCarousel?(index, photoIndex)
+                    } else {
+                        self?.onDeleteItem?(index, item)
+                    }
+                }
+            }
+            return UIMenu(title: "", children: [deleteAction])
+        }
+    }
+
     override func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard collectionView.bounds.height > 0 else { return }
         // Ignore scroll events until initial programmatic scroll is done; otherwise
@@ -232,6 +275,9 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
 
         currentIndex = target
         activeIndexUpdate?(target)
+        if FeedScrollSmoothnessSettings.smoothScrollImprovements {
+            updatePrefetchWindow(for: target)
+        }
         // Defer layer binding: never update isActive during scroll; only on settle
         // Heavy work deferred to applyScrollSettledState
     }
@@ -250,14 +296,17 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
     override func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         let contentH = scrollView.contentSize.height
         let boundsH = collectionView.bounds.height
-        print("[PhotoGroupingScroll] FeedPaged: willBeginDragging items=\(items.count) contentH=\(Int(contentH)) boundsH=\(Int(boundsH))")
+        if DiagnosticsConfig.shared.verbosity != .off {
+            print("[PhotoGroupingScroll] FeedPaged: willBeginDragging items=\(items.count) contentH=\(Int(contentH)) boundsH=\(Int(boundsH))")
+        }
 
         prewarmAdjacentCells()
     }
 
     private func prewarmAdjacentCells() {
         let idx = currentIndex
-        for i in [idx - 1, idx, idx + 1] where items.indices.contains(i) {
+        let range = FeedScrollSmoothnessSettings.smoothScrollImprovements ? [idx - 2, idx - 1, idx, idx + 1, idx + 2] : [idx - 1, idx, idx + 1]
+        for i in range where items.indices.contains(i) {
             let item = items[i]
             let isActive = isActiveForIndex(i)
             _ = getOrCreateContent(for: item, index: i, isActive: isActive)
@@ -268,7 +317,9 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
         let offsetY = scrollView.contentOffset.y
         let contentH = scrollView.contentSize.height
         let boundsH = collectionView.bounds.height
-        print("[PhotoGroupingScroll] FeedPaged: didEndDecelerating offsetY=\(Int(offsetY)) contentH=\(Int(contentH)) boundsH=\(Int(boundsH)) items=\(items.count)")
+        if DiagnosticsConfig.shared.verbosity != .off {
+            print("[PhotoGroupingScroll] FeedPaged: didEndDecelerating offsetY=\(Int(offsetY)) contentH=\(Int(contentH)) boundsH=\(Int(boundsH)) items=\(items.count)")
+        }
         didInitialScroll = true
         applyScrollSettledState()
     }
@@ -276,7 +327,9 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
     override func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         let offsetY = scrollView.contentOffset.y
         let contentH = scrollView.contentSize.height
-        print("[PhotoGroupingScroll] FeedPaged: didEndDragging decelerate=\(decelerate) offsetY=\(Int(offsetY)) contentH=\(Int(contentH)) items=\(items.count)")
+        if DiagnosticsConfig.shared.verbosity != .off {
+            print("[PhotoGroupingScroll] FeedPaged: didEndDragging decelerate=\(decelerate) offsetY=\(Int(offsetY)) contentH=\(Int(contentH)) items=\(items.count)")
+        }
         if !decelerate {
             didInitialScroll = true
             applyScrollSettledState()
@@ -298,7 +351,9 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
         // Heavy work was deferred during scroll; run it now
         onIndexChange(currentIndex)
         evictDistantContentIfNeeded(keeping: currentIndex)
-        print("[FeedPlayback] applyScrollSettledState: currentIndex=\(currentIndex)")
+        if DiagnosticsConfig.shared.verbosity != .off {
+            print("[FeedPlayback] applyScrollSettledState: currentIndex=\(currentIndex)")
+        }
         if items.indices.contains(currentIndex), case .video(let asset) = items[currentIndex].kind {
             VideoStateLog.log(id: asset.localIdentifier, state: "S14_fully_visible")
         }
@@ -328,11 +383,15 @@ final class FeedPagedCollectionViewController: UICollectionViewController, UICol
         let protected = Set([page - 1, page, page + 1].filter { $0 >= 0 && $0 < items.count })
         removes.subtract(protected)
         let sizePx = CGSize(width: collectionView.bounds.width * UIScreen.main.scale, height: collectionView.bounds.height * UIScreen.main.scale)
-        // Prioritize current item when unready (TikTok/Instagram pattern)
-        if adds.contains(page), !isPageReady(page) {
-            onPrefetch(IndexSet([page]), sizePx)
+        if FeedScrollSmoothnessSettings.smoothScrollImprovements {
+            let priorityIndices = [page, page + 1, page - 1].filter { adds.contains($0) && items.indices.contains($0) }
+            if !priorityIndices.isEmpty { onPrefetch(IndexSet(priorityIndices), sizePx) }
+            let rest = adds.subtracting(Set(priorityIndices))
+            if !rest.isEmpty { onPrefetch(IndexSet(rest), sizePx) }
+        } else {
+            if adds.contains(page), !isPageReady(page) { onPrefetch(IndexSet([page]), sizePx) }
+            if !adds.isEmpty { onPrefetch(IndexSet(adds), sizePx) }
         }
-        if !adds.isEmpty { onPrefetch(IndexSet(adds), sizePx) }
         if !removes.isEmpty { onCancelPrefetch(IndexSet(removes), sizePx) }
         prefetchedIndices = desired
     }

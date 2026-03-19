@@ -118,12 +118,13 @@ final class PostOnboardingFacePromptCoordinator {
         // Skip photos taken within this many seconds of the last selected photo
         let minimumTimeGapSeconds: TimeInterval = 300 // 5 minutes
         
+        let excludeScreenshots = ExcludeScreenshotsPreference.excludeScreenshots
         var selectedAssets: [PHAsset] = []
         var lastSelectedDate: Date?
         
         fetchResult.enumerateObjects { asset, _, _ in
             guard let creationDate = asset.creationDate else { return }
-            if ExcludeScreenshotsPreference.shouldExcludeAsScreenshot(asset) { return }
+            if excludeScreenshots && ExcludeScreenshotsPreference.isLikelyRealScreenshot(asset) { return }
 
             // Check if this photo is far enough in time from the last selected photo
             if let lastDate = lastSelectedDate {

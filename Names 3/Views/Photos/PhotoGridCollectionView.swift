@@ -1006,6 +1006,16 @@ extension PhotoGridView.Coordinator: UICollectionViewDelegate {
 // MARK: - UICollectionViewDataSourcePrefetching
 
 extension PhotoGridView.Coordinator: UICollectionViewDataSourcePrefetching {
+    /// Uses .fastFormat + .fast to avoid PHPhotosErrorDomain 3303 / FigFile -17913 on device
+    /// (crop rect generation fails for iCloud, ProRAW, or partially-downloaded assets).
+    private func gridCachingOptions() -> PHImageRequestOptions {
+        let o = PHImageRequestOptions()
+        o.deliveryMode = .fastFormat
+        o.resizeMode = .fast
+        o.isNetworkAccessAllowed = true
+        return o
+    }
+
     func collectionView(_ collectionView: UICollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
         let columns = availableColumns[currentColumnIndex]
         let prefetchLimit = columns == 1 ? 5 : 24
@@ -1033,7 +1043,7 @@ extension PhotoGridView.Coordinator: UICollectionViewDataSourcePrefetching {
             for: assetsToCache,
             targetSize: targetSize,
             contentMode: .aspectFill,
-            options: nil
+            options: gridCachingOptions()
         )
     }
 
@@ -1055,7 +1065,7 @@ extension PhotoGridView.Coordinator: UICollectionViewDataSourcePrefetching {
                 for: images,
                 targetSize: targetSize,
                 contentMode: .aspectFill,
-                options: nil
+                options: gridCachingOptions()
             )
         }
         // For videos we don't have a PHCaching API; we just let any outstanding player requests finish.

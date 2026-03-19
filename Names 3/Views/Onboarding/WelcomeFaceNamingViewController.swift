@@ -9,7 +9,7 @@ import AVFoundation
     func welcomeFaceNamingViewControllerDidFinish(_ controller: WelcomeFaceNamingViewController)
 }
 
-final class WelcomeFaceNamingViewController: UIViewController {
+final class WelcomeFaceNamingViewController: UIViewController, UIScrollViewDelegate {
     
     weak var delegate: WelcomeFaceNamingViewControllerDelegate?
     
@@ -133,6 +133,39 @@ final class WelcomeFaceNamingViewController: UIViewController {
     // For video scrubbing gesture
     private var videoScrubStartTime: TimeInterval = 0
     private var isScrubbing = false
+
+    // Drag-up-to-delete
+    private var deleteOverlayView: UIView?
+    private var deleteProgressLabel: UILabel?
+    private let deleteThresholdPoints: CGFloat = 100
+
+    // Pan gesture state for delete only (carousel uses UIScrollView natively)
+    private enum MainImagePanMode { case none, delete }
+    private var mainImagePanMode: MainImagePanMode = .none
+
+    /// UIScrollView with pagingEnabled — Apple's standard pattern for swipe-between-pages (Photos, Safari).
+    private lazy var photoPagingScrollView: UIScrollView = {
+        let sv = UIScrollView()
+        sv.translatesAutoresizingMaskIntoConstraints = false
+        sv.isPagingEnabled = true
+        sv.showsHorizontalScrollIndicator = false
+        sv.showsVerticalScrollIndicator = false
+        sv.bounces = true
+        sv.alwaysBounceHorizontal = true
+        sv.decelerationRate = .fast
+        sv.delegate = self
+        sv.backgroundColor = .clear
+        sv.clipsToBounds = true
+        return sv
+    }()
+    private lazy var pagingContentView: UIView = {
+        let v = UIView()
+        v.translatesAutoresizingMaskIntoConstraints = false
+        v.backgroundColor = .clear
+        return v
+    }()
+    private lazy var leftPageImageView: UIImageView = makeCarouselImageView()
+    private lazy var rightPageImageView: UIImageView = makeCarouselImageView()
     
     private struct PhotoCandidate: Comparable {
         let asset: PHAsset
@@ -206,6 +239,15 @@ final class WelcomeFaceNamingViewController: UIViewController {
         imageView.isUserInteractionEnabled = true
         return imageView
     }()
+
+    private func makeCarouselImageView() -> UIImageView {
+        let v = UIImageView()
+        v.translatesAutoresizingMaskIntoConstraints = false
+        v.contentMode = .scaleAspectFit
+        v.clipsToBounds = true
+        v.backgroundColor = .clear
+        return v
+    }
     
     private lazy var videoPlayerView: UIView = {
         let view = UIView()
@@ -1100,6 +1142,10 @@ final class WelcomeFaceNamingViewController: UIViewController {
             gradientLayer.frame = carouselRightFadeView.bounds
             gradientLayer.colors = [groupedBgClear.cgColor, groupedBg.cgColor]
         }
+
+        if photoImageView.isHidden == false, photoContainerView.bounds.width > 0 {
+            scrollToCenterPage(animated: false)
+        }
         
         // Update video player layer: fit (resizeAspect), frame to bounds
         if let layer = videoPlayerLayer {
@@ -1140,6 +1186,9 @@ final class WelcomeFaceNamingViewController: UIViewController {
         photoPlaceholderView.isHidden = true
         cleanupVideoPlayer()
         configureLayoutForImage()
+
+        scrollToCenterPage(animated: false)
+        refreshPagingContent()
     }
     
     private func updateFacesVisibility() {
@@ -1497,7 +1546,11 @@ final class WelcomeFaceNamingViewController: UIViewController {
         
         // Add photo/video content to container (placeholder behind so it shows when loading)
         photoContainerView.insertSubview(photoPlaceholderView, at: 0)
-        photoContainerView.addSubview(photoImageView)
+        photoContainerView.addSubview(photoPagingScrollView)
+        photoPagingScrollView.addSubview(pagingContentView)
+        pagingContentView.addSubview(leftPageImageView)
+        pagingContentView.addSubview(photoImageView)
+        pagingContentView.addSubview(rightPageImageView)
         photoContainerView.addSubview(videoPlayerView)
         
         // Add video controls FIRST (so they're below in z-order)
@@ -1537,11 +1590,32 @@ final class WelcomeFaceNamingViewController: UIViewController {
             photoPlaceholderView.trailingAnchor.constraint(equalTo: photoContainerView.trailingAnchor),
             photoPlaceholderView.bottomAnchor.constraint(equalTo: photoContainerView.bottomAnchor),
 
-            // Photo image view fills container
-            photoImageView.topAnchor.constraint(equalTo: photoContainerView.topAnchor),
-            photoImageView.leadingAnchor.constraint(equalTo: photoContainerView.leadingAnchor),
-            photoImageView.trailingAnchor.constraint(equalTo: photoContainerView.trailingAnchor),
-            photoImageView.bottomAnchor.constraint(equalTo: photoContainerView.bottomAnchor),
+            // UIScrollView paging: [prev | current | next] — native physics, no custom transforms
+            photoPagingScrollView.topAnchor.constraint(equalTo: photoContainerView.topAnchor),
+            photoPagingScrollView.leadingAnchor.constraint(equalTo: photoContainerView.leadingAnchor),
+            photoPagingScrollView.trailingAnchor.constraint(equalTo: photoContainerView.trailingAnchor),
+            photoPagingScrollView.bottomAnchor.constraint(equalTo: photoContainerView.bottomAnchor),
+
+            pagingContentView.topAnchor.constraint(equalTo: photoPagingScrollView.topAnchor),
+            pagingContentView.leadingAnchor.constraint(equalTo: photoPagingScrollView.leadingAnchor),
+            pagingContentView.bottomAnchor.constraint(equalTo: photoPagingScrollView.bottomAnchor),
+            pagingContentView.heightAnchor.constraint(equalTo: photoPagingScrollView.heightAnchor),
+            pagingContentView.widthAnchor.constraint(equalTo: photoContainerView.widthAnchor, multiplier: 3),
+
+            leftPageImageView.topAnchor.constraint(equalTo: pagingContentView.topAnchor),
+            leftPageImageView.leadingAnchor.constraint(equalTo: pagingContentView.leadingAnchor),
+            leftPageImageView.bottomAnchor.constraint(equalTo: pagingContentView.bottomAnchor),
+            leftPageImageView.widthAnchor.constraint(equalTo: photoContainerView.widthAnchor),
+
+            photoImageView.topAnchor.constraint(equalTo: pagingContentView.topAnchor),
+            photoImageView.leadingAnchor.constraint(equalTo: leftPageImageView.trailingAnchor),
+            photoImageView.bottomAnchor.constraint(equalTo: pagingContentView.bottomAnchor),
+            photoImageView.widthAnchor.constraint(equalTo: photoContainerView.widthAnchor),
+
+            rightPageImageView.topAnchor.constraint(equalTo: pagingContentView.topAnchor),
+            rightPageImageView.leadingAnchor.constraint(equalTo: photoImageView.trailingAnchor),
+            rightPageImageView.bottomAnchor.constraint(equalTo: pagingContentView.bottomAnchor),
+            rightPageImageView.widthAnchor.constraint(equalTo: photoContainerView.widthAnchor),
             
             // Video player view fills container
             videoPlayerView.topAnchor.constraint(equalTo: photoContainerView.topAnchor),
@@ -1662,6 +1736,215 @@ final class WelcomeFaceNamingViewController: UIViewController {
         
         // Initially hide faces collection until faces are detected
         facesCollectionView.isHidden = true
+
+        setupMainImageGestures()
+    }
+
+    private func setupMainImageGestures() {
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(handleMainImagePan(_:)))
+        pan.delegate = self
+        photoContainerView.addGestureRecognizer(pan)
+
+        setupDeleteOverlay()
+    }
+
+    /// The view that displays the main photo or video; we apply transform for delete gesture.
+    private var activeContentView: UIView? {
+        if !photoImageView.isHidden { return photoPagingScrollView }
+        if !videoPlayerView.isHidden { return videoPlayerView }
+        return nil
+    }
+
+    private func scrollToCenterPage(animated: Bool = false) {
+        let w = photoContainerView.bounds.width
+        guard w > 0 else { return }
+        photoPagingScrollView.setContentOffset(CGPoint(x: w, y: 0), animated: animated)
+    }
+
+    private func refreshPagingContent() {
+        guard photoImageView.isHidden == false else { return }
+        photoPagingScrollView.isScrollEnabled = carouselItemCount > 1
+        let prevIdx = currentCarouselIndex - 1
+        let nextIdx = currentCarouselIndex + 1
+        let prevImg = cachedDisplayImages[prevIdx] ?? carouselThumbnails[safe: prevIdx].flatMap { $0 }
+        let nextImg = cachedDisplayImages[nextIdx] ?? carouselThumbnails[safe: nextIdx].flatMap { $0 }
+        if isValidCarouselIndex(prevIdx), let img = prevImg {
+            leftPageImageView.image = img
+            leftPageImageView.isHidden = false
+        } else {
+            leftPageImageView.image = nil
+            leftPageImageView.isHidden = true
+        }
+        if isValidCarouselIndex(nextIdx), let img = nextImg {
+            rightPageImageView.image = img
+            rightPageImageView.isHidden = false
+        } else {
+            rightPageImageView.image = nil
+            rightPageImageView.isHidden = true
+        }
+        loadAdjacentImageIfNeeded(index: prevIdx)
+        loadAdjacentImageIfNeeded(index: nextIdx)
+    }
+
+    private func loadAdjacentImageIfNeeded(index: Int) {
+        guard isValidCarouselIndex(index), cachedDisplayImages[index] == nil else { return }
+        let asset = prioritizedAssets[index]
+        guard asset.mediaType == .image else { return }
+        Task {
+            guard let image = await loadOptimizedImage(for: asset) else { return }
+            await MainActor.run {
+                guard self.isValidCarouselIndex(index) else { return }
+                self.cachedDisplayImages[index] = image
+                if index == self.currentCarouselIndex - 1 {
+                    self.leftPageImageView.image = image
+                    self.leftPageImageView.isHidden = false
+                } else if index == self.currentCarouselIndex + 1 {
+                    self.rightPageImageView.image = image
+                    self.rightPageImageView.isHidden = false
+                }
+            }
+        }
+    }
+
+    private func setupDeleteOverlay() {
+        let overlay = UIView()
+        overlay.translatesAutoresizingMaskIntoConstraints = false
+        overlay.backgroundColor = UIColor.systemRed.withAlphaComponent(0.4)
+        overlay.alpha = 0
+        overlay.isUserInteractionEnabled = false
+        overlay.layer.cornerRadius = 12
+        overlay.layer.cornerCurve = .continuous
+        overlay.clipsToBounds = true
+
+        let config = UIImage.SymbolConfiguration(pointSize: 24, weight: .medium)
+        let iconView = UIImageView(image: UIImage(systemName: "trash.fill", withConfiguration: config))
+        iconView.tintColor = .white
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+
+        let label = UILabel()
+        label.text = "Release to delete"
+        label.font = .systemFont(ofSize: 15, weight: .semibold)
+        label.textColor = .white
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        overlay.addSubview(iconView)
+        overlay.addSubview(label)
+
+        NSLayoutConstraint.activate([
+            iconView.centerXAnchor.constraint(equalTo: overlay.centerXAnchor),
+            iconView.topAnchor.constraint(equalTo: overlay.topAnchor, constant: 16),
+            label.topAnchor.constraint(equalTo: iconView.bottomAnchor, constant: 6),
+            label.centerXAnchor.constraint(equalTo: overlay.centerXAnchor),
+            label.bottomAnchor.constraint(equalTo: overlay.bottomAnchor, constant: -16),
+        ])
+
+        photoContainerView.addSubview(overlay)
+        NSLayoutConstraint.activate([
+            overlay.topAnchor.constraint(equalTo: photoContainerView.topAnchor, constant: 12),
+            overlay.leadingAnchor.constraint(equalTo: photoContainerView.leadingAnchor, constant: 24),
+            overlay.trailingAnchor.constraint(equalTo: photoContainerView.trailingAnchor, constant: -24),
+            overlay.heightAnchor.constraint(equalToConstant: 80),
+        ])
+
+        deleteOverlayView = overlay
+        deleteProgressLabel = label
+    }
+
+    private func commitPagingTransition(goingNext: Bool) {
+        if goingNext {
+            if let img = rightPageImageView.image { photoImageView.image = img }
+            goToNextItem()
+        } else {
+            if let img = leftPageImageView.image { photoImageView.image = img }
+            goToPreviousItem()
+        }
+        refreshPagingContent()
+        scrollToCenterPage(animated: false)
+    }
+
+    @objc private func handleMainImagePan(_ gesture: UIPanGestureRecognizer) {
+        let translation = gesture.translation(in: photoContainerView)
+        let threshold = photoContainerView.bounds.height > 0
+            ? min(deleteThresholdPoints, photoContainerView.bounds.height * 0.25)
+            : deleteThresholdPoints
+
+        switch gesture.state {
+        case .began:
+            mainImagePanMode = .none
+        case .changed:
+            if mainImagePanMode == .none, abs(translation.y) > abs(translation.x), translation.y < 0 {
+                mainImagePanMode = .delete
+            }
+            guard mainImagePanMode == .delete else { break }
+            guard abs(translation.y) > abs(translation.x), translation.y < 0 else {
+                activeContentView?.transform = .identity
+                deleteOverlayView?.alpha = 0
+                break
+            }
+            activeContentView?.transform = CGAffineTransform(translationX: 0, y: translation.y)
+            let progress = min(1, -translation.y / threshold)
+            deleteOverlayView?.alpha = 0.3 + 0.5 * progress
+            deleteProgressLabel?.text = progress >= 1 ? "Release to delete" : "Keep dragging up..."
+        case .ended, .cancelled:
+            guard mainImagePanMode == .delete else { break }
+            let didExceed = -translation.y >= threshold
+            UIView.animate(withDuration: 0.2) { self.deleteOverlayView?.alpha = 0 }
+            deleteProgressLabel?.text = "Release to delete"
+            if didExceed, isValidCarouselIndex(currentCarouselIndex) {
+                animateDeleteAndRemove()
+            } else {
+                UIView.animate(withDuration: 0.35, delay: 0, usingSpringWithDamping: 0.75, initialSpringVelocity: 0) {
+                    self.activeContentView?.transform = .identity
+                }
+            }
+            mainImagePanMode = .none
+        default:
+            break
+        }
+    }
+
+    private func animateDeleteAndRemove() {
+        guard let content = activeContentView else { return }
+        let offscreenY = -photoContainerView.bounds.height - 50
+        UIView.animate(withDuration: 0.3, delay: 0, options: [.curveEaseIn]) {
+            content.transform = CGAffineTransform(translationX: 0, y: offscreenY)
+            content.alpha = 0
+        } completion: { [weak self] _ in
+            guard let self else { return }
+            content.transform = .identity
+            content.alpha = 1
+            scrollToCenterPage(animated: false)
+            if isValidCarouselIndex(currentCarouselIndex) {
+                let asset = prioritizedAssets[currentCarouselIndex]
+                archiveAssetFromCarousel(asset, atIndex: currentCarouselIndex)
+            }
+        }
+    }
+
+    private func goToNextItem() {
+        guard carouselItemCount > 1 else { return }
+        let next = min(currentCarouselIndex + 1, carouselItemCount - 1)
+        guard next != currentCarouselIndex else { return }
+        currentCarouselIndex = next
+        isProgrammaticallyScrollingCarousel = true
+        scrollCarouselToCurrentIndex()
+        loadPhotoAtCarouselIndex(currentCarouselIndex)
+        startCachingDisplayImages(around: currentCarouselIndex)
+        saveCarouselPosition()
+        isProgrammaticallyScrollingCarousel = false
+    }
+
+    private func goToPreviousItem() {
+        guard carouselItemCount > 1 else { return }
+        let prev = max(currentCarouselIndex - 1, 0)
+        guard prev != currentCarouselIndex else { return }
+        currentCarouselIndex = prev
+        isProgrammaticallyScrollingCarousel = true
+        scrollCarouselToCurrentIndex()
+        loadPhotoAtCarouselIndex(currentCarouselIndex)
+        startCachingDisplayImages(around: currentCarouselIndex)
+        saveCarouselPosition()
+        isProgrammaticallyScrollingCarousel = false
     }
 
     private func archiveAssetFromCarousel(_ asset: PHAsset, atIndex index: Int) {
@@ -3583,9 +3866,11 @@ extension WelcomeFaceNamingViewController: UICollectionViewDelegate {
             currentCarouselIndex = centeredIndex
             saveCarouselPosition()
             performPostScrollUpdates(for: centeredIndex)
+        } else if scrollView == photoPagingScrollView {
+            handlePagingScrollEnd()
         }
     }
-    
+
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         if scrollView == photoCarouselCollectionView && !decelerate {
             scrollCommitWorkItem?.cancel()
@@ -3597,6 +3882,27 @@ extension WelcomeFaceNamingViewController: UICollectionViewDelegate {
             currentCarouselIndex = centeredIndex
             saveCarouselPosition()
             performPostScrollUpdates(for: centeredIndex)
+        } else if scrollView == photoPagingScrollView, !decelerate {
+            handlePagingScrollEnd()
+        }
+    }
+
+    private func handlePagingScrollEnd() {
+        let w = photoContainerView.bounds.width
+        guard w > 0 else { return }
+        let x = photoPagingScrollView.contentOffset.x
+        if x < w * 0.5 {
+            if isValidCarouselIndex(currentCarouselIndex - 1) {
+                commitPagingTransition(goingNext: false)
+            } else {
+                scrollToCenterPage(animated: true)
+            }
+        } else if x > w * 1.5 {
+            if isValidCarouselIndex(currentCarouselIndex + 1) {
+                commitPagingTransition(goingNext: true)
+            } else {
+                scrollToCenterPage(animated: true)
+            }
         }
     }
     
@@ -4410,6 +4716,10 @@ private final class PhotoCarouselCell: UICollectionViewCell {
 // MARK: - UIGestureRecognizerDelegate
 
 extension WelcomeFaceNamingViewController: UIGestureRecognizerDelegate {
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        return true
+    }
+
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         // Don't handle tap gesture if touch is on faces collection view or any interactive control
         if touch.view is UIControl {

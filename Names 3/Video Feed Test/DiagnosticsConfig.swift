@@ -9,6 +9,12 @@ struct DiagnosticsConfig {
     static var shared = DiagnosticsConfig()
 
     var verbosity: LogVerbosity
+
+    /// Use for direct print() calls that should respect verbosity. Call only when verbosity != .off.
+    static func verbosePrint(_ message: String) {
+        guard shared.verbosity != .off else { return }
+        print(message)
+    }
     var throttle: [String: TimeInterval] = [
         "PagedCollection.viewDidLayoutSubviews": 0.5,
         "PagedCollection.interacting": 1.0,
@@ -33,7 +39,7 @@ struct DiagnosticsConfig {
 
     private static func defaultVerbosity() -> LogVerbosity {
         #if DEBUG
-        let fallback: LogVerbosity = .compact
+        let fallback: LogVerbosity = .off
         #else
         let fallback: LogVerbosity = .errorsOnly
         #endif

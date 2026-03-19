@@ -44,8 +44,16 @@ enum LaunchProfiler {
     }
 
     /// Log a launch checkpoint with elapsed time since process start. Use everywhere you need visibility.
+    /// Gated by DiagnosticsConfig.verbosity; set VF_LOG=compact (or higher) to enable.
     static func logCheckpoint(_ message: String) {
+        guard DiagnosticsConfig.shared.verbosity != .off else { return }
         launchLogger.info("🚀 [Launch] [+\(elapsedSinceProcessStart())s] \(message)")
+    }
+
+    /// Log a raw launch message. Gated by DiagnosticsConfig.verbosity.
+    static func logInfo(_ message: String) {
+        guard DiagnosticsConfig.shared.verbosity != .off else { return }
+        launchLogger.info("\(message)")
     }
 
     /// Call when post-launch task begins (LaunchRootView.task). Starts TTI timer.
@@ -59,7 +67,9 @@ enum LaunchProfiler {
     static func markTimeToInteractive() {
         guard let t0 = _launchStartTime else { return }
         let tti = CFAbsoluteTimeGetCurrent() - t0
-        launchLogger.info("🚀 [Launch] [+\(elapsedSinceProcessStart())s] Time to interactive: \(String(format: "%.3f", tti))s (since task start)")
+        if DiagnosticsConfig.shared.verbosity != .off {
+            launchLogger.info("🚀 [Launch] [+\(elapsedSinceProcessStart())s] Time to interactive: \(String(format: "%.3f", tti))s (since task start)")
+        }
         signposter.emitEvent("LaunchComplete")
     }
 

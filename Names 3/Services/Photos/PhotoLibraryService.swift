@@ -42,7 +42,9 @@ final class PhotoLibraryService: PhotoLibraryServiceProtocol {
     private var _libraryUnavailable = false
     
     private init() {
-        logger.info("PhotoLibraryService initialized")
+        if DiagnosticsConfig.shared.verbosity != .off {
+            logger.info("PhotoLibraryService initialized")
+        }
         ProcessReportCoordinator.shared.register(name: "PhotoLibraryService") { [weak self] in
             guard let self else {
                 return ProcessReportSnapshot(name: "PhotoLibraryService", payload: ["state": "released"])
@@ -155,10 +157,11 @@ final class PhotoLibraryService: PhotoLibraryServiceProtocol {
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
         options.predicate = NSPredicate(format: "creationDate >= %@ AND creationDate < %@", startDate as NSDate, endDate as NSDate)
         let fetchResult = PHAsset.fetchAssets(with: .image, options: options)
+        let excludeScreenshots = ExcludeScreenshotsPreference.excludeScreenshots
         var assets: [PHAsset] = []
         assets.reserveCapacity(fetchResult.count)
         fetchResult.enumerateObjects { asset, _, _ in
-            if !ExcludeScreenshotsPreference.shouldExcludeAsScreenshot(asset) {
+            if !excludeScreenshots || !ExcludeScreenshotsPreference.isLikelyRealScreenshot(asset) {
                 assets.append(asset)
             }
         }
@@ -275,7 +278,9 @@ final class PhotoLibraryService: PhotoLibraryServiceProtocol {
     }
     
     func observeChanges(handler: @escaping () -> Void) -> PHPhotoLibraryChangeObserver {
-        logger.info("Registering photo library change observer")
+        if DiagnosticsConfig.shared.verbosity != .off {
+            logger.info("Registering photo library change observer")
+        }
         let observer = PhotoLibraryChangeObserver(onChange: handler)
         PHPhotoLibrary.shared().register(observer)
         return observer

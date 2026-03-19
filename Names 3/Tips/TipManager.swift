@@ -9,10 +9,19 @@ final class TipManager {
     
     private var isConfigured = false
     
+    /// Local-only datastore URL to avoid accountsd (com.apple.accounts Code=7) triggered by
+    /// .applicationDefault when it probes iCloud/account status.
+    private static var localDatastoreURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("tipstore")
+    }
+    
     private init() {}
     
     /// Configure TipKit once at app launch.
     /// Must be called on the main thread.
+    /// Uses local-only datastore to avoid accountsd Code=7 (ACErrorPermissionDenied) from
+    /// .applicationDefault probing iCloud/account status.
     func configure() {
         guard !isConfigured else { return }
         
@@ -23,7 +32,7 @@ final class TipManager {
         do {
             try Tips.configure([
                 .displayFrequency(.immediate),
-                .datastoreLocation(.applicationDefault)
+                .datastoreLocation(.url(Self.localDatastoreURL))
             ])
             isConfigured = true
         } catch {

@@ -90,6 +90,9 @@ final class CombinedMediaCoordinator: ObservableObject {
         if !videoAssets.isEmpty {
             VideoPrefetcher.shared.prefetch(videoAssets)
             PlayerItemPrefetcher.shared.prefetch(videoAssets)
+            if FeedScrollSmoothnessSettings.smoothScrollImprovements {
+                ImagePrefetcher.shared.preheatVideoFirstFrames(for: videoAssets)
+            }
         }
         if FeatureFlags.enablePhotoPosts, !carouselGroups.isEmpty {
             let photoPx = photoTargetSizePx(for: viewportPx)

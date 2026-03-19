@@ -1,6 +1,10 @@
 /**
  * Apple Music Developer Token generator (ES256)
  *
+ * DEPRECATED: The app now uses MusicKit's MusicCatalogSearchRequest, which handles
+ * authentication automatically. This script is no longer needed for catalog search.
+ * Kept for reference or server-side use only.
+ *
  * Usage (env vars recommended):
  *   TEAM_ID=AAAAA KEY_ID=BBBBB P8=/absolute/path/AuthKey_BBBBB.p8 TTL_DAYS=30 node generate-dev-token.js
  *

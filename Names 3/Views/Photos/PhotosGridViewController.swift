@@ -431,7 +431,7 @@ final class PhotosGridViewController: UIViewController {
         var assets: [PHAsset] = []
         assets.reserveCapacity(fetchResult.count)
         fetchResult.enumerateObjects { asset, _, _ in
-            if !excludingScreenshots || !ExcludeScreenshotsPreference.shouldExcludeAsScreenshot(asset) {
+            if !excludingScreenshots || !ExcludeScreenshotsPreference.isLikelyRealScreenshot(asset) {
                 assets.append(asset)
             }
         }

@@ -19,7 +19,9 @@ enum VideoStateLog {
     }
 
     /// Log a video state transition. Use consistent state names for grepping.
+    /// Gated by DiagnosticsConfig.verbosity; set VF_LOG=compact (or higher) to enable.
     static func log(id: String, state: String, extra: String = "") {
+        guard DiagnosticsConfig.shared.verbosity != .off else { return }
         let t = tag(id)
         if extra.isEmpty {
             print("[VideoState] \(t) \(state)")

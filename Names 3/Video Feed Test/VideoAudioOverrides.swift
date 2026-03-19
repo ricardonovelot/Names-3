@@ -15,8 +15,11 @@ actor VideoAudioOverrides {
     static let shared = VideoAudioOverrides()
 
     private var map: [String: VideoAudioOverride] = [:]
+    private var albumMap: [String: SongReference] = [:]
     private let defaultsKey = "video.audio.overrides.v1"
+    private let albumDefaultsKey = "video.audio.overrides.album.v1"
     private let maxEntries = 800
+    private let maxAlbumEntries = 200
 
     init() {
         Task { await load() }
@@ -27,9 +30,30 @@ actor VideoAudioOverrides {
         return e.volume
     }
 
-    func songReference(for id: String?) -> SongReference? {
-        guard let id, let e = map[id] else { return nil }
+    /// Lookup: album first (if provided), then asset. Used when playing in album context.
+    func songReference(for assetID: String?, albumIdentifier: String? = nil) -> SongReference? {
+        if let albumId = albumIdentifier, albumId.hasPrefix("album:"), let ref = albumMap[albumId] {
+            return ref
+        }
+        guard let id = assetID, let e = map[id] else { return nil }
         return e.song
+    }
+
+    /// Legacy: asset-only lookup (Photos feed).
+    func songReference(for id: String?) -> SongReference? {
+        songReference(for: id, albumIdentifier: nil)
+    }
+
+    func setSongReference(forAlbumIdentifier albumId: String, reference: SongReference?) {
+        if let ref = reference {
+            albumMap[albumId] = ref
+        } else {
+            albumMap.removeValue(forKey: albumId)
+        }
+        Diagnostics.log("Overrides.setSongReference album=\(albumId) ref=\(reference?.debugKey ?? "nil")")
+        trimAlbumIfNeeded()
+        saveAlbums()
+        notifyChanged(id: albumId)
     }
 
     func songOverride(for id: String?) -> String? {
@@ -69,6 +93,29 @@ actor VideoAudioOverrides {
         }
     }
 
+    /// Returns recently used songs (assigned to videos/albums), sorted by most recent first.
+    func recentlyUsedSongs(limit: Int = 25) async -> [SongReference] {
+        var refs: [(SongReference, Date)] = []
+        for (_, e) in map where e.song != nil {
+            if let s = e.song, s.appleMusicStoreID != nil {
+                refs.append((s, e.updatedAt))
+            }
+        }
+        for (_, ref) in albumMap where ref.appleMusicStoreID != nil {
+            refs.append((ref, Date()))
+        }
+        let sorted = refs.sorted { $0.1 > $1.1 }
+        var seen = Set<String>()
+        var result: [SongReference] = []
+        for (r, _) in sorted {
+            guard let id = r.appleMusicStoreID, !seen.contains(id) else { continue }
+            seen.insert(id)
+            result.append(r)
+            if result.count >= limit { break }
+        }
+        return result
+    }
+
     private func notifyChanged(id: String) {
         Task { @MainActor in
             NotificationCenter.default.post(name: .videoAudioOverrideChanged, object: nil, userInfo: ["id": id])
@@ -84,7 +131,10 @@ actor VideoAudioOverrides {
     }
 
     private func load() {
-        guard let data = UserDefaults.standard.data(forKey: defaultsKey) else { return }
+        guard let data = UserDefaults.standard.data(forKey: defaultsKey) else {
+            loadAlbums()
+            return
+        }
         do {
             let loaded = try JSONDecoder().decode([String: VideoAudioOverride].self, from: data)
             var migrated: [String: VideoAudioOverride] = [:]
@@ -99,6 +149,7 @@ actor VideoAudioOverrides {
         } catch {
             map = [:]
         }
+        loadAlbums()
     }
 
     private func trimIfNeeded() {
@@ -106,6 +157,30 @@ actor VideoAudioOverrides {
         let sorted = map.sorted { $0.value.updatedAt < $1.value.updatedAt }
         for (k, _) in sorted.prefix(map.count - maxEntries) {
             map.removeValue(forKey: k)
+        }
+    }
+
+    private func trimAlbumIfNeeded() {
+        if albumMap.count <= maxAlbumEntries { return }
+        let keys = Array(albumMap.keys)
+        for k in keys.dropFirst(albumMap.count - maxAlbumEntries) {
+            albumMap.removeValue(forKey: k)
+        }
+    }
+
+    private func saveAlbums() {
+        do {
+            let data = try JSONEncoder().encode(albumMap)
+            UserDefaults.standard.set(data, forKey: albumDefaultsKey)
+        } catch {}
+    }
+
+    private func loadAlbums() {
+        guard let data = UserDefaults.standard.data(forKey: albumDefaultsKey) else { return }
+        do {
+            albumMap = try JSONDecoder().decode([String: SongReference].self, from: data)
+        } catch {
+            albumMap = [:]
         }
     }
 }

@@ -16,14 +16,23 @@ final class ImagePrefetcher {
         return o
     }
 
+    /// Uses .fastFormat + .fast to avoid PHPhotosErrorDomain 3303 / FigFile -17913 on device.
+    private func preheatOptions() -> PHImageRequestOptions {
+        let o = PHImageRequestOptions()
+        o.deliveryMode = .fastFormat
+        o.resizeMode = .fast
+        o.isNetworkAccessAllowed = DataUsageGuardrails.shouldAllowNetworkForFeedMedia()
+        return o
+    }
+
     func preheat(_ assets: [PHAsset], targetSize: CGSize) {
         guard !assets.isEmpty, targetSize.width > 0, targetSize.height > 0 else { return }
-        manager.startCachingImages(for: assets, targetSize: targetSize, contentMode: .aspectFill, options: imageOptions())
+        manager.startCachingImages(for: assets, targetSize: targetSize, contentMode: .aspectFill, options: preheatOptions())
     }
 
     func stopPreheating(_ assets: [PHAsset], targetSize: CGSize) {
         guard !assets.isEmpty, targetSize.width > 0, targetSize.height > 0 else { return }
-        manager.stopCachingImages(for: assets, targetSize: targetSize, contentMode: .aspectFill, options: imageOptions())
+        manager.stopCachingImages(for: assets, targetSize: targetSize, contentMode: .aspectFill, options: preheatOptions())
     }
 
     func requestImage(for asset: PHAsset, targetSize: CGSize) async -> UIImage? {
@@ -35,9 +44,32 @@ final class ImagePrefetcher {
         }
     }
 
+    /// Preheats video first frames for the next few videos so cells show a preview immediately.
+    func preheatVideoFirstFrames(for assets: [PHAsset], targetSize: CGSize = CGSize(width: 800, height: 800)) {
+        #if targetEnvironment(simulator)
+        let limit = 2
+        #else
+        let limit = 3
+        #endif
+        for asset in assets.prefix(limit) {
+            let cacheKey = CacheKeyGenerator.key(for: asset, size: targetSize)
+            if ImageCacheService.shared.image(for: cacheKey) != nil { continue }
+            Task { @MainActor in
+                let image = await requestVideoFirstFrame(for: asset, targetSize: targetSize)
+                if let image {
+                    ImageCacheService.shared.setImage(image, for: cacheKey)
+                }
+            }
+        }
+    }
+
     /// Extracts the first frame (time 0) of a video for use as a seamless preview before playback.
     func requestVideoFirstFrame(for asset: PHAsset, targetSize: CGSize) async -> UIImage? {
-        await withCheckedContinuation { (cont: CheckedContinuation<UIImage?, Never>) in
+        let cacheKey = CacheKeyGenerator.key(for: asset, size: targetSize)
+        if let cached = ImageCacheService.shared.image(for: cacheKey) {
+            return cached
+        }
+        return await withCheckedContinuation { (cont: CheckedContinuation<UIImage?, Never>) in
             let opts = PHVideoRequestOptions()
             opts.deliveryMode = .fastFormat
             opts.isNetworkAccessAllowed = DataUsageGuardrails.shouldAllowNetworkForFeedMedia()
@@ -46,14 +78,21 @@ final class ImagePrefetcher {
                     cont.resume(returning: nil)
                     return
                 }
-                let gen = AVAssetImageGenerator(asset: avAsset)
-                gen.appliesPreferredTrackTransform = true
-                gen.maximumSize = targetSize
-                gen.generateCGImageAsynchronously(for: .zero) { cgImage, _, _ in
-                    if let cgImage {
-                        cont.resume(returning: UIImage(cgImage: cgImage))
-                    } else {
-                        cont.resume(returning: nil)
+                Task {
+                    await avAsset.loadFullyForPlayback()
+                    let gen = AVAssetImageGenerator(asset: avAsset)
+                    gen.appliesPreferredTrackTransform = true
+                    gen.maximumSize = targetSize
+                    gen.generateCGImageAsynchronously(for: .zero) { cgImage, _, _ in
+                        if let cgImage {
+                            let image = UIImage(cgImage: cgImage)
+                            Task { @MainActor in
+                                ImageCacheService.shared.setImage(image, for: cacheKey)
+                            }
+                            cont.resume(returning: image)
+                        } else {
+                            cont.resume(returning: nil)
+                        }
                     }
                 }
             }

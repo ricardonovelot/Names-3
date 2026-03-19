@@ -13,9 +13,10 @@ enum MainTab: Int, CaseIterable {
     case people = 1
     case journal = 2
     case practice = 3    // accessed via People toolbar menu, not shown in tab bar
+    case albums = 4
 
     /// Tabs shown in the tab bar (Practice is in People toolbar menu).
-    static var tabBarTabs: [MainTab] { [.photos, .people, .journal] }
+    static var tabBarTabs: [MainTab] { [.photos, .albums, .people, .journal] }
 
     var title: String {
         switch self {
@@ -23,6 +24,7 @@ enum MainTab: Int, CaseIterable {
         case .people: return String(localized: "tab.people")
         case .journal: return String(localized: "tab.journal")
         case .practice: return String(localized: "tab.practice")
+        case .albums: return String(localized: "tab.albums")
         }
     }
 
@@ -32,6 +34,7 @@ enum MainTab: Int, CaseIterable {
         case .people: return "person.2.fill"
         case .journal: return "sparkles"
         case .practice: return "rectangle.stack.fill"
+        case .albums: return "square.stack.fill"
         }
     }
 }
@@ -58,6 +61,10 @@ struct QuickInputBottomBar<InlineInputContent: View>: View {
     @Binding var selectedTab: MainTab
     @Binding var isQuickInputExpanded: Bool
     var canShowQuickInput: Bool
+    /// When true (feed or albums tab), show music button instead of quick input expand button.
+    var showMusicButtonInsteadOfQuickInput: Bool = false
+    var onMusicTapped: (() -> Void)? = nil
+    var musicButtonDisabled: Bool = false
     /// Called when user taps the already-selected tab (native bar behavior: scroll to top).
     var onSameTabTapped: ((MainTab) -> Void)? = nil
     @AppStorage(QuickInputExpandIconPreference.userDefaultsKey) private var expandIconRaw: String = QuickInputExpandIconPreference.magnifyingglass.rawValue
@@ -153,11 +160,33 @@ struct QuickInputBottomBar<InlineInputContent: View>: View {
             .liquidGlass(in: .rect(cornerRadius: 28), stroke: true, style: .translucent)
             .frame(maxWidth: 400)
 
-            if canShowQuickInput {
+            if showMusicButtonInsteadOfQuickInput {
+                musicButton
+                    .transition(.opacity)
+            } else if canShowQuickInput {
                 expandButton
                     .transition(.opacity)
             }
         }
+    }
+
+    /// Music note icon in its own bubble. Shown on feed and albums tabs instead of quick input.
+    private var musicButton: some View {
+        Button {
+            let generator = UIImpactFeedbackGenerator(style: .light)
+            generator.impactOccurred(intensity: 0.6)
+            onMusicTapped?()
+        } label: {
+            Image(systemName: "music.note")
+                .font(.system(size: 22, weight: .regular))
+                .foregroundStyle(.primary)
+                .frame(width: pillHeight, height: pillHeight)
+                .liquidGlass(in: Circle(), stroke: true, style: .translucent)
+                .contentShape(Circle())
+        }
+        .buttonStyle(TabBarButtonStyle())
+        .disabled(musicButtonDisabled)
+        .accessibilityLabel("Assign music")
     }
 
     /// Glass lens icon in its own bubble. Same height as tabs pill.

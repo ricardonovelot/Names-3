@@ -115,6 +115,11 @@ struct ContentView: View {
             mainContentWithSheets
         }
         .safeAreaInset(edge: .bottom) { quickInputSection }
+        .overlay(alignment: .bottomTrailing) {
+            if vm.selectedTab == .photos {
+                photosTabOverlayButtons
+            }
+        }
     }
 
     // MARK: - Content Layers
@@ -167,13 +172,20 @@ struct ContentView: View {
                 if isEmpty { vm.selectedContact = nil }
             }
             .onChange(of: vm.selectedTab) { oldTab, newTab in
+                // Defer navigation path updates to next run loop to avoid "Update NavigationRequestObserver tried to update multiple times per frame"
                 if oldTab == .people && newTab != .people, !vm.contactPath.isEmpty {
-                    vm.savedPeopleContactPath = vm.contactPath
-                    vm.contactPath = NavigationPath()
-                    vm.selectedContact = nil
+                    let saved = vm.contactPath
+                    DispatchQueue.main.async {
+                        vm.savedPeopleContactPath = saved
+                        vm.contactPath = NavigationPath()
+                        vm.selectedContact = nil
+                    }
                 } else if oldTab != .people && newTab == .people, !vm.savedPeopleContactPath.isEmpty {
-                    vm.contactPath = vm.savedPeopleContactPath
-                    vm.savedPeopleContactPath = NavigationPath()
+                    let saved = vm.savedPeopleContactPath
+                    DispatchQueue.main.async {
+                        vm.contactPath = saved
+                        vm.savedPeopleContactPath = NavigationPath()
+                    }
                 }
                 switch newTab {
                 case .photos:
@@ -190,6 +202,10 @@ struct ContentView: View {
                     }
                 case .practice:
                     break
+                case .albums:
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.82)) {
+                        vm.isQuickInputExpanded = false
+                    }
                 }
             }
             .onChange(of: vm.photosIsFeedMode) { _, inFeedMode in
@@ -241,7 +257,8 @@ struct ContentView: View {
                 },
                 initialScrollDate: vm.faceNamingInitialDate,
                 bottomBarHeight: vm.tabBarHeight,
-                isTabActive: vm.selectedTab == .photos
+                isTabActive: vm.selectedTab == .photos,
+                viewModel: vm
             )
             .opacity(vm.selectedTab == .photos ? 1 : 0)
             .allowsHitTesting(vm.selectedTab == .photos)
@@ -249,8 +266,54 @@ struct ContentView: View {
             JournalTabView(bottomBarHeight: vm.tabBarHeight)
                 .opacity(vm.selectedTab == .journal ? 1 : 0)
                 .allowsHitTesting(vm.selectedTab == .journal)
+
+            AlbumsTabView(bottomBarHeight: vm.tabBarHeight)
+                .opacity(vm.selectedTab == .albums ? 1 : 0)
+                .allowsHitTesting(vm.selectedTab == .albums)
         }
         .animation(.spring(response: 0.35, dampingFraction: 0.9), value: vm.selectedTab)
+    }
+
+    // MARK: - Photos Tab Overlay Buttons
+
+    private var photosTabOverlayButtons: some View {
+        let size: CGFloat = 64
+        let bottomPadding = max(vm.tabBarHeight, tabBarMinimumHeight) + 16
+        return VStack(spacing: 12) {
+            Button {
+                let generator = UIImpactFeedbackGenerator(style: .light)
+                generator.impactOccurred(intensity: 0.6)
+                vm.photosSaveOrRemoveHandler?()
+            } label: {
+                Image(systemName: vm.photosCurrentItemSaved ? "bookmark.fill" : "bookmark")
+                    .font(.system(size: 22, weight: .regular))
+                    .foregroundStyle(.primary)
+                    .frame(width: size, height: size)
+                    .liquidGlass(in: Circle(), stroke: true, style: .translucent)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(TabBarButtonStyle())
+            .accessibilityLabel(vm.photosCurrentItemSaved ? "Remove from Profile" : "Save to Profile")
+
+            let isFeed = vm.photosIsFeedMode
+            let icon = isFeed ? "person.2.fill" : "play.rectangle.fill"
+            Button {
+                let generator = UIImpactFeedbackGenerator(style: .light)
+                generator.impactOccurred(intensity: 0.6)
+                vm.photosIsFeedMode.toggle()
+            } label: {
+                Image(systemName: icon)
+                    .font(.system(size: 22, weight: .regular))
+                    .foregroundStyle(.primary)
+                    .frame(width: size, height: size)
+                    .liquidGlass(in: Circle(), stroke: true, style: .translucent)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(TabBarButtonStyle())
+            .accessibilityLabel(isFeed ? "Switch to Name Faces" : "Switch to Feed")
+        }
+        .padding(.trailing, 16)
+        .padding(.bottom, bottomPadding)
     }
 
     // MARK: - Unified People Content
@@ -387,18 +450,28 @@ struct ContentView: View {
             selectedTab: $vm.selectedTab,
             isQuickInputExpanded: $vm.isQuickInputExpanded,
             canShowQuickInput: !vm.showQuizView && !(vm.selectedTab == .photos && vm.photosIsFeedMode),
+            showMusicButtonInsteadOfQuickInput: (vm.selectedTab == .photos && vm.photosIsFeedMode) || (vm.selectedTab == .albums),
+            onMusicTapped: {
+                vm.photosMusicPickerPayload = ContentViewModel.MusicPickerPayload(
+                    assetIDs: vm.selectedTab == .photos ? vm.photosCurrentItemAssetIDs : []
+                )
+            },
+            musicButtonDisabled: vm.selectedTab == .photos && vm.photosCurrentItemAssetIDs.isEmpty,
             onSameTabTapped: { tab in
                 switch tab {
                 case .people:
                     if !vm.contactPath.isEmpty {
-                        vm.contactPath = NavigationPath()
-                        vm.selectedContact = nil
+                        DispatchQueue.main.async {
+                            vm.contactPath = NavigationPath()
+                            vm.selectedContact = nil
+                        }
                     } else {
                         NotificationCenter.default.post(name: .peopleFeedScrollToTop, object: nil)
                     }
                 case .journal: NotificationCenter.default.post(name: .journalFeedScrollToTop, object: nil)
                 case .practice: break
                 case .photos: break  // No scroll-to-top when re-tapping Photos tab
+                case .albums: break
                 }
             }
         ) {
@@ -478,30 +551,94 @@ struct ContentView: View {
         case .people, .photos: return ""
         case .journal: return "Recalled Gratitude"
         case .practice: return ""
+        case .albums: return ""
         }
     }
 
     @ToolbarContentBuilder
     private var tabToolbarContent: some ToolbarContent {
-        if vm.selectedTab == .people, !vm.showQuizView, vm.selectedContact == nil, vm.contactPath.isEmpty {
-            PeopleTabToolbar(
-                vm: vm,
-                contacts: contacts,
-                modelContext: modelContext,
-                isSyncResetInProgress: isSyncResetInProgress,
-                onPresentLimitedLibraryPicker: presentLimitedLibraryPicker,
-                onOpenPractice: { vm.showPracticeSheet = true }
-            )
-        }
-        if vm.selectedTab == .journal {
-            ToolbarItem(placement: .topBarTrailing) {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            switch vm.selectedTab {
+            case .people where !vm.showQuizView && vm.selectedContact == nil && vm.contactPath.isEmpty:
+                Button {
+                    vm.peopleFeedFilter = vm.peopleFeedFilter == .people ? .peopleWithNotes : .people
+                } label: {
+                    Image(systemName: vm.peopleFeedFilter.systemImage)
+                        .symbolRenderingMode(.hierarchical)
+                }
+                .frame(width: 44, height: 44)
+                .accessibilityLabel("Filter: \(vm.peopleFeedFilter.title)")
+                .accessibilityHint("Tap to cycle filter mode")
+
+                Menu {
+                    if !vm.movementUndoStack.isEmpty {
+                        Button {
+                            vm.performMovementUndo(
+                                contacts: contacts,
+                                context: modelContext,
+                                isSyncResetInProgress: isSyncResetInProgress
+                            )
+                        } label: {
+                            Label(String(localized: "contacts.undo.move"), systemImage: "arrow.uturn.backward")
+                        }
+                        Divider()
+                    }
+                    Button { vm.showQuickNotesFeed = true } label: {
+                        Label("Quick Notes", systemImage: "note.text")
+                    }
+                    Button(action: { vm.showPracticeSheet = true }) {
+                        Label(String(localized: "tab.practice"), systemImage: "rectangle.stack.fill")
+                    }
+                    Divider()
+                    Button { vm.showDeletedView = true } label: {
+                        Label("Deleted", systemImage: "trash")
+                    }
+                    Divider()
+                    Button { vm.showSettings = true } label: {
+                        Label("Settings", systemImage: "gearshape")
+                    }
+                    if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited {
+                        Button(action: presentLimitedLibraryPicker) {
+                            Label("Manage Photos Selection", systemImage: "plus.circle")
+                        }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+                .frame(width: 44, height: 44)
+                .fontWeight(.semibold)
+
+            case .journal:
                 Button {
                     vm.showJournalNewEntrySheet = true
                 } label: {
                     Image(systemName: "square.and.pencil")
                         .fontWeight(.semibold)
                 }
+                .frame(width: 44, height: 44)
                 .accessibilityLabel("Write new gratitude entry")
+
+            case .photos:
+                Menu {
+                    Button { vm.showSettings = true } label: {
+                        Label("Settings", systemImage: "gearshape")
+                    }
+                    if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited {
+                        Divider()
+                        Button(action: presentLimitedLibraryPicker) {
+                            Label("Manage Photos Selection", systemImage: "plus.circle")
+                        }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .fontWeight(.semibold)
+                }
+                .frame(width: 44, height: 44)
+                .accessibilityLabel("Options")
+
+            default:
+                Color.clear.frame(width: 44, height: 44)
+                    .allowsHitTesting(false)
             }
         }
     }
@@ -562,6 +699,11 @@ private struct MainContentSheetsModifier: ViewModifier {
             .offlineActionAlert(showOfflineAlert: $vm.showOfflineActionAlert)
             .photosPicker(isPresented: $vm.showPhotosPicker, selection: $vm.selectedItem, matching: .images)
             .sheet(isPresented: $vm.showDeletedView) { DeletedView() }
+            .sheet(item: $vm.photosMusicPickerPayload) { payload in
+                AppleMusicSearchScreen(assetIDs: payload.assetIDs) {
+                    vm.photosMusicPickerPayload = nil
+                }
+            }
             .sheet(isPresented: $vm.showBulkAddFaces) {
                 BulkAddFacesView(contactsContext: modelContext)
                     .modelContainer(BatchModelContainer.shared)

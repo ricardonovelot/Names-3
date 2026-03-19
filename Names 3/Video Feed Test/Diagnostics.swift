@@ -68,7 +68,9 @@ enum Diagnostics {
             try? (line + "\n").write(to: url, atomically: true, encoding: .utf8)
         }
         let dataStr = data.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
-        print("[Bridge] hyp=\(hypothesisId) \(message) \(dataStr)")
+        if DiagnosticsConfig.shared.verbosity != .off {
+            print("[Bridge] hyp=\(hypothesisId) \(message) \(dataStr)")
+        }
     }
     // #endregion
 

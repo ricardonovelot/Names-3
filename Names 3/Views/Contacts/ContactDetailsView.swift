@@ -211,7 +211,7 @@ struct ContactDetailsView: View {
             TagPickerView(mode: .contactToggle(contact: contact))
         }
         .sheet(isPresented: $showNoteDatePicker) {
-            NavigationView {
+            NavigationStack {
                 VStack {
                     DatePicker(
                         "Select Date",

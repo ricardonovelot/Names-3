@@ -11,6 +11,7 @@
 import UIKit
 import SwiftData
 import Photos
+import Combine
 
 // MARK: - NameFacesFeedCombinedViewController
 
@@ -29,10 +30,15 @@ final class NameFacesFeedCombinedViewController: UIViewController {
     private var initialScrollDate: Date?
     private var bottomBarHeight: CGFloat
     private var onDisplayModeChange: ((Bool) -> Void)?  // true = feed mode
+    private weak var viewModel: ContentViewModel?
 
     private let coordinator = CombinedMediaCoordinator()
+    private var saveStateCancellable: AnyCancellable?
     private var displayMode: DisplayMode {
-        didSet { onDisplayModeChange?(displayMode == .feed) }
+        didSet {
+            onDisplayModeChange?(displayMode == .feed)
+            updateSaveState()
+        }
     }
 
     // MARK: - Child View Controllers
@@ -42,12 +48,12 @@ final class NameFacesFeedCombinedViewController: UIViewController {
     private var carouselLoadingViewController: UIViewController?
     private var carouselAssets: [PHAsset]?
     private var isCarouselLoading = false
+    private var isTransitioning = false
 
     // MARK: - Subviews
 
     private let feedContainerView = UIView()
     private let carouselContainerView = UIView()
-    private let modeToggleButton = UIButton(type: .system)
     private var heroMorphImageView: UIImageView?
     private var heroMorphOverlay: UIView?
 
@@ -66,13 +72,15 @@ final class NameFacesFeedCombinedViewController: UIViewController {
         onDismiss: @escaping () -> Void,
         initialScrollDate: Date? = nil,
         bottomBarHeight: CGFloat = 0,
-        initialDisplayMode: DisplayMode? = nil
+        initialDisplayMode: DisplayMode? = nil,
+        viewModel: ContentViewModel? = nil
     ) {
         self.modelContext = modelContext
         self.onDismiss = onDismiss
         self.initialScrollDate = initialScrollDate
         self.bottomBarHeight = max(bottomBarHeight, tabBarMinimumHeight)
         self.displayMode = initialDisplayMode ?? (initialScrollDate != nil ? .carousel : .feed)
+        self.viewModel = viewModel
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -102,6 +110,7 @@ final class NameFacesFeedCombinedViewController: UIViewController {
             carouselViewController?.notifyTabBecameActive()
         } else {
             feedViewController?.isFeedVisible = false
+            feedViewController?.deactivateAudioSession()
             coordinator.sharedVideoPlayer.setActive(false)
             carouselViewController?.notifyTabBecameInactive()
         }
@@ -120,7 +129,6 @@ final class NameFacesFeedCombinedViewController: UIViewController {
             coordinator.setBridgeTarget(savedID)
         }
         setupFeedChild()
-        setupModeToggle()
         if displayMode == .carousel || initialScrollDate != nil {
             loadCarouselAssetsIfNeeded()
         }
@@ -171,6 +179,7 @@ final class NameFacesFeedCombinedViewController: UIViewController {
     }
 
     private func setupFeedChild() {
+        FeedSettingsSnapshot.log()
         let feed = FeedArchitectureMode.current.makeFeedViewController()
         feed.coordinator = coordinator
         feed.isFeedVisible = (displayMode == .feed)
@@ -191,47 +200,117 @@ final class NameFacesFeedCombinedViewController: UIViewController {
         feedViewController = feed
         updateFeedBottomInset()
         updateVisibility()
+        setupSaveHandlerAndState()
     }
 
-    private func setupModeToggle() {
-        modeToggleButton.translatesAutoresizingMaskIntoConstraints = false
-        modeToggleButton.addTarget(self, action: #selector(modeToggleTapped), for: .touchUpInside)
-        modeToggleButton.backgroundColor = UIColor.white.withAlphaComponent(0.15)
-        modeToggleButton.layer.cornerRadius = 22
-        modeToggleButton.layer.cornerCurve = .continuous
-        modeToggleButton.layer.borderWidth = 1
-        modeToggleButton.layer.borderColor = UIColor.white.withAlphaComponent(0.2).cgColor
-        var config = UIButton.Configuration.plain()
-        config.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12)
-        modeToggleButton.configuration = config
-        view.addSubview(modeToggleButton)
-        updateModeToggleTitle()
-
-        NSLayoutConstraint.activate([
-            modeToggleButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
-            modeToggleButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16)
-        ])
-    }
-
-    private func updateModeToggleTitle() {
-        let isFeed = displayMode == .feed
-        let iconName = isFeed ? "person.crop.rectangle" : "play.rectangle.fill"
-        let title = isFeed
-            ? String(localized: "combined.toggle.nameFaces")
-            : String(localized: "combined.toggle.feed")
-        let symbolConfig = UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
-        let image = UIImage(systemName: iconName, withConfiguration: symbolConfig)
-        var config = modeToggleButton.configuration ?? UIButton.Configuration.plain()
-        config.image = image
-        config.title = " \(title)"
-        config.baseForegroundColor = .white
-        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
-            var outgoing = incoming
-            outgoing.font = .systemFont(ofSize: 13, weight: .medium)
-            return outgoing
+    private func setupSaveHandlerAndState() {
+        guard let vm = viewModel else { return }
+        vm.photosSaveOrRemoveHandler = { [weak self] in
+            self?.performSaveOrRemove()
         }
-        modeToggleButton.configuration = config
-        modeToggleButton.tintColor = .white
+        updateSaveState()
+        saveStateCancellable = coordinator.$currentAssetID
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.updateSaveState()
+            }
+    }
+
+    private func updateSaveState() {
+        guard let vm = viewModel else { return }
+        let assets = currentItemAssets()
+        let saved = assets.isEmpty ? false : assets.count == 1
+            ? AlbumStore.shared.isAssetSaved(assets[0])
+            : AlbumStore.shared.isCarouselSaved(assets)
+        vm.photosCurrentItemSaved = saved
+        vm.photosCurrentItemAssetIDs = assets.map { $0.localIdentifier }
+    }
+
+    private func currentItemAssets() -> [PHAsset] {
+        if displayMode == .feed, let items = feedViewController?.currentFeedItems, !items.isEmpty {
+            let currentID = coordinator.currentAssetID
+            let index: Int
+            if let id = currentID,
+               let idx = items.firstIndex(where: { FeedDataHelpers.itemContainsAsset($0, assetID: id) }) {
+                index = idx
+            } else {
+                index = 0
+            }
+            return FeedItem.flattenToAssets([items[index]])
+        }
+        if displayMode == .carousel, let assets = carouselAssets, !assets.isEmpty {
+            return assets
+        }
+        return []
+    }
+
+    private func performSaveOrRemove() {
+        let assets = currentItemAssets()
+        guard !assets.isEmpty else { return }
+        let store = AlbumStore.shared
+        let isSaved = assets.count == 1 ? store.isAssetSaved(assets[0]) : store.isCarouselSaved(assets)
+        if isSaved {
+            let alert = UIAlertController(
+                title: "Remove from Profile",
+                message: "Remove this from your profile?",
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+            alert.addAction(UIAlertAction(title: "Remove", style: .destructive) { [weak self] _ in
+                self?.doRemove(assets: assets)
+            })
+            present(alert, animated: true)
+        } else {
+            doAdd(assets: assets)
+        }
+    }
+
+    private func doAdd(assets: [PHAsset]) {
+        if assets.count == 1 {
+            AlbumStore.shared.addAsset(assets[0])
+        } else {
+            let formatter = DateFormatter()
+            formatter.dateStyle = .medium
+            AlbumStore.shared.addAlbumFromAssets(assets, title: "Saved \(formatter.string(from: Date()))")
+        }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        updateSaveState()
+    }
+
+    private func doRemove(assets: [PHAsset]) {
+        if assets.count == 1 {
+            AlbumStore.shared.removeItem(withIdentifier: "asset:\(assets[0].localIdentifier)")
+        } else {
+            AlbumStore.shared.removeCarousel(assets: assets)
+        }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        updateSaveState()
+    }
+
+    /// Apply mode requested by SwiftUI (e.g. from the glass bubble). Performs switch when needed.
+    func applyRequestedMode(inFeedMode: Bool) {
+        let wantFeed = inFeedMode
+        let haveFeed = (displayMode == .feed)
+        guard wantFeed != haveFeed else { return }
+        guard !isTransitioning else { return }
+
+        isTransitioning = true
+        UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.5)
+        let goingToCarousel = !wantFeed
+        let assetID = coordinator.currentAssetID
+        if let id = assetID { coordinator.setBridgeTarget(id) }
+
+        Task { @MainActor in
+            if let id = assetID, let asset = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject {
+                let size = CGSize(width: 1200, height: 1200)
+                let heroImage = await ImagePrefetcher.shared.requestImage(for: asset, targetSize: size)
+                await MainActor.run {
+                    performMorphTransition(heroImage: heroImage, goingToCarousel: goingToCarousel)
+                }
+            } else {
+                performModeSwitch(goingToCarousel: goingToCarousel)
+            }
+        }
     }
 
     // MARK: - Carousel Loading
@@ -248,6 +327,7 @@ final class NameFacesFeedCombinedViewController: UIViewController {
                 return
             }
             carouselAssets = assets
+            updateSaveState()
             ensureCarouselChild(bridgeID: bridgeID)
             return
         }
@@ -291,6 +371,7 @@ final class NameFacesFeedCombinedViewController: UIViewController {
                 self.carouselAssets = assets
                 self.isCarouselLoading = false
                 self.hideCarouselLoading()
+                self.updateSaveState()
                 self.ensureCarouselChild(bridgeID: bridgeID)
             }
         }
@@ -437,30 +518,7 @@ final class NameFacesFeedCombinedViewController: UIViewController {
         carouselViewController?.notifyCarouselBecameVisible(!isFeed)
     }
 
-    // MARK: - Mode Toggle with Hero Morph
-
-    @objc private func modeToggleTapped() {
-        UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.5)
-
-        let assetID = coordinator.currentAssetID
-        let goingToCarousel = (displayMode == .feed)
-
-        if let id = assetID {
-            coordinator.setBridgeTarget(id)
-        }
-
-        Task { @MainActor in
-            if let id = assetID, let asset = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject {
-                let size = CGSize(width: 1200, height: 1200)
-                let heroImage = await ImagePrefetcher.shared.requestImage(for: asset, targetSize: size)
-                await MainActor.run {
-                    performMorphTransition(heroImage: heroImage, goingToCarousel: goingToCarousel)
-                }
-            } else {
-                performModeSwitch(goingToCarousel: goingToCarousel)
-            }
-        }
-    }
+    // MARK: - Mode Switch (Hero Morph when available)
 
     private func performMorphTransition(heroImage: UIImage?, goingToCarousel: Bool) {
         guard let image = heroImage else {
@@ -536,8 +594,8 @@ final class NameFacesFeedCombinedViewController: UIViewController {
                 self.displayMode = .feed
             }
             self.updateVisibility()
-            self.updateModeToggleTitle()
             self.view.layoutIfNeeded()
+            self.isTransitioning = false
 
             UIView.animate(withDuration: 0.15) {
                 self.heroMorphOverlay?.alpha = 0
@@ -562,8 +620,9 @@ final class NameFacesFeedCombinedViewController: UIViewController {
         }
         UIView.animate(withDuration: 0.35, delay: 0, options: [.curveEaseInOut]) {
             self.updateVisibility()
+        } completion: { _ in
+            self.isTransitioning = false
         }
-        updateModeToggleTitle()
     }
 }
 

@@ -10,6 +10,7 @@ import SwiftData
 
 struct JournalTabView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.cloudKitSyncCoordinator) private var syncCoordinator
 
     @Query(sort: [SortDescriptor(\JournalEntry.date, order: .reverse)])
     private var entries: [JournalEntry]
@@ -45,6 +46,7 @@ struct JournalTabView: View {
                 }
             }
         }
+        .id(syncCoordinator?.syncRefreshTrigger ?? 0)
         .onReceive(NotificationCenter.default.publisher(for: .journalEntryDidCreate)) { notification in
             guard let uuid = notification.userInfo?["uuid"] as? UUID else { return }
             // Try the fast path first: entry is already in @Query results.

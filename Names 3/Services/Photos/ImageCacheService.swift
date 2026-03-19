@@ -16,7 +16,9 @@ final class ImageCacheService {
     private init() {
         configureCache()
         observeMemoryWarnings()
-        logger.info("ImageCacheService initialized with \(self.maxMemoryCost / 1024 / 1024)MB limit")
+        if DiagnosticsConfig.shared.verbosity != .off {
+            logger.info("ImageCacheService initialized with \(self.maxMemoryCost / 1024 / 1024)MB limit")
+        }
         ProcessReportCoordinator.shared.register(name: "ImageCacheService") { [weak self] in
             guard let self else {
                 return ProcessReportSnapshot(name: "ImageCacheService", payload: ["state": "released"])

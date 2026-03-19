@@ -141,10 +141,11 @@ private final class SnapshotBuilder {
             exploredDayIndices.insert(dayIdx)
             return nil
         }
+        let capped = FeedVideoHourCap.capOnePerHour(vSlice)
 
-        let photos = FeedDataHelpers.fetchPhotosAround(videos: vSlice, limit: 60, usedPhotoIDs: usedPhotoIDs)
+        let photos = FeedDataHelpers.fetchPhotosAround(videos: capped, limit: 60, usedPhotoIDs: usedPhotoIDs)
         let carousels = FeedDataHelpers.makeCarousels(from: photos)
-        let items = FeedDataHelpers.interleave(videos: vSlice, carousels: carousels)
+        let items = FeedDataHelpers.interleave(videos: capped, carousels: carousels)
 
         for item in items {
             if case .photoCarousel(let arr) = item.kind {
@@ -371,7 +372,7 @@ final class Arch4_SnapshotDiffFeedVC: UIViewController, FeedArchitectureProvider
             return cached
         }
         evictDistantContent(keeping: index)
-        let view = FeedCellBuilder.buildContent(for: item, isActive: isActive, unbindCoordinator: unbindCoord)
+        let view = FeedCellBuilder.buildContent(for: item, index: index, isActive: isActive, unbindCoordinator: unbindCoord)
         contentCache[item.id] = view
         return view
     }

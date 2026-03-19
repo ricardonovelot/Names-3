@@ -1,3 +1,4 @@
+import AVFoundation
 import UIKit
 import Photos
 import UserNotifications
@@ -5,14 +6,16 @@ import os
 import os.signpost
 
 class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
-    private static let launchLogger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Names3", category: "Launch")
-
     /// Observer that invalidates Name Faces carousel cache when the photo library changes.
     private var nameFacesCacheInvalidationObserver: PHPhotoLibraryChangeObserver?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
         installUncaughtExceptionHandler()
         UNUserNotificationCenter.current().delegate = self
+
+        // Warm up Core Audio subsystem to prevent "AddInstanceForFactory: No factory registered for id F8BB1C28-BAE8-11D6-9C31"
+        // when AVAudioSession is first used during video playback. Early access loads the plugin before deferred use.
+        _ = AVAudioSession.sharedInstance()
         let t0 = CFAbsoluteTimeGetCurrent()
         let signpostState = LaunchProfiler.beginPhase("DidFinishLaunching")
         LaunchProfiler.logCheckpoint("didFinishLaunching started (\(LaunchProfiler.mainThreadTag))")
@@ -22,7 +25,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         let elapsed = CFAbsoluteTimeGetCurrent() - t0
         LaunchProfiler.endPhase("DidFinishLaunching", signpostState)
         LaunchProfiler.logCheckpoint("didFinishLaunching done in \(String(format: "%.3f", elapsed))s")
-        Self.launchLogger.info("✅ App launched")
+        LaunchProfiler.logInfo("✅ App launched")
 
         // Process report pipeline: init coordinator (registers stateless reporters + memory warning observer)
         ProcessReportCoordinator.shared.reportAll(trigger: "launch")
@@ -72,6 +75,6 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         nameFacesCacheInvalidationObserver = PhotoLibraryService.shared.observeChanges {
             UserDefaults.standard.set(true, forKey: WelcomeFaceNamingViewController.cacheInvalidatedKey)
         }
-        Self.launchLogger.info("🚀 [Launch] Photo library observer registered (post-launch)")
+        LaunchProfiler.logInfo("🚀 [Launch] Photo library observer registered (post-launch)")
     }
 }

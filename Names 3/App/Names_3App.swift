@@ -37,11 +37,13 @@ struct Names_3App: App {
         FaceCluster.self,
         DeletedPhoto.self,
         JournalEntry.self,
+        SavedAlbum.self,
+        SavedCarouselMapping.self,
     ])
 
     init() {
         LaunchProfiler.markProcessStart()
-        Self.launchLogger.info("🚀 [Launch] [+\(LaunchProfiler.elapsedSinceProcessStart())s] App init (\(LaunchProfiler.mainThreadTag))")
+        LaunchProfiler.logInfo("🚀 [Launch] [+\(LaunchProfiler.elapsedSinceProcessStart())s] App init (\(LaunchProfiler.mainThreadTag))")
     }
 
     // MARK: - ModelContainer
@@ -60,7 +62,7 @@ struct Names_3App: App {
     private static func createModelContainer() async -> ModelContainer {
         let t0 = CFAbsoluteTimeGetCurrent()
         let signpostState = LaunchProfiler.beginPhase("ModelContainerCreation")
-        launchLogger.info("🚀 [Launch] ModelContainer creation started (background)")
+        LaunchProfiler.logInfo("🚀 [Launch] ModelContainer creation started (background)")
 
         let schema = appSchema
         let cloudConfig = ModelConfiguration(
@@ -139,12 +141,12 @@ struct Names_3App: App {
 
         if let container = raceResult {
             let strategy = elapsed < cloudKitTimeoutSeconds + 2 ? "CloudKit" : "local-same-store"
-            launchLogger.info("🚀 [Launch] ModelContainer (\(strategy)) ready in \(String(format: "%.3f", elapsed))s")
+            LaunchProfiler.logInfo("🚀 [Launch] ModelContainer (\(strategy)) ready in \(String(format: "%.3f", elapsed))s")
             return container
         }
 
         // CloudKit failed fast — create local container immediately (no extra wait).
-        launchLogger.info("🚀 [Launch] CloudKit failed; creating local container (elapsed: \(String(format: "%.3f", elapsed))s)")
+        LaunchProfiler.logInfo("🚀 [Launch] CloudKit failed; creating local container (elapsed: \(String(format: "%.3f", elapsed))s)")
         if let local = try? ModelContainer(for: schema, configurations: [localConfigSameStore]) {
             return local
         }
@@ -160,7 +162,7 @@ struct Names_3App: App {
     // MARK: - Scene
 
     var body: some Scene {
-        Self.launchLogger.info("🚀 [Launch] App.body evaluated")
+        LaunchProfiler.logInfo("🚀 [Launch] App.body evaluated")
         return WindowGroup {
             Group {
                 if let container = modelContainer {
@@ -169,6 +171,7 @@ struct Names_3App: App {
                     LaunchRootView(modelContainer: container, appDelegate: appDelegate)
                         .environment(\.connectivityMonitor, ConnectivityMonitor.shared)
                         .environment(\.cloudKitMirroringResetCoordinator, CloudKitMirroringResetCoordinator.shared)
+                        .environment(\.cloudKitSyncCoordinator, CloudKitSyncCoordinator.shared)
                         .environment(\.storageMonitor, StorageMonitor.shared)
                         .modelContainer(container)
                 } else {

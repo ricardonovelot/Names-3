@@ -52,7 +52,7 @@ final class ContentViewModel {
 
     // MARK: - Tab / Navigation
 
-    var selectedTab: MainTab = .people
+    var selectedTab: MainTab = .photos
 
     var peopleFeedFilter: PeopleFeedFilter = {
         if UserDefaults.standard.bool(forKey: PeopleFeedFilter.migrationDoneKey) {
@@ -142,6 +142,14 @@ final class ContentViewModel {
 
     var faceNamingInitialDate: Date?
     var photosIsFeedMode = true
+    /// True when the current feed item (asset or carousel) is saved to profile. Used for Save button icon (filled vs outline).
+    var photosCurrentItemSaved = false
+    /// Set by NameFacesFeedCombinedVC. Called when user taps Save button.
+    var photosSaveOrRemoveHandler: (() -> Void)?
+    /// Asset IDs for the current feed/carousel item. Set by NameFacesFeedCombinedVC. Used for music assignment.
+    var photosCurrentItemAssetIDs: [String] = []
+    /// When non-nil, present the music picker sheet for these asset IDs.
+    var photosMusicPickerPayload: MusicPickerPayload?
     /// Increment to force feed to refresh (e.g. after tag change). SwiftUI may not detect in-place mutations.
     var feedRefreshTrigger: Int = 0
 
@@ -182,6 +190,15 @@ final class ContentViewModel {
         }
     }
 
+    struct MusicPickerPayload: Identifiable, Hashable {
+        let id = UUID()
+        let assetIDs: [String]
+
+        init(assetIDs: [String]) {
+            self.assetIDs = assetIDs
+        }
+    }
+
     // MARK: - Contact Loading
 
     func loadContactsIfNeeded(container: ModelContainer?, mainContext: ModelContext) async {
@@ -214,7 +231,9 @@ final class ContentViewModel {
         storageMonitor: StorageMonitor?
     ) {
         LaunchProfiler.logCheckpoint("ContentView mainContent appeared")
-        Self.logger.info("🚀 [Launch] Feed state: groups=\(groups.count)")
+        if DiagnosticsConfig.shared.verbosity != .off {
+            Self.logger.info("🚀 [Launch] Feed state: groups=\(groups.count)")
+        }
         if groups.isEmpty { storageMonitor?.refreshIfNeeded() }
         DispatchQueue.main.async { [self] in
             allowPhotoDependentViews = true

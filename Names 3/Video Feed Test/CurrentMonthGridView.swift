@@ -325,7 +325,8 @@ final class CurrentMonthGridViewModel: NSObject, ObservableObject {
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             let filterStart = CACurrentMediaTime()
-            let filteredImages = images.filter { !ExcludeScreenshotsPreference.shouldExcludeAsScreenshot($0) }
+            let excludeScreenshots = ExcludeScreenshotsPreference.excludeScreenshots
+            let filteredImages = images.filter { !excludeScreenshots || !ExcludeScreenshotsPreference.isLikelyRealScreenshot($0) }
             // Filename-based heuristic: keep only camera-likely videos
             let filteredVideos: [PHAsset] = videos.filter { asset in
                 let resources = PHAssetResource.assetResources(for: asset)
@@ -432,6 +433,7 @@ struct CurrentMonthGridView: View {
                         }
                     } label: {
                         Image(systemName: "chevron.left")
+                            .frame(width: 44, height: 44)
                     }
                     .accessibilityLabel("Previous month")
 
@@ -441,6 +443,7 @@ struct CurrentMonthGridView: View {
                         }
                     } label: {
                         Image(systemName: "chevron.right")
+                            .frame(width: 44, height: 44)
                     }
                     .accessibilityLabel("Next month")
 
@@ -450,6 +453,7 @@ struct CurrentMonthGridView: View {
                         }
                     } label: {
                         Image(systemName: showFavoritesView ? "square.grid.3x3" : "heart.fill")
+                            .frame(width: 44, height: 44)
                     }
                     .accessibilityLabel(showFavoritesView ? "Show non-favorites" : "Show favorites")
                 }

@@ -177,14 +177,17 @@ private final class VirtualFeedResolver {
         )
         opts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
         let result = PHAsset.fetchAssets(with: opts)
-        let count = min(limit * 3, result.count)
-        guard count > 0 else { return [] }
-        let slice = result.objects(at: IndexSet(integersIn: 0..<count))
-        let filtered = slice.filter {
-            !usedPhotoIDs.contains($0.localIdentifier) &&
-            !ExcludeScreenshotsPreference.shouldExcludeAsScreenshot($0)
+        guard result.count > 0 else { return [] }
+        let excludeScreenshots = ExcludeScreenshotsPreference.excludeScreenshots
+        var assets: [PHAsset] = []
+        assets.reserveCapacity(limit)
+        result.enumerateObjects { asset, _, stop in
+            guard assets.count < limit else { stop.pointee = true; return }
+            if self.usedPhotoIDs.contains(asset.localIdentifier) { return }
+            if excludeScreenshots && ExcludeScreenshotsPreference.isLikelyRealScreenshot(asset) { return }
+            assets.append(asset)
         }
-        return Array(filtered.prefix(limit))
+        return assets
     }
 
     private func buildDayRanges() {
@@ -447,7 +450,7 @@ final class Arch3_SlidingWindowFeedVC: UIViewController, FeedArchitectureProvide
             return cached
         }
         evictIfNeeded(keeping: index)
-        let view = FeedCellBuilder.buildContent(for: item, isActive: isActive, unbindCoordinator: unbindCoord)
+        let view = FeedCellBuilder.buildContent(for: item, index: index, isActive: isActive, unbindCoordinator: unbindCoord)
         contentByID[item.id] = view
         contentRing[index] = view
         return view

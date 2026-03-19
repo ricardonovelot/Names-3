@@ -31,6 +31,7 @@ struct PeopleTabToolbar: ToolbarContent {
                 } label: {
                     Image(systemName: vm.peopleFeedFilter.systemImage)
                         .symbolRenderingMode(.hierarchical)
+                        .frame(width: 44, height: 44)
                 }
                 .accessibilityLabel("Filter: \(vm.peopleFeedFilter.title)")
                 .accessibilityHint("Tap to cycle filter mode")
@@ -79,6 +80,7 @@ struct PeopleTabToolbar: ToolbarContent {
                     }
                 } label: {
                     Image(systemName: "ellipsis")
+                        .frame(width: 44, height: 44)
                 }
                 .fontWeight(.semibold)
             }

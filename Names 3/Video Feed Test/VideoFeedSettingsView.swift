@@ -5,7 +5,7 @@ struct VideoFeedSettingsView: View {
     @EnvironmentObject private var settings: AppSettings
     @ObservedObject var appleMusic: MusicLibraryModel
     var body: some View {
-        NavigationView {
+        NavigationStack {
             Form {
                 Section("Overlay") {
                     Toggle("Show download overlay", isOn: $settings.showDownloadOverlay)

@@ -21,24 +21,38 @@ enum ExcludeScreenshotsPreference {
     static let userDefaultsKey = "Names3.ExcludeScreenshots"
 
     /// When true, exclude images with device dimensions. When false, include all (film photos, screenshots).
-    /// Default false so film photos saved as screenshots (1170×2532 etc.) appear.
+    /// Default true for new users; existing users who explicitly disabled keep their choice.
     static var excludeScreenshots: Bool {
         get {
+            if let cached = _cachedExclude { return cached }
+            let val: Bool
             if UserDefaults.standard.object(forKey: userDefaultsKey) == nil {
-                return false  // default: include all (film photos often saved as screenshots)
+                val = true  // default: exclude screenshots for new users
+            } else {
+                val = UserDefaults.standard.bool(forKey: userDefaultsKey)
             }
-            return UserDefaults.standard.bool(forKey: userDefaultsKey)
+            _cachedExclude = val
+            return val
         }
-        set { UserDefaults.standard.set(newValue, forKey: userDefaultsKey) }
+        set {
+            UserDefaults.standard.set(newValue, forKey: userDefaultsKey)
+            _cachedExclude = newValue
+        }
     }
 
+    /// Cached preference to avoid UserDefaults reads in hot filter loops.
+    private static var _cachedExclude: Bool?
+
     /// Known iPhone/iPad screenshot dimensions (portrait and landscape). Updated for current devices.
+    /// Includes both standard and Display Zoom variants (e.g. 1179×2556 standard vs 1206×2622 zoomed for 6.1" Pro).
     private static let knownScreenshotDimensions: Set<Dimensions> = [
         // iPhone 16 Pro Max, 15 Pro Max, 14 Pro Max
         Dimensions(1320, 2868), Dimensions(2868, 1320),
         Dimensions(1290, 2796), Dimensions(2796,  1290),
-        // iPhone 16 Pro, 16, 15 Pro, 15, 14 Pro
+        // iPhone 16 Pro, 16, 15 Pro, 15, 14 Pro — Display Zoom
         Dimensions(1206, 2622), Dimensions(2622, 1206),
+        // iPhone 16 Pro, 15 Pro, 14 Pro — standard (was missing, caused screenshots to slip through)
+        Dimensions(1179, 2556), Dimensions(2556, 1179),
         // iPhone 14 Plus, 13 Pro Max, 12 Pro Max, XS Max, XR
         Dimensions(1284, 2778), Dimensions(2778, 1284),
         // iPhone 14, 13, 12, X, XS
@@ -62,8 +76,10 @@ enum ExcludeScreenshotsPreference {
     ]
 
     /// Returns true if dimensions match a known device screen (primary signal).
-    /// Ignores subtype—iOS often omits photoScreenshot for screenshots from AirDrop, Messages, etc.
+    /// Fast path: mediaSubtypes.photoScreenshot when set (single bitmask check).
+    /// Fallback: dimension lookup for screenshots from AirDrop, Messages, etc. that lack subtype.
     static func isLikelyRealScreenshot(_ asset: PHAsset) -> Bool {
+        if asset.mediaSubtypes.contains(.photoScreenshot) { return true }
         let w = asset.pixelWidth
         let h = asset.pixelHeight
         guard w > 0, h > 0 else { return false }
@@ -71,6 +87,7 @@ enum ExcludeScreenshotsPreference {
     }
 
     /// Returns true when we should exclude this asset (preference on + likely real screenshot).
+    /// Prefer this for single-asset checks; for batch filtering, read excludeScreenshots once and use isLikelyRealScreenshot in the predicate.
     static func shouldExcludeAsScreenshot(_ asset: PHAsset) -> Bool {
         guard excludeScreenshots else { return false }
         return isLikelyRealScreenshot(asset)
@@ -93,8 +110,10 @@ enum ExcludeScreenshotsPreference {
         Dimensions(2868, 1320): "iPhone 16 Pro Max",
         Dimensions(1290, 2796): "iPhone 15 Pro Max",
         Dimensions(2796, 1290): "iPhone 15 Pro Max",
-        Dimensions(1206, 2622): "iPhone 16 Pro",
-        Dimensions(2622, 1206): "iPhone 16 Pro",
+        Dimensions(1206, 2622): "iPhone 16 Pro (zoom)",
+        Dimensions(2622, 1206): "iPhone 16 Pro (zoom)",
+        Dimensions(1179, 2556): "iPhone 16 Pro",
+        Dimensions(2556, 1179): "iPhone 16 Pro",
         Dimensions(1284, 2778): "iPhone 14 Plus",
         Dimensions(2778, 1284): "iPhone 14 Plus",
         Dimensions(1170, 2532): "iPhone 14",

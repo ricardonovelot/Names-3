@@ -46,13 +46,8 @@ final class AppleMusicAuth: ObservableObject {
     }
 
     func requestUserTokenIfPossible() async {
-        guard let devToken = Bundle.main.object(forInfoDictionaryKey: "APPLE_MUSIC_DEVELOPER_TOKEN") as? String, !devToken.isEmpty else {
-            lastError = "Missing APPLE_MUSIC_DEVELOPER_TOKEN in Info.plist."
-            return
-        }
-        // MusicKit manages tokens for MusicDataRequest. For custom API calls that need a user token,
-        // use MusicDataRequest with the framework's token provider, or keep StoreKit for legacy flows.
-        // This method is retained for compatibility; consider migrating to MusicKit's request APIs.
+        // MusicKit manages tokens for MusicDataRequest and catalog operations.
+        // Use MusicCatalogSearchRequest or MusicDataRequest for catalog search; no manual token needed.
         lastError = "User token requests: use MusicKit's MusicDataRequest for catalog operations."
     }
 }

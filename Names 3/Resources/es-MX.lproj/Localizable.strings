@@ -37,6 +37,7 @@
 "tab.photos" = "Memorias";
 "tab.feed" = "Feed";
 "tab.journal" = "Gratitud";
+"tab.albums" = "Álbumes";
 
 /* Name Faces + Feed combined view – mode toggle */
 "combined.toggle.nameFaces" = "Nombrar Caras";

@@ -15,9 +15,20 @@ actor PlayerItemPrefetchStore {
     private var waiters: [String: [UUID: CheckedContinuation<AVPlayerItem?, Never>]] = [:]
 
     private var cachedKeys = Set<String>()
+    private var pending: [PHAsset] = []
+    private var pendingIds = Set<String>()
 
     private var spRequestToFinish: [String: OSSignpostID] = [:]
-    
+
+    /// Limits concurrent requestPlayerItem calls to reduce FigFilePlayer -12860/-12780 burst and HALC overload.
+    private var maxConcurrent: Int {
+        #if targetEnvironment(simulator)
+        2
+        #else
+        3
+        #endif
+    }
+
     init() {
         cache.countLimit = 24
     }
@@ -36,14 +47,24 @@ actor PlayerItemPrefetchStore {
         guard !assets.isEmpty else { return }
         for asset in assets {
             let id = asset.localIdentifier
-
-            Diagnostics.log("PlayerItemPrefetcher(actor) enqueue id=\(id)")
-
             if cache.object(forKey: id as NSString) != nil { continue }
             if inFlight[id] != nil { continue }
-            
+            if pendingIds.contains(id) { continue }
+
+            Diagnostics.log("PlayerItemPrefetcher(actor) enqueue id=\(id)")
+            pending.append(asset)
+            pendingIds.insert(id)
+        }
+        await processQueue()
+    }
+
+    private func processQueue() async {
+        while inFlight.count < maxConcurrent, let asset = pending.first {
+            let id = asset.localIdentifier
+            pending.removeFirst()
+            pendingIds.remove(id)
+
             let options = PHVideoRequestOptions()
-            // .automatic enables streaming without full download (like Apple Photos); .mediumQualityFormat triggers FIGSANDBOX -17507
             options.deliveryMode = .automatic
             options.isNetworkAccessAllowed = DataUsageGuardrails.shouldAllowNetworkForFeedMedia()
             options.progressHandler = { progress, _, _, _ in
@@ -51,7 +72,7 @@ actor PlayerItemPrefetchStore {
                     DownloadTracker.shared.updateProgress(for: id, phase: .playerItem, progress: progress)
                 }
             }
-            
+
             var spRF = spRequestToFinish[id]
             Diagnostics.signpostBegin("PlayerItemPrefetchRequestToFinish", id: &spRF)
             spRequestToFinish[id] = spRF
@@ -78,6 +99,8 @@ actor PlayerItemPrefetchStore {
         let manager = PHImageManager.default()
         for asset in assets {
             let id = asset.localIdentifier
+            pending.removeAll { $0.localIdentifier == id }
+            pendingIds.remove(id)
             if let req = inFlight.removeValue(forKey: id) {
                 manager.cancelImageRequest(req)
                 await MainActor.run {
@@ -94,6 +117,7 @@ actor PlayerItemPrefetchStore {
             cache.removeObject(forKey: id as NSString)
             cachedKeys.remove(id)
         }
+        await processQueue()
     }
     
     // Returns a prefetched item if present or waits up to timeout for an in-flight request.
@@ -130,17 +154,19 @@ actor PlayerItemPrefetchStore {
     }
     
     private func timeoutWaiter(for id: String, waiterID: UUID) async {
-        guard var dict = waiters[id] else { return }
-        if let cont = dict.removeValue(forKey: waiterID) {
-            waiters[id] = dict.isEmpty ? nil : dict
+        guard let dict = waiters[id] else { return }
+        var mutable = dict
+        if let cont = mutable.removeValue(forKey: waiterID) {
+            waiters[id] = mutable.isEmpty ? nil : mutable
             cont.resume(returning: nil)
         }
     }
     
     private func cancelWaiter(for id: String, waiterID: UUID) async {
-        guard var dict = waiters[id] else { return }
-        if let cont = dict.removeValue(forKey: waiterID) {
-            waiters[id] = dict.isEmpty ? nil : dict
+        guard let dict = waiters[id] else { return }
+        var mutable = dict
+        if let cont = mutable.removeValue(forKey: waiterID) {
+            waiters[id] = mutable.isEmpty ? nil : mutable
             cont.resume(returning: nil)
         }
     }
@@ -153,12 +179,20 @@ actor PlayerItemPrefetchStore {
             Diagnostics.signpostEnd("PlayerItemPrefetchRequestToFinish", id: sid)
         }
 
-        // If there are waiters, deliver directly and do not cache to avoid double-consumption.
-        if var dict = waiters.removeValue(forKey: id) {
-            for (_, cont) in dict {
-                cont.resume(returning: item)
+        // If there are waiters, deliver directly and do not cache.
+        // AVPlayerItem can only be associated with one AVPlayer—give to first waiter only; rest get nil.
+        if let waitersForId = waiters.removeValue(forKey: id) {
+            let consumers = Array(waitersForId.values)
+            if let item, let first = consumers.first {
+                first.resume(returning: item)
+                for cont in consumers.dropFirst() {
+                    cont.resume(returning: nil)
+                }
+            } else {
+                for cont in consumers {
+                    cont.resume(returning: nil)
+                }
             }
-            dict.removeAll()
         } else if let item {
             cache.setObject(item, forKey: id as NSString)
             cachedKeys.insert(id)
@@ -173,6 +207,7 @@ actor PlayerItemPrefetchStore {
             }
         }
         logQueueDepth(reason: "finish", id: id)
+        await processQueue()
     }
 }
 

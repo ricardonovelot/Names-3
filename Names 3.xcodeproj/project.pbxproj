@@ -8,9 +8,6 @@
 
 /* Begin PBXBuildFile section */
 		98812BB32D2B36CD00D125BE /* SmoothGradient in Frameworks */ = {isa = PBXBuildFile; productRef = 98812BB22D2B36CD00D125BE /* SmoothGradient */; };
-		C4792B872F09080D00F8E698 /* PortalHeaders in Frameworks */ = {isa = PBXBuildFile; productRef = C4792B862F09080D00F8E698 /* PortalHeaders */; };
-		C4792B892F09080D00F8E698 /* PortalTransitions in Frameworks */ = {isa = PBXBuildFile; productRef = C4792B882F09080D00F8E698 /* PortalTransitions */; };
-		C4792B8B2F09080D00F8E698 /* _PortalPrivate in Frameworks */ = {isa = PBXBuildFile; productRef = C4792B8A2F09080D00F8E698 /* _PortalPrivate */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -43,10 +40,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				C4792B892F09080D00F8E698 /* PortalTransitions in Frameworks */,
 				98812BB32D2B36CD00D125BE /* SmoothGradient in Frameworks */,
-				C4792B8B2F09080D00F8E698 /* _PortalPrivate in Frameworks */,
-				C4792B872F09080D00F8E698 /* PortalHeaders in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -79,6 +73,7 @@
 				8C5BEF262CBCF6D8007D0D5E /* Sources */,
 				8C5BEF272CBCF6D8007D0D5E /* Frameworks */,
 				8C5BEF282CBCF6D8007D0D5E /* Resources */,
+				8C5BEF402CBCF6DC007D0D5E /* Remove Quarantine (LSPrefs fix) */,
 			);
 			buildRules = (
 			);
@@ -90,9 +85,6 @@
 			name = "Names 3";
 			packageProductDependencies = (
 				98812BB22D2B36CD00D125BE /* SmoothGradient */,
-				C4792B862F09080D00F8E698 /* PortalHeaders */,
-				C4792B882F09080D00F8E698 /* PortalTransitions */,
-				C4792B8A2F09080D00F8E698 /* _PortalPrivate */,
 			);
 			productName = "Names 3";
 			productReference = 8C5BEF2A2CBCF6D8007D0D5E /* Names 3.app */;
@@ -106,7 +98,7 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 9999;
-				LastUpgradeCheck = 9999;
+				LastUpgradeCheck = 2600;
 				LastXcodeVersionUpgradeCheck = 9999;
 				TargetAttributes = {
 					8C5BEF292CBCF6D8007D0D5E = {
@@ -126,7 +118,6 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				98812BB12D2B36CD00D125BE /* XCRemoteSwiftPackageReference "SmoothGradient" */,
-				C4792B852F09080D00F8E698 /* XCRemoteSwiftPackageReference "Portal" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 8C5BEF2B2CBCF6D8007D0D5E /* Products */;
@@ -148,6 +139,28 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		8C5BEF402CBCF6DC007D0D5E /* Remove Quarantine (LSPrefs fix) */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Remove Quarantine (LSPrefs fix)";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Remove quarantine to prevent App Translocation, which triggers\n# \"LSPrefs: could not find untranslocated node\" at launch.\n# See: https://lapcatsoftware.com/articles/app-translocation.html\n\n# Strip from the built app bundle (primary target).\nif [ -n \"$WRAPPER_NAME\" ] && [ -d \"$BUILT_PRODUCTS_DIR/$WRAPPER_NAME\" ]; then\n  xattr -dr com.apple.quarantine \"$BUILT_PRODUCTS_DIR/$WRAPPER_NAME\" 2>/dev/null || true\nfi\n\n# Strip from the project source tree so inherited quarantine\n# (from Downloads or git clone) cannot propagate to the bundle.\nif [ -n \"$SRCROOT\" ] && [ -d \"$SRCROOT\" ]; then\n  xattr -dr com.apple.quarantine \"$SRCROOT\" 2>/dev/null || true\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		8C5BEF262CBCF6D8007D0D5E /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -165,11 +178,14 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "Names 3/Names_3.entitlements";
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"Names 3/Preview Content\"";
 				DEVELOPMENT_TEAM = 8PKHC34MY2;
+				ENABLE_APP_SANDBOX = YES;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Names 3/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Names;
@@ -187,6 +203,7 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.ricardo.Names-3";
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_STRICT_CONCURRENCY = minimal;
 				SWIFT_VERSION = 5.0;
@@ -200,11 +217,14 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "Names 3/Names_3.entitlements";
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"Names 3/Preview Content\"";
 				DEVELOPMENT_TEAM = 8PKHC34MY2;
+				ENABLE_APP_SANDBOX = YES;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Names 3/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Names;
@@ -222,6 +242,7 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.ricardo.Names-3";
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_STRICT_CONCURRENCY = minimal;
 				SWIFT_VERSION = 5.0;
@@ -234,6 +255,7 @@
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
@@ -264,6 +286,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 8PKHC34MY2;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -287,6 +310,7 @@
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
@@ -297,6 +321,7 @@
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
@@ -327,6 +352,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 8PKHC34MY2;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -343,6 +369,7 @@
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				VALIDATE_PRODUCT = YES;
 			};
@@ -380,14 +407,6 @@
 				minimumVersion = 1.0.0;
 			};
 		};
-		C4792B852F09080D00F8E698 /* XCRemoteSwiftPackageReference "Portal" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/Aeastr/Portal";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 5.1.0;
-			};
-		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -395,21 +414,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 98812BB12D2B36CD00D125BE /* XCRemoteSwiftPackageReference "SmoothGradient" */;
 			productName = SmoothGradient;
-		};
-		C4792B862F09080D00F8E698 /* PortalHeaders */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = C4792B852F09080D00F8E698 /* XCRemoteSwiftPackageReference "Portal" */;
-			productName = PortalHeaders;
-		};
-		C4792B882F09080D00F8E698 /* PortalTransitions */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = C4792B852F09080D00F8E698 /* XCRemoteSwiftPackageReference "Portal" */;
-			productName = PortalTransitions;
-		};
-		C4792B8A2F09080D00F8E698 /* _PortalPrivate */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = C4792B852F09080D00F8E698 /* XCRemoteSwiftPackageReference "Portal" */;
-			productName = _PortalPrivate;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

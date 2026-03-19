@@ -8,55 +8,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    HStack {
-                        Text("Photo Grouping")
-                        Spacer()
-                        Text("Between Videos")
-                            .foregroundStyle(.secondary)
-                    }
-                    Text(FeedPhotoGroupingMode.betweenVideo.description)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-
-                    Toggle(isOn: Binding(
-                        get: { ExcludeScreenshotsPreference.excludeScreenshots },
-                        set: {
-                            ExcludeScreenshotsPreference.excludeScreenshots = $0
-                            postFeedSettingsChanged()
-                        }
-                    )) {
-                        Text("Exclude device screenshots")
-                    }
-                    Text("When on, hides images with device dimensions (1170×2532, etc.). Turn off to see film photos saved as screenshots.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-
-                    Toggle(isOn: Binding(
-                        get: { ExcludeScreenshotsPreference.showDimensionOverlay },
-                        set: { ExcludeScreenshotsPreference.showDimensionOverlay = $0 }
-                    )) {
-                        Text("Show dimensions on photos")
-                    }
-                    Text("Overlay pixel size (e.g. 1170×2532) on feed images to identify screenshots that slip through.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                } header: {
-                    Text("Feed Photos")
-                } footer: {
-                    Text("Photos appear as carousels between videos in the feed.")
-                }
-
-                feedArchitectureSection
-
-                if feedArchMode == FeedArchitectureMode.original.rawValue {
-                    feedInitialVarietySection
-                    feedExploreSection
-                }
-
-                photoArchitectureSection
-
-                carouselSamplingSection
+                feedSettingsGroup
 
                 if let connectivityMonitor {
                     Section {
@@ -433,6 +385,84 @@ struct SettingsView: View {
             if carouselSparseThreshold < 30 { carouselSparseThreshold = 120 }
             if carouselMaxDense < 2 { carouselMaxDense = 5 }
             if carouselMaxSparse < 3 { carouselMaxSparse = 12 }
+        }
+    }
+
+    @AppStorage(FeedScrollSmoothnessSettings.smoothScrollImprovementsKey)
+    private var smoothScrollImprovements: Bool = true
+
+    @State private var feedSettingsExpanded: Bool = true
+
+    private var feedSettingsGroup: some View {
+        DisclosureGroup(isExpanded: $feedSettingsExpanded) {
+            Section {
+                HStack {
+                    Text("Photo Grouping")
+                    Spacer()
+                    Text("Between Videos")
+                        .foregroundStyle(.secondary)
+                }
+                Text(FeedPhotoGroupingMode.betweenVideo.description)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                Toggle(isOn: Binding(
+                    get: { ExcludeScreenshotsPreference.excludeScreenshots },
+                    set: {
+                        ExcludeScreenshotsPreference.excludeScreenshots = $0
+                        postFeedSettingsChanged()
+                    }
+                )) {
+                    Text("Exclude device screenshots")
+                }
+                Text("When on, hides images with device dimensions (1170×2532, etc.). On by default. Turn off to see film photos saved as screenshots.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                Toggle(isOn: Binding(
+                    get: { ExcludeScreenshotsPreference.showDimensionOverlay },
+                    set: { ExcludeScreenshotsPreference.showDimensionOverlay = $0 }
+                )) {
+                    Text("Show dimensions on photos")
+                }
+                Text("Overlay pixel size (e.g. 1170×2532) on feed images to identify screenshots that slip through.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Feed Photos")
+            } footer: {
+                Text("Photos appear as carousels between videos in the feed.")
+            }
+
+            feedArchitectureSection
+
+            feedSmoothScrollABTestSection
+
+            if feedArchMode == FeedArchitectureMode.original.rawValue {
+                feedInitialVarietySection
+                feedExploreSection
+            }
+
+            photoArchitectureSection
+
+            carouselSamplingSection
+        } label: {
+            HStack {
+                Image(systemName: "play.rectangle.stack")
+                Text("Feed")
+            }
+        }
+    }
+
+    private var feedSmoothScrollABTestSection: some View {
+        Section {
+            Toggle(isOn: $smoothScrollImprovements) {
+                Text("Smooth scroll improvements")
+            }
+        } header: {
+            Text("Feed scroll (A/B test)")
+        } footer: {
+            Text("When on: prefetch during scroll, wider prewarm (±2), priority prefetch, video first-frame preheat. Turn off to compare original behavior.")
         }
     }
 

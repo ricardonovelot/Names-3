@@ -118,9 +118,10 @@ enum NameFacesCarouselAssetFetcher {
             )
             opts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
             let imageResult = PHAsset.fetchAssets(with: .image, options: opts)
+            let excludeScreenshots = ExcludeScreenshotsPreference.excludeScreenshots
             imageResult.enumerateObjects { asset, _, stop in
                 if archivedIDs.contains(asset.localIdentifier) { return }
-                if ExcludeScreenshotsPreference.shouldExcludeAsScreenshot(asset) { return }
+                if excludeScreenshots && ExcludeScreenshotsPreference.isLikelyRealScreenshot(asset) { return }
                 assets.append(asset)
                 if assets.count >= limit { stop.pointee = true }
             }

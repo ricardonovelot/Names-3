@@ -108,7 +108,12 @@ final class TikTokFeedViewModel: ObservableObject {
     
     func reload() {
         Diagnostics.log("Reload requested")
-        loadWindow()
+        // Preserve position when reloading due to settings (e.g. Exclude screenshots)
+        if let id = FeedPositionStore.savedAssetID {
+            loadWindowContaining(assetID: id)
+        } else {
+            loadWindow()
+        }
     }
 
     func startFromBeginning() {
@@ -229,8 +234,9 @@ final class TikTokFeedViewModel: ObservableObject {
             exploredDayIndices.insert(dayIdx)
             return nil
         }
-        let prewarmCount = min(8, vSlice.count)
-        let warm = Array(vSlice.prefix(prewarmCount))
+        let capped = FeedVideoHourCap.capOnePerHour(vSlice)
+        let prewarmCount = min(8, capped.count)
+        let warm = Array(capped.prefix(prewarmCount))
         prewarmInFlight = true
         prewarmedNextDayIndex = dayIdx
         Diagnostics.log("ExplorePrewarm: start dayIdx=\(dayIdx) date=\(r.dayStart) warmCount=\(warm.count)")
@@ -251,19 +257,20 @@ final class TikTokFeedViewModel: ObservableObject {
             exploredDayIndices.insert(dayIndex)
             return false
         }
+        let capped = FeedVideoHourCap.capOnePerHour(vSlice)
 
-        let pSlice = photosAround(for: vSlice, limit: pageSizePhotos)
+        let pSlice = photosAround(for: capped, limit: pageSizePhotos)
         let carousels = makeCarousels(from: pSlice)
 
         let startStride = videosSinceLastCarousel
-        let (built, _, newTailCount) = interleave(videos: vSlice, carousels: carousels, startVideoStride: startStride)
+        let (built, _, newTailCount) = interleave(videos: capped, carousels: carousels, startVideoStride: startStride)
 
         if asInitial {
             items = built
             logItemsStructure(built, source: "ExploreDay")
             initialIndexInWindow = 0
             isLoading = false
-            Diagnostics.log("ExploreDay: initial publish items=\(items.count) day=\(r.dayStart) videos=\(vSlice.count) carousels=\(carousels.count)")
+            Diagnostics.log("ExploreDay: initial publish items=\(items.count) day=\(r.dayStart) videos=\(capped.count) carousels=\(carousels.count)")
             if let first = built.first {
                 switch first.kind {
                 case .video(let a):
@@ -275,24 +282,24 @@ final class TikTokFeedViewModel: ObservableObject {
                 }
             }
             // proactively prefetch a few more upcoming videos for the initial day
-            let prewarmCount = min(6, vSlice.count)
+            let prewarmCount = min(6, capped.count)
             if prewarmCount > 1 {
-                let extra = Array(vSlice.prefix(prewarmCount).dropFirst())
+                let extra = Array(capped.prefix(prewarmCount).dropFirst())
                 VideoPrefetcher.shared.prefetch(extra)
                 PlayerItemPrefetcher.shared.prefetch(extra)
             }
         } else {
             let before = items.count
             items.append(contentsOf: built)
-            Diagnostics.log("ExploreDay: appended segment items+\(built.count) total=\(items.count) day=\(r.dayStart) videos=\(vSlice.count) carousels=\(carousels.count)")
+            Diagnostics.log("ExploreDay: appended segment items+\(built.count) total=\(items.count) day=\(r.dayStart) videos=\(capped.count) carousels=\(carousels.count)")
             let appendedCount = items.count - before
             if appendedCount <= 0 {
                 return false
             }
             // proactively prefetch the first N videos of the newly appended day
-            let prewarmCount = min(8, vSlice.count)
+            let prewarmCount = min(8, capped.count)
             if prewarmCount > 0 {
-                let warm = Array(vSlice.prefix(prewarmCount))
+                let warm = Array(capped.prefix(prewarmCount))
                 VideoPrefetcher.shared.prefetch(warm)
                 PlayerItemPrefetcher.shared.prefetch(warm)
             }
@@ -329,11 +336,12 @@ final class TikTokFeedViewModel: ObservableObject {
         let vEnd = min(pageSizeVideos, vResult.count)
         let vSliceBase = vResult.objects(at: IndexSet(integersIn: 0..<vEnd))
         let vSlice = filterHidden(vSliceBase)
-        
-        let pSlice = photosAround(for: vSlice, limit: pageSizePhotos)
+        let capped = FeedVideoHourCap.capOnePerHour(vSlice)
+
+        let pSlice = photosAround(for: capped, limit: pageSizePhotos)
         let carousels = makeCarousels(from: pSlice)
-        let (itemsBuilt, _, videosTailCount) = interleave(videos: vSlice, carousels: carousels, startVideoStride: 0)
-        
+        let (itemsBuilt, _, videosTailCount) = interleave(videos: capped, carousels: carousels, startVideoStride: 0)
+
         items = itemsBuilt
         logItemsStructure(itemsBuilt, source: "StartWindow")
         Diagnostics.log("StartWindow: publish items=\(items.count)")
@@ -353,7 +361,7 @@ final class TikTokFeedViewModel: ObservableObject {
         videoCursor = vEnd
         videosSinceLastCarousel = videosTailCount
         markPhotosUsed(from: itemsBuilt)
-        
+
         let firstID: String = {
             if let first = itemsBuilt.first {
                 switch first.kind {
@@ -363,7 +371,7 @@ final class TikTokFeedViewModel: ObservableObject {
             }
             return "n/a"
         }()
-        Diagnostics.log("StartWindow: videosTotal=\(vResult.count) vWindow=\(vSlice.count) carousels=\(carousels.count) first=\(firstID)")
+        Diagnostics.log("StartWindow: videosTotal=\(vResult.count) vWindow=\(capped.count) carousels=\(carousels.count) first=\(firstID)")
     }
     
     func loadRandomWindow() {
@@ -444,9 +452,10 @@ final class TikTokFeedViewModel: ObservableObject {
 
     /// Publishes initial feed items from a video slice and sets cursor/segment state.
     private func publishInitialWindow(videos: [PHAsset], source: String, cursorEnd: Int) {
-        let pSlice = photosAround(for: videos, limit: pageSizePhotos)
+        let capped = FeedVideoHourCap.capOnePerHour(videos)
+        let pSlice = photosAround(for: capped, limit: pageSizePhotos)
         let carousels = makeCarousels(from: pSlice)
-        let (itemsBuilt, _, videosTailCount) = interleave(videos: videos, carousels: carousels, startVideoStride: 0)
+        let (itemsBuilt, _, videosTailCount) = interleave(videos: capped, carousels: carousels, startVideoStride: 0)
 
         items = itemsBuilt
         logItemsStructure(itemsBuilt, source: source)
@@ -516,9 +525,10 @@ final class TikTokFeedViewModel: ObservableObject {
         let end = min(vCount, start + windowSize)
         let vSliceBase = vResult.objects(at: IndexSet(integersIn: start..<end))
         let vSlice = filterHidden(vSliceBase)
-        let pSlice = photosAround(for: vSlice, limit: pageSizePhotos)
+        let capped = FeedVideoHourCap.capOnePerHour(vSlice)
+        let pSlice = photosAround(for: capped, limit: pageSizePhotos)
         let carousels = makeCarousels(from: pSlice)
-        let (itemsBuilt, _, videosTailCount) = interleave(videos: vSlice, carousels: carousels, startVideoStride: 0)
+        let (itemsBuilt, _, videosTailCount) = interleave(videos: capped, carousels: carousels, startVideoStride: 0)
 
         let initialLocalIndex: Int = {
             if let targetID = targetAssetID, let idx = indexOfAssetInItems(targetID, items: itemsBuilt) {
@@ -660,7 +670,9 @@ final class TikTokFeedViewModel: ObservableObject {
         }.joined()
         let videoCount = items.filter { if case .video = $0.kind { return true }; return false }.count
         let carouselCount = items.filter { if case .photoCarousel = $0.kind { return true }; return false }.count
-        print("[PhotoGroupingScroll] Items published: source=\(source) mode=\(mode) count=\(items.count) V=\(videoCount) C=\(carouselCount) pattern=\(pattern)")
+        if DiagnosticsConfig.shared.verbosity != .off {
+            print("[PhotoGroupingScroll] Items published: source=\(source) mode=\(mode) count=\(items.count) V=\(videoCount) C=\(carouselCount) pattern=\(pattern)")
+        }
     }
 
     /// Converts a flat mixed [PHAsset] list to [FeedItem] using FeedPhotoGroupingMode.
@@ -833,11 +845,12 @@ final class TikTokFeedViewModel: ObservableObject {
         let nextVEnd = min(vCount, videoCursor + pageSizeVideos)
         let vSliceBase = vResult.objects(at: IndexSet(integersIn: videoCursor..<nextVEnd))
         let vSlice = filterHidden(vSliceBase)
-        
-        let pSlice = photosAround(for: vSlice, limit: pageSizePhotos)
+        let capped = FeedVideoHourCap.capOnePerHour(vSlice)
+
+        let pSlice = photosAround(for: capped, limit: pageSizePhotos)
         let carousels = makeCarousels(from: pSlice)
-        
-        let (appended, _, videosTailCount) = interleave(videos: vSlice, carousels: carousels, startVideoStride: videosSinceLastCarousel)
+
+        let (appended, _, videosTailCount) = interleave(videos: capped, carousels: carousels, startVideoStride: videosSinceLastCarousel)
         items.append(contentsOf: appended)
         Diagnostics.log("LoadMore: appended=\(appended.count) totalItems=\(items.count)")
         
@@ -903,7 +916,7 @@ final class TikTokFeedViewModel: ObservableObject {
             Task { @MainActor in
                 let session = AVAudioSession.sharedInstance()
                 do {
-                    try session.setActive(false, options: [])
+                    try session.setActive(false, options: [.notifyOthersOnDeactivation])
                     Diagnostics.log("AudioSession: set active=false")
                 } catch {
                     Diagnostics.log("AudioSession: error active=false \(String(describing: error))")
@@ -1007,10 +1020,15 @@ final class TikTokFeedViewModel: ObservableObject {
         for v in videos {
             out.append(.video(v))
             if cIdx < carousels.count {
-                let c = carousels[cIdx]
-                out.append(.carousel(c))
-                usedPhotos += c.count
-                cIdx += 1
+                while cIdx < carousels.count && !FeedDataHelpers.isCarouselAlignedWithVideo(carousels[cIdx], video: v) {
+                    cIdx += 1
+                }
+                if cIdx < carousels.count {
+                    let c = carousels[cIdx]
+                    out.append(.carousel(c))
+                    usedPhotos += c.count
+                    cIdx += 1
+                }
             }
         }
         return (out, usedPhotos, 0)
@@ -1025,11 +1043,16 @@ final class TikTokFeedViewModel: ObservableObject {
             out.append(.video(v))
             stride += 1
             if FeatureFlags.enablePhotoPosts, stride >= interleaveEvery, cIdx < carousels.count {
-                let c = carousels[cIdx]
-                out.append(.carousel(c))
-                usedPhotos += c.count
-                cIdx += 1
-                stride = 0
+                while cIdx < carousels.count && !FeedDataHelpers.isCarouselAlignedWithVideo(carousels[cIdx], video: v) {
+                    cIdx += 1
+                }
+                if cIdx < carousels.count {
+                    let c = carousels[cIdx]
+                    out.append(.carousel(c))
+                    usedPhotos += c.count
+                    cIdx += 1
+                    stride = 0
+                }
             }
         }
         return (out, usedPhotos, stride)
@@ -1061,20 +1084,22 @@ final class TikTokFeedViewModel: ObservableObject {
             PHAssetMediaType.image.rawValue, lower as NSDate, upper as NSDate
         )
         opts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-        let fetchLimit = limit * 3
         let result = PHAsset.fetchAssets(with: opts)
-        let count = Swift.min(fetchLimit, result.count)
-        guard count > 0 else {
+        guard result.count > 0 else {
             Diagnostics.log("PhotosBetween: 0 results tolDays=\(toleranceDays) range=[\(lower) .. \(upper)]")
             return []
         }
-        let slice = result.objects(at: IndexSet(integersIn: 0..<count))
-        let filtered = slice.filter {
-            !usedPhotoIDs.contains($0.localIdentifier) &&
-            !ExcludeScreenshotsPreference.shouldExcludeAsScreenshot($0)
+        let excludeScreenshots = ExcludeScreenshotsPreference.excludeScreenshots
+        var assets: [PHAsset] = []
+        assets.reserveCapacity(limit)
+        result.enumerateObjects { asset, _, stop in
+            guard assets.count < limit else { stop.pointee = true; return }
+            if self.usedPhotoIDs.contains(asset.localIdentifier) { return }
+            if excludeScreenshots && ExcludeScreenshotsPreference.isLikelyRealScreenshot(asset) { return }
+            assets.append(asset)
         }
-        let resultSlice = Array(filtered.prefix(limit))
-        Diagnostics.log("PhotosBetween: fetched=\(slice.count) filteredUnique=\(filtered.count) tolDays=\(toleranceDays)")
+        let resultSlice = assets
+        Diagnostics.log("PhotosBetween: fetched=\(result.count) kept=\(resultSlice.count) tolDays=\(toleranceDays)")
         return resultSlice
     }
     

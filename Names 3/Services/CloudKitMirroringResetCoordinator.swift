@@ -50,7 +50,9 @@ final class CloudKitMirroringResetCoordinator {
                 self?.handleWillResetSync()
             }
             .store(in: &cancellables)
-        Self.logger.debug("CloudKit mirroring reset coordinator started (observing on main queue)")
+        if DiagnosticsConfig.shared.verbosity != .off {
+            Self.logger.debug("CloudKit mirroring reset coordinator started (observing on main queue)")
+        }
     }
 
     private func handleWillResetSync() {

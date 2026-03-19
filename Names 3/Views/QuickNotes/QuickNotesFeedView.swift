@@ -5,6 +5,7 @@ import SmoothGradient
 struct QuickNotesFeedView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.cloudKitSyncCoordinator) private var syncCoordinator
 
     @Query(sort: [SortDescriptor(\QuickNote.date, order: .reverse)])
     private var quickNotes: [QuickNote]
@@ -62,6 +63,7 @@ struct QuickNotesFeedView: View {
                 QuickNoteDetailView(quickNote: qn)
             }
         }
+        .id(syncCoordinator?.syncRefreshTrigger ?? 0)
     }
 }
 

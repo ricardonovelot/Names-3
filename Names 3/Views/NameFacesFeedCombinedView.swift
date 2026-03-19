@@ -19,6 +19,8 @@ struct NameFacesFeedCombinedView: View {
     var bottomBarHeight: CGFloat = 0
     /// When false, video is paused (tab not selected). Matches TikTok/Instagram behavior.
     var isTabActive: Bool = true
+    /// For Save button state and handler registration.
+    var viewModel: ContentViewModel?
 
     @Environment(\.modelContext) private var modelContext
 
@@ -29,7 +31,8 @@ struct NameFacesFeedCombinedView: View {
             initialScrollDate: initialScrollDate,
             bottomBarHeight: max(bottomBarHeight, tabBarMinimumHeight),
             isTabActive: isTabActive,
-            modelContext: modelContext
+            modelContext: modelContext,
+            viewModel: viewModel
         )
         .ignoresSafeArea()
     }
@@ -44,6 +47,7 @@ private struct NameFacesFeedCombinedRepresentable: UIViewControllerRepresentable
     let bottomBarHeight: CGFloat
     var isTabActive: Bool
     let modelContext: ModelContext
+    var viewModel: ContentViewModel?
 
     func makeUIViewController(context: Context) -> NameFacesFeedCombinedViewController {
         let vc = NameFacesFeedCombinedViewController(
@@ -51,10 +55,11 @@ private struct NameFacesFeedCombinedRepresentable: UIViewControllerRepresentable
             onDismiss: onDismiss,
             initialScrollDate: initialScrollDate,
             bottomBarHeight: bottomBarHeight,
-            initialDisplayMode: initialScrollDate != nil ? .carousel : .feed
+            initialDisplayMode: (initialScrollDate != nil ? .carousel : nil) ?? (isInFeedMode ? .feed : .carousel),
+            viewModel: viewModel
         )
         vc.setOnDisplayModeChange { inFeedMode in
-            isInFeedMode = inFeedMode
+            DispatchQueue.main.async { isInFeedMode = inFeedMode }
         }
         return vc
     }
@@ -62,5 +67,7 @@ private struct NameFacesFeedCombinedRepresentable: UIViewControllerRepresentable
     func updateUIViewController(_ vc: NameFacesFeedCombinedViewController, context: Context) {
         vc.setBottomBarHeight(bottomBarHeight)
         vc.setTabActive(isTabActive)
+        // Defer to next run loop to avoid "Modifying state during view update" when called from SwiftUI update cycle
+        DispatchQueue.main.async { vc.applyRequestedMode(inFeedMode: isInFeedMode) }
     }
 }

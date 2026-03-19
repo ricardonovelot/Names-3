@@ -18,8 +18,8 @@ private enum MediaFeedConstants {
 final class MediaFeedCellView: UIView, FeedCellContentUpdatable, FeedCellTeardownable {
 
     enum Content {
-        case video(asset: PHAsset, isActive: Bool, sharedPlayer: SingleAssetPlayer?)
-        case photoCarousel([PHAsset])
+        case video(asset: PHAsset, isActive: Bool, sharedPlayer: SingleAssetPlayer?, albumIdentifier: String?)
+        case photoCarousel(assets: [PHAsset], feedIndex: Int, onPageChanged: (Int, Int) -> Void)
     }
 
     private let contentView: MediaContentContentView
@@ -35,7 +35,9 @@ final class MediaFeedCellView: UIView, FeedCellContentUpdatable, FeedCellTeardow
     // MARK: - FeedCellContentUpdatable
 
     func updateIsActive(_ active: Bool) {
-        print("[FeedPlayback] MediaFeedCellView.updateIsActive(\(active))")
+        if DiagnosticsConfig.shared.verbosity != .off {
+            print("[FeedPlayback] MediaFeedCellView.updateIsActive(\(active))")
+        }
         contentView.setActive(active)
     }
 
@@ -69,8 +71,8 @@ final class MediaFeedCellView: UIView, FeedCellContentUpdatable, FeedCellTeardow
 private final class MediaContentContentView: UIView {
 
     private enum Mode {
-        case video(asset: PHAsset, isActive: Bool, sharedPlayer: SingleAssetPlayer?)
-        case photoCarousel([PHAsset])
+        case video(asset: PHAsset, isActive: Bool, sharedPlayer: SingleAssetPlayer?, albumIdentifier: String?)
+        case photoCarousel(assets: [PHAsset], feedIndex: Int, onPageChanged: (Int, Int) -> Void)
     }
 
     private let mode: Mode
@@ -79,6 +81,7 @@ private final class MediaContentContentView: UIView {
     private var videoAsset: PHAsset?
     private var isActive: Bool = false
     private var sharedPlayer: SingleAssetPlayer?
+    private var videoAlbumIdentifier: String?
     private let ownPlayer = SingleAssetPlayer()
     /// When we have sharedPlayer: use ownPlayer when inactive (so we show our video, not the shared one).
     /// When active, use sharedPlayer. When no sharedPlayer, always use ownPlayer.
@@ -96,6 +99,8 @@ private final class MediaContentContentView: UIView {
 
     // Photo carousel (driver-based for strategies 2–5)
     private var photoAssets: [PHAsset]?
+    private var carouselFeedIndex: Int = 0
+    private var carouselOnPageChanged: ((Int, Int) -> Void)?
     private var carouselDriver: PhotoCarouselDriver?
     private var collectionView: UICollectionView?
     private var pageControl: UIPageControl?
@@ -105,10 +110,10 @@ private final class MediaContentContentView: UIView {
 
     init(content: MediaFeedCellView.Content) {
         switch content {
-        case .video(let asset, let isActive, let sharedPlayer):
-            self.mode = .video(asset: asset, isActive: isActive, sharedPlayer: sharedPlayer)
-        case .photoCarousel(let assets):
-            self.mode = .photoCarousel(assets)
+        case .video(let asset, let isActive, let sharedPlayer, let albumIdentifier):
+            self.mode = .video(asset: asset, isActive: isActive, sharedPlayer: sharedPlayer, albumIdentifier: albumIdentifier)
+        case .photoCarousel(let assets, let feedIndex, let onPageChanged):
+            self.mode = .photoCarousel(assets: assets, feedIndex: feedIndex, onPageChanged: onPageChanged)
         }
         super.init(frame: .zero)
         setupContent()
@@ -119,22 +124,27 @@ private final class MediaContentContentView: UIView {
     func setActive(_ active: Bool) {
         guard let asset = videoAsset else { return }
         guard isActive != active else { return }
-        print("[FeedPlayback] MediaContentContentView.setActive(\(active)) asset=\(String(asset.localIdentifier.prefix(12)))... shared=\(sharedPlayer != nil)")
+        if DiagnosticsConfig.shared.verbosity != .off {
+            print("[FeedPlayback] MediaContentContentView.setActive(\(active)) asset=\(String(asset.localIdentifier.prefix(12)))... shared=\(sharedPlayer != nil)")
+        }
         isActive = active
         if let shared = sharedPlayer {
             if active {
                 VideoStateLog.log(id: asset.localIdentifier, state: "S10_cell_active")
                 shared.setAsset(asset)
+                shared.setAlbumIdentifier(nil)
                 shared.setActive(true)
                 ownPlayer.cancel()
                 bindPlayerLayerToEffectivePlayer()
             } else {
                 shared.setActive(false)
                 ownPlayer.setAsset(asset)
+                ownPlayer.setAlbumIdentifier(videoAlbumIdentifier)
                 ownPlayer.setActive(false)
                 bindPlayerLayerToEffectivePlayer()
             }
         } else {
+            ownPlayer.setAlbumIdentifier(videoAlbumIdentifier)
             if active {
                 VideoStateLog.log(id: asset.localIdentifier, state: "S10_cell_active")
                 ownPlayer.setAsset(asset)
@@ -166,6 +176,7 @@ private final class MediaContentContentView: UIView {
             firstFrameLoadTask?.cancel()
             firstFrameLoadTask = nil
             firstFrameOverlay.removeFromSuperview()
+            playerLayerView.playerLayer.player = nil
             if sharedPlayer != nil {
                 sharedPlayer?.setActive(false)
                 ownPlayer.cancel()
@@ -182,14 +193,17 @@ private final class MediaContentContentView: UIView {
     private func setupContent() {
         backgroundColor = .black
         switch mode {
-        case .video(let asset, let active, let shared):
+        case .video(let asset, let active, let shared, let albumId):
             videoAsset = asset
             isActive = active
             sharedPlayer = shared
+            videoAlbumIdentifier = albumId
             setupVideo()
             configurePlayback()
-        case .photoCarousel(let assets):
+        case .photoCarousel(let assets, let feedIndex, let onPageChanged):
             photoAssets = assets
+            carouselFeedIndex = feedIndex
+            carouselOnPageChanged = onPageChanged
             setupPhotoCarousel()
         }
     }
@@ -273,10 +287,12 @@ private final class MediaContentContentView: UIView {
     }
 
     private func configurePlayback() {
-        guard case .video(let asset, let active, let shared) = mode else { return }
+        guard case .video(let asset, let active, let shared, let albumId) = mode else { return }
+        ownPlayer.setAlbumIdentifier(albumId)
         if let shared = shared {
             if active {
                 shared.setAsset(asset)
+                shared.setAlbumIdentifier(nil)
                 shared.setActive(true)
             } else {
                 ownPlayer.setAsset(asset)
@@ -337,6 +353,7 @@ private final class MediaContentContentView: UIView {
             pc.centerXAnchor.constraint(equalTo: centerXAnchor),
             pc.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -28)
         ])
+        carouselOnPageChanged?(carouselFeedIndex, 0)
     }
 
     override func layoutSubviews() {
@@ -466,11 +483,15 @@ extension MediaContentContentView: UICollectionViewDelegate {
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard bounds.width > 0, let assets = photoAssets else { return }
         let page = Int(round(scrollView.contentOffset.x / bounds.width))
-        pageControl?.currentPage = min(max(0, page), assets.count - 1)
+        let clamped = min(max(0, page), assets.count - 1)
+        pageControl?.currentPage = clamped
+        carouselOnPageChanged?(carouselFeedIndex, clamped)
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
-        print("[PhotoGroupingScroll] MediaFeedCellView: carousel willBeginDragging (horizontal)")
+        if DiagnosticsConfig.shared.verbosity != .off {
+            print("[PhotoGroupingScroll] MediaFeedCellView: carousel willBeginDragging (horizontal)")
+        }
     }
 
     func collectionView(_ collectionView: UICollectionView, didEndDisplaying cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {

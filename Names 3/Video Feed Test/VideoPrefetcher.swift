@@ -17,9 +17,20 @@ actor VideoPrefetchStore {
     private var backoffUntil: [String: Date] = [:]
 
     private var cachedKeys = Set<String>()
+    private var pending: [PHAsset] = []
+    private var pendingIds = Set<String>()
 
     private var spActorToRequest: [String: OSSignpostID] = [:]
     private var spRequestToResult: [String: OSSignpostID] = [:]
+
+    /// Limits concurrent requestAVAsset calls to reduce FigFilePlayer burst and media-subsystem stress.
+    private var maxConcurrent: Int {
+        #if targetEnvironment(simulator)
+        3
+        #else
+        5
+        #endif
+    }
 
     init() {
         cache.countLimit = 120
@@ -32,7 +43,7 @@ actor VideoPrefetchStore {
 
     private func logQueueDepth(reason: String, id: String?) {
         let totalWaiters = waiters.values.reduce(0) { $0 + $1.count }
-        Diagnostics.videoPerf("Prefetch(AVAsset) queueDepth reason=\(reason) id=\(id ?? "nil") inFlight=\(inFlight.count) totalWaiters=\(totalWaiters) cache≈\(cachedKeys.count)")
+        Diagnostics.videoPerf("Prefetch(AVAsset) queueDepth reason=\(reason) id=\(id ?? "nil") inFlight=\(inFlight.count) pending=\(pending.count) totalWaiters=\(totalWaiters) cache≈\(cachedKeys.count)")
     }
 
     func assetIfCached(_ id: String) -> AVAsset? {
@@ -56,6 +67,7 @@ actor VideoPrefetchStore {
                 continue
             }
             if inFlight[id] != nil { continue }
+            if pendingIds.contains(id) { continue }
             if let until = backoffUntil[id], until > Date() {
                 Task { @MainActor in
                     let remaining = until.timeIntervalSinceNow
@@ -63,6 +75,19 @@ actor VideoPrefetchStore {
                 }
                 continue
             }
+
+            pending.append(asset)
+            pendingIds.insert(id)
+        }
+
+        processQueue()
+    }
+
+    private func processQueue() {
+        while inFlight.count < maxConcurrent, let asset = pending.first {
+            let id = asset.localIdentifier
+            pending.removeFirst()
+            pendingIds.remove(id)
 
             let options = PHVideoRequestOptions()
             // .automatic enables streaming without full download (like Apple Photos); .mediumQualityFormat triggers FIGSANDBOX -17507
@@ -113,6 +138,8 @@ actor VideoPrefetchStore {
         let manager = PHImageManager.default()
         for asset in assets {
             let id = asset.localIdentifier
+            pending.removeAll { $0.localIdentifier == id }
+            pendingIds.remove(id)
             if let req = inFlight.removeValue(forKey: id) {
                 manager.cancelImageRequest(req)
                 await MainActor.run {
@@ -128,6 +155,7 @@ actor VideoPrefetchStore {
                 }
             }
         }
+        processQueue()
     }
 
     func removeCached(for ids: [String]) {
@@ -243,6 +271,7 @@ actor VideoPrefetchStore {
             }
             dict.removeAll()
         }
+        processQueue()
     }
 }
 

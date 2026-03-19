@@ -1,12 +1,30 @@
 import SwiftUI
 import Combine
 import MediaPlayer
+import MusicKit
+import Photos
 import UIKit
+
+enum MusicLibraryTab: String, CaseIterable {
+    case forYou = "For You"
+    case recentlyAdded = "Recently Added"
+    case saved = "Saved"
+    case recentlyUsed = "Recently Used"
+}
 
 @MainActor
 struct AppleMusicSearchScreen: View {
-    let assetID: String?
+    /// Asset IDs to apply the song to (single video, carousel assets, or saved item). When multiple, applies to all. Ignored when albumIdentifier is set.
+    let assetIDs: [String]
+    /// When set (e.g. "album:localId"), song is attached at album level. All media in that album plays this song.
+    let albumIdentifier: String?
     var onClose: () -> Void
+
+    init(assetIDs: [String], albumIdentifier: String? = nil, onClose: @escaping () -> Void) {
+        self.assetIDs = assetIDs
+        self.albumIdentifier = albumIdentifier
+        self.onClose = onClose
+    }
 
     @Environment(\.dismiss) private var dismiss
     @StateObject private var model = AppleMusicSearchModel()
@@ -16,57 +34,86 @@ struct AppleMusicSearchScreen: View {
     @State private var isRemoving = false
     @State private var isClosing = false
     @State private var debounceTask: Task<Void, Never>?
+    @State private var selectedTab: MusicLibraryTab = .forYou
+    @State private var recentlyUsedSongs: [SongReference] = []
 
     var body: some View {
-        NavigationView {
-            VStack(spacing: 0) {
-                searchBar
-                    .padding(.horizontal, 16)
-                    .padding(.top, 10)
-                    .padding(.bottom, 8)
+        NavigationStack {
+            Group {
+                if model.isSearching && model.results.isEmpty {
+                    searchLoadingView
+                } else if let err = model.error, model.results.isEmpty {
+                    searchErrorView(message: err)
+                } else if model.hasSearched && model.results.isEmpty {
+                    searchNoResultsView
+                } else if !model.results.isEmpty {
+                    searchResultsList
+                } else {
+                    VStack(spacing: 0) {
+                        Picker("Section", selection: $selectedTab) {
+                            ForEach(MusicLibraryTab.allCases, id: \.self) { tab in
+                                Text(tab.rawValue).tag(tab)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .padding(.horizontal)
+                        .padding(.vertical, 12)
 
-                if let assigned {
-                    assignedSection(assigned)
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 6)
+                        tabContentView
+                    }
                 }
-
-                Divider().opacity(0.4)
-
-                content
             }
             .navigationTitle("Search Apple Music")
             .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $model.query, prompt: "Song, artist, or album")
+                .textInputAutocapitalization(.never)
+                .disableAutocorrection(true)
+                .onSubmit { model.submitSearch(limit: 25) }
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button {
-                        close()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 17, weight: .semibold))
-                    }
-                    .accessibilityLabel("Close")
+                    Button("Close", systemImage: "xmark") { close() }
+                        .accessibilityLabel("Close")
+                }
+            }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if let assigned {
+                    assignedSection(assigned)
+                        .padding(.horizontal)
+                        .padding(.vertical, 12)
+                        .background(.bar)
                 }
             }
         }
         .onAppear {
             Task {
-                if let id = assetID {
-                    assigned = await VideoAudioOverrides.shared.songReference(for: id)
+                if let albumId = albumIdentifier, albumId.hasPrefix("album:") {
+                    assigned = await VideoAudioOverrides.shared.songReference(for: assetIDs.first, albumIdentifier: albumId)
+                } else if let firstID = assetIDs.first {
+                    assigned = await VideoAudioOverrides.shared.songReference(for: firstID)
                 } else {
                     assigned = nil
                 }
-            }
-            if local.authorization == .authorized {
-                local.loadRecent(limit: 50)
+                if MusicAuthorization.currentStatus == .notDetermined {
+                    _ = await MusicAuthorization.request()
+                }
+                if local.authorization == .authorized {
+                    local.loadRecent(limit: 50)
+                    if let assetDate = await fetchAssetCreationDate() {
+                        local.loadForYou(assetDate: assetDate, limit: 25)
+                    }
+                }
+                recentlyUsedSongs = await VideoAudioOverrides.shared.recentlyUsedSongs(limit: 25)
             }
         }
         .onChange(of: model.query) { _, newValue in
             debounceTask?.cancel()
             let term = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard term.count >= 3 else { return }
+            guard term.count >= 3 else {
+                if term.isEmpty { model.clear() }
+                return
+            }
             debounceTask = Task { [weak model] in
-                try? await Task.sleep(nanoseconds: 450_000_000)
+                try? await Task.sleep(for: .milliseconds(450))
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
                     model?.submitSearch(limit: 25)
@@ -75,191 +122,273 @@ struct AppleMusicSearchScreen: View {
         }
     }
 
-    private var content: some View {
+    private var searchLoadingView: some View {
+        ContentUnavailableView {
+            Label("Searching", systemImage: "magnifyingglass")
+        } description: {
+            Text("Finding songs in Apple Music…")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var searchNoResultsView: some View {
+        ContentUnavailableView.search(text: model.query)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func searchErrorView(message: String) -> some View {
+        ContentUnavailableView {
+            Label("Couldn't Search", systemImage: "exclamationmark.circle")
+        } description: {
+            Text(message)
+        } actions: {
+            Button("Try Again") { model.submitSearch(limit: 25) }
+                .buttonStyle(.borderedProminent)
+            if message.contains("Allow Apple Music") || message.contains("denied") {
+                Button("Open Settings") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var searchResultsList: some View {
+        List {
+            Section {
+                ForEach(model.results, id: \.storeID) { song in
+                    SearchResultRow(song: song) {
+                        Task {
+                            let ref = SongReference.appleMusic(
+                                storeID: song.storeID,
+                                title: song.title,
+                                artist: song.artist
+                            )
+                            if let albumId = albumIdentifier, albumId.hasPrefix("album:") {
+                                await VideoAudioOverrides.shared.setSongReference(forAlbumIdentifier: albumId, reference: ref)
+                            } else {
+                                for id in assetIDs {
+                                    await VideoAudioOverrides.shared.setSongReference(for: id, reference: ref)
+                                }
+                            }
+                            assigned = await VideoAudioOverrides.shared.songReference(for: assetIDs.first, albumIdentifier: albumIdentifier)
+                            await MusicBootstrapper.shared.ensureBootstrapped()
+                            AppleMusicController.shared.play(storeID: song.storeID)
+                            close()
+                        }
+                    }
+                }
+            } header: {
+                Text("Songs")
+            }
+        }
+        .listStyle(.insetGrouped)
+    }
+
+    private var tabContentView: some View {
         Group {
-            if !AppleMusicCatalog.isConfigured {
-                stateMessage(
-                    icon: "exclamationmark.triangle.fill",
-                    iconColor: .yellow,
-                    title: "Missing Apple Music developer token.",
-                    subtitle: "Set APPLE_MUSIC_DEVELOPER_TOKEN in Info.plist."
-                )
-            } else if model.isSearching {
-                HStack(spacing: 8) {
-                    ProgressView()
-                    Text("Searching…")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .padding(.top, 8)
-            } else if let err = model.error {
-                VStack(spacing: 8) {
-                    Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
-                    Text(err).font(.footnote).foregroundStyle(.secondary)
-                    Button("Retry") { model.submitSearch(limit: 25) }
-                        .buttonStyle(.borderedProminent)
-                        .padding(.top, 2)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .padding(.top, 8)
-            } else if !model.results.isEmpty {
-                List {
-                    Section {
-                        ForEach(model.results, id: \.storeID) { song in
-                            SearchResultRow(song: song) {
-                                Task {
-                                    if let id = assetID {
-                                        await VideoAudioOverrides.shared.setSongReference(
-                                            for: id,
-                                            reference: SongReference.appleMusic(
-                                                storeID: song.storeID,
-                                                title: song.title,
-                                                artist: song.artist
-                                            )
-                                        )
-                                        assigned = await VideoAudioOverrides.shared.songReference(for: id)
-                                    }
-                                    await MusicBootstrapper.shared.ensureBootstrapped()
-                                    AppleMusicController.shared.play(storeID: song.storeID)
-                                    close()
-                                }
-                            }
-                        }
-                    } header: {
-                        Text("Results (\(model.results.count))")
-                            .font(.caption.weight(.semibold))
-                    }
-                }
-                .listStyle(.insetGrouped)
-            } else {
-                // Default view: user's library (known songs)
-                List {
-                    switch local.authorization {
-                    case .authorized:
-                        if local.recentItems.isEmpty {
-                            Section {
-                                stateRow(
-                                    icon: "music.note",
-                                    title: "No recent songs found in your library.",
-                                    subtitle: "Try Apple Music search above."
-                                )
-                            }
-                        } else {
-                            Section("Your Library") {
-                                ForEach(local.recentItems, id: \.persistentID) { item in
-                                    LibraryRow(item: item) {
-                                        Task {
-                                            if let id = assetID {
-                                                // Robust optional fetch for store ID across SDKs
-                                                let storeID: String? = item.value(forProperty: MPMediaItemPropertyPlaybackStoreID) as? String
-                                                if let storeID, !storeID.isEmpty {
-                                                    await VideoAudioOverrides.shared.setSongReference(
-                                                        for: id,
-                                                        reference: SongReference.appleMusic(
-                                                            storeID: storeID,
-                                                            title: item.title,
-                                                            artist: item.artist
-                                                        )
-                                                    )
-                                                    assigned = await VideoAudioOverrides.shared.songReference(for: id)
-                                                }
-                                            }
-                                            await MusicBootstrapper.shared.ensureBootstrapped()
-                                            local.play(item: item)
-                                            close()
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    case .notDetermined:
-                        Section {
-                            Button {
-                                local.requestAuthorization()
-                            } label: {
-                                Label("Allow Apple Music Access", systemImage: "music.note.list")
-                            }
-                            .buttonStyle(.borderedProminent)
-                        }
-                    case .denied, .restricted:
-                        Section {
-                            Button {
-                                if let url = URL(string: UIApplication.openSettingsURLString) {
-                                    UIApplication.shared.open(url)
-                                }
-                            } label: {
-                                Label("Open Settings to Allow Apple Music", systemImage: "gearshape")
-                            }
-                            .buttonStyle(.bordered)
-                        }
-                    @unknown default:
-                        EmptyView()
-                    }
-                }
-                .listStyle(.insetGrouped)
+            switch local.authorization {
+            case .authorized:
+                tabContentWhenAuthorized
+            case .notDetermined:
+                authorizationPromptView
+            case .denied, .restricted:
+                settingsPromptView
+            @unknown default:
+                EmptyView()
             }
         }
     }
 
-    private var searchBar: some View {
-        HStack(spacing: 8) {
-            HStack {
-                Image(systemName: "magnifyingglass")
-                TextField("Song, artist, or keyword", text: $model.query)
-                    .textInputAutocapitalization(.never)
-                    .disableAutocorrection(true)
-                    .onSubmit { model.submitSearch(limit: 25) }
-                if !model.query.isEmpty {
-                    Button {
-                        model.clear()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill").foregroundStyle(Color.secondary)
+    @ViewBuilder
+    private var tabContentWhenAuthorized: some View {
+        switch selectedTab {
+        case .forYou:
+            forYouSection
+        case .recentlyAdded:
+            recentlyAddedSection
+        case .saved:
+            savedSection
+        case .recentlyUsed:
+            recentlyUsedSection
+        }
+    }
+
+    private var forYouSection: some View {
+        List {
+            if local.forYouItems.isEmpty {
+                Section {
+                    ContentUnavailableView {
+                        Label("For You", systemImage: "sparkles")
+                    } description: {
+                        Text("Songs from your library added around the time this media was created.")
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Clear search")
+                }
+            } else {
+                Section("For You") {
+                    ForEach(local.forYouItems, id: \.persistentID) { item in
+                        LibraryRow(item: item) { applyAndPlay(item: item) }
+                    }
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color(.secondarySystemBackground))
-            )
-
-            Button {
-                model.submitSearch(limit: 25)
-            } label: {
-                Text("Search")
-                    .font(.footnote.weight(.semibold))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(
-                        Capsule().fill(Color.accentColor.opacity(model.canSearch ? 0.14 : 0.06))
-                    )
-            }
-            .buttonStyle(.plain)
-            .disabled(!model.canSearch)
         }
+        .listStyle(.insetGrouped)
+    }
+
+    private var recentlyAddedSection: some View {
+        List {
+            if local.recentItems.isEmpty {
+                Section {
+                    ContentUnavailableView {
+                        Label("Recently Added", systemImage: "music.note.list")
+                    } description: {
+                        Text("Songs you've recently added to your library will appear here.")
+                    }
+                }
+            } else {
+                Section("Recently Added") {
+                    ForEach(local.recentItems, id: \.persistentID) { item in
+                        LibraryRow(item: item) { applyAndPlay(item: item) }
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+    }
+
+    private var savedSection: some View {
+        List {
+            Section {
+                ContentUnavailableView {
+                    Label("Saved", systemImage: "bookmark")
+                } description: {
+                    Text("Save your favorite songs for quick access.")
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+    }
+
+    private var recentlyUsedSection: some View {
+        List {
+            if recentlyUsedSongs.isEmpty {
+                Section {
+                    ContentUnavailableView {
+                        Label("Recently Used", systemImage: "clock.arrow.circlepath")
+                    } description: {
+                        Text("Songs you've assigned to videos will appear here.")
+                    }
+                }
+            } else {
+                Section("Recently Used") {
+                    ForEach(recentlyUsedSongs, id: \.debugKey) { ref in
+                        SongReferenceRow(reference: ref) {
+                            Task {
+                                await applyAndPlay(reference: ref)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+    }
+
+    private var authorizationPromptView: some View {
+        List {
+            Section {
+                Button {
+                    local.requestAuthorization()
+                } label: {
+                    Label("Allow Apple Music Access", systemImage: "music.note.list")
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .listStyle(.insetGrouped)
+    }
+
+    private var settingsPromptView: some View {
+        List {
+            Section {
+                Button {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                } label: {
+                    Label("Open Settings to Allow Apple Music", systemImage: "gearshape")
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .listStyle(.insetGrouped)
+    }
+
+    private func applyAndPlay(item: MPMediaItem) {
+        Task {
+            let storeID: String? = item.value(forProperty: MPMediaItemPropertyPlaybackStoreID) as? String
+            if let storeID, !storeID.isEmpty {
+                let ref = SongReference.appleMusic(
+                    storeID: storeID,
+                    title: item.title,
+                    artist: item.artist
+                )
+                if let albumId = albumIdentifier, albumId.hasPrefix("album:") {
+                    await VideoAudioOverrides.shared.setSongReference(forAlbumIdentifier: albumId, reference: ref)
+                } else {
+                    for id in assetIDs {
+                        await VideoAudioOverrides.shared.setSongReference(for: id, reference: ref)
+                    }
+                }
+                assigned = await VideoAudioOverrides.shared.songReference(for: assetIDs.first, albumIdentifier: albumIdentifier)
+            }
+            await MusicBootstrapper.shared.ensureBootstrapped()
+            local.play(item: item)
+            close()
+        }
+    }
+
+    private func applyAndPlay(reference: SongReference) async {
+        guard let storeID = reference.appleMusicStoreID, !storeID.isEmpty else { return }
+        if let albumId = albumIdentifier, albumId.hasPrefix("album:") {
+            await VideoAudioOverrides.shared.setSongReference(forAlbumIdentifier: albumId, reference: reference)
+        } else {
+            for id in assetIDs {
+                await VideoAudioOverrides.shared.setSongReference(for: id, reference: reference)
+            }
+        }
+        assigned = await VideoAudioOverrides.shared.songReference(for: assetIDs.first, albumIdentifier: albumIdentifier)
+        await MusicBootstrapper.shared.ensureBootstrapped()
+        AppleMusicController.shared.play(storeID: storeID)
+        close()
+    }
+
+    private func fetchAssetCreationDate() async -> Date? {
+        guard let firstID = assetIDs.first else { return nil }
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: [firstID], options: nil)
+        return assets.firstObject?.creationDate
     }
 
     private func assignedSection(_ ref: SongReference) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Assigned to this video")
-                .font(.caption.weight(.semibold))
+        VStack(alignment: .leading, spacing: 8) {
+            Text(albumIdentifier != nil ? "Assigned to this album" : (assetIDs.count > 1 ? "Assigned to this item" : "Assigned to this video"))
+                .font(.caption)
                 .foregroundStyle(.secondary)
 
             HStack(spacing: 12) {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color(.secondarySystemFill))
+                    .fill(.quaternary)
                     .frame(width: 44, height: 44)
                     .overlay(
-                        Image(systemName: "music.note").foregroundStyle(.secondary)
+                        Image(systemName: "music.note")
+                            .foregroundStyle(.secondary)
                     )
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(ref.title ?? "Unknown Title")
-                        .font(.subheadline.weight(.semibold))
+                        .font(.subheadline.bold())
                         .lineLimit(1)
                     Text(ref.artist ?? "Unknown Artist")
                         .font(.caption)
@@ -272,62 +401,36 @@ struct AppleMusicSearchScreen: View {
                 if !isRemoving {
                     Button {
                         Task {
-                            guard let id = assetID else { return }
+                            guard !assetIDs.isEmpty || albumIdentifier != nil else { return }
                             isRemoving = true
-                            await VideoAudioOverrides.shared.setSongReference(for: id, reference: nil)
+                            if let albumId = albumIdentifier, albumId.hasPrefix("album:") {
+                                await VideoAudioOverrides.shared.setSongReference(forAlbumIdentifier: albumId, reference: nil)
+                            } else {
+                                for id in assetIDs {
+                                    await VideoAudioOverrides.shared.setSongReference(for: id, reference: nil)
+                                }
+                            }
                             AppleMusicController.shared.pauseIfManaged()
                             AppleMusicController.shared.stopManaging()
-                            assigned = await VideoAudioOverrides.shared.songReference(for: id)
+                            assigned = await VideoAudioOverrides.shared.songReference(for: assetIDs.first, albumIdentifier: albumIdentifier)
                             isRemoving = false
                         }
                     } label: {
                         Label("Remove", systemImage: "trash")
-                            .font(.footnote.weight(.semibold))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
-                            .background(
-                                Capsule().fill(Color(.tertiarySystemBackground))
-                            )
+                            .font(.caption.bold())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.bordered)
                     .accessibilityLabel("Remove song from this video")
                 } else {
                     ProgressView()
-                        .frame(width: 40, height: 20)
                 }
             }
-            .padding(10)
+            .padding(12)
             .background(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color(.secondarySystemBackground))
+                    .fill(.regularMaterial)
             )
         }
-    }
-
-    private func stateMessage(icon: String, iconColor: Color, title: String, subtitle: String) -> some View {
-        VStack(spacing: 8) {
-            Image(systemName: icon).foregroundStyle(iconColor)
-            Text(title)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-            Text(subtitle)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding(.top, 8)
-    }
-
-    private func stateRow(icon: String, title: String, subtitle: String) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon).foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.footnote).foregroundStyle(.secondary)
-                Text(subtitle).font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer()
-        }
-        .padding(.vertical, 8)
     }
 
     private func close() {
@@ -348,15 +451,54 @@ private struct SearchResultRow: View {
                 Artwork(url: song.artworkURL)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(song.title)
-                        .font(.subheadline.weight(.semibold))
+                        .font(.body)
+                        .fontWeight(.medium)
                         .lineLimit(1)
                     Text(song.artist)
-                        .font(.caption)
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
                 Spacer()
-                Image(systemName: "plus.circle.fill").foregroundStyle(Color.accentColor)
+                Image(systemName: "plus.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(Color.accentColor)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct SongReferenceRow: View {
+    let reference: SongReference
+    var onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 12) {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color(.secondarySystemFill))
+                    .frame(width: 48, height: 48)
+                    .overlay(
+                        Image(systemName: "music.note")
+                            .foregroundStyle(.secondary)
+                    )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(reference.title ?? "Unknown Title")
+                        .font(.body)
+                        .fontWeight(.medium)
+                        .lineLimit(1)
+                    Text(reference.artist ?? "Unknown Artist")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Image(systemName: "play.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(Color.accentColor)
             }
             .contentShape(Rectangle())
         }
@@ -372,8 +514,6 @@ private struct LibraryRow: View {
         Button(action: onTap) {
             HStack(spacing: 12) {
                 let size: CGFloat = 48
-
-                // Robust thumbnail to avoid type-checker confusion; apply frame/clip outside conditional
                 Group {
                     if let art = item.artwork?.image(at: CGSize(width: size * 2, height: size * 2)) {
                         Image(uiImage: art)
@@ -392,14 +532,18 @@ private struct LibraryRow: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.title ?? "Unknown Title")
-                        .font(.subheadline.weight(.semibold))
+                        .font(.body)
+                        .fontWeight(.medium)
                         .lineLimit(1)
                     Text(item.artist ?? "Unknown Artist")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
                 Spacer()
-                Image(systemName: "play.circle.fill").foregroundStyle(Color.accentColor)
+                Image(systemName: "play.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(Color.accentColor)
             }
             .contentShape(Rectangle())
         }
@@ -409,6 +553,7 @@ private struct LibraryRow: View {
 
 private struct Artwork: View {
     let url: URL?
+
     var body: some View {
         let size: CGFloat = 48
         AsyncImage(url: url) { phase in
@@ -418,7 +563,8 @@ private struct Artwork: View {
             case .empty:
                 Color(.secondarySystemFill)
             case .failure:
-                Color(.secondarySystemFill).overlay(Image(systemName: "music.note").foregroundStyle(.secondary))
+                Color(.secondarySystemFill)
+                    .overlay(Image(systemName: "music.note").foregroundStyle(.secondary))
             @unknown default:
                 Color(.secondarySystemFill)
             }

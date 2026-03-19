@@ -19,6 +19,7 @@ extension PHAsset {
         guard let avAsset else {
             throw NSError(domain: "Export", code: -3, userInfo: [NSLocalizedDescriptionKey: "Failed to load AVAsset"])
         }
+        await avAsset.loadFullyForPlayback()
 
         let preset: String = await withCheckedContinuation { cont in
             AVAssetExportSession.determineCompatibility(ofExportPreset: AVAssetExportPresetPassthrough, with: avAsset, outputFileType: .mp4) { compatible in
@@ -58,6 +59,7 @@ extension PHAsset {
             }
         }
         guard let avAsset else { return nil }
+        await avAsset.loadFullyForPlayback()
         let gen = AVAssetImageGenerator(asset: avAsset)
         gen.appliesPreferredTrackTransform = true
         gen.requestedTimeToleranceBefore = .zero
@@ -69,6 +71,7 @@ extension PHAsset {
 
     static func firstFrameImage(fromVideoAt url: URL, maxDimension: CGFloat) async -> UIImage? {
         let asset = AVURLAsset(url: url)
+        await asset.loadFullyForPlayback()
         let gen = AVAssetImageGenerator(asset: asset)
         gen.appliesPreferredTrackTransform = true
         gen.requestedTimeToleranceBefore = .zero
